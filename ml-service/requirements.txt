@@ -1,0 +1,30 @@
+# FastAPI and server dependencies
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+pydantic==2.5.3
+
+# Computer Vision and ML
+opencv-python==4.9.0.80
+numpy==1.26.3
+pillow==10.2.0
+
+# YOLOv8 for object detection
+ultralytics==8.1.0
+torch==2.1.2
+torchvision==0.16.2
+
+# CLIP for vehicle identification
+transformers==4.37.2
+sentencepiece==0.1.99
+
+# OCR
+paddlepaddle==2.6.1
+paddleocr==2.7.3
+
+# Gemini LLM
+google-generativeai==0.3.2
+
+# Utilities
+requests==2.31.0
+aiofiles==23.2.1
