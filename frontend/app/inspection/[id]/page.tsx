@@ -8,7 +8,9 @@
 import { useState, useEffect } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { getInspection } from "@/lib/api";
+import Image from "next/image";
+import { Car } from "lucide-react";
+import { getInspection, BACKEND_BASE_URL } from "@/lib/api";
 import VehicleInfo from "@/components/VehicleInfo";
 import OdometerInfo from "@/components/OdometerInfo";
 import DamageInfo from "@/components/DamageInfo";
@@ -57,10 +59,10 @@ export default function InspectionPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="min-h-screen bg-[#f8fafc] flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading inspection data...</p>
+          <p className="mt-4 text-slate-600 font-medium">Loading inspection data...</p>
         </div>
       </div>
     );
@@ -68,12 +70,12 @@ export default function InspectionPage() {
 
   if (error || !inspection) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="min-h-screen bg-[#f8fafc] flex items-center justify-center">
         <div className="text-center">
-          <p className="text-red-600 mb-4">{error || "Inspection not found"}</p>
+          <p className="text-red-600 mb-4 font-medium">{error || "Inspection not found"}</p>
           <Link
             href="/"
-            className="text-blue-600 hover:text-blue-700 font-medium"
+            className="text-blue-600 hover:text-blue-700 font-medium transition-colors"
           >
             Go back home
           </Link>
@@ -125,25 +127,28 @@ export default function InspectionPage() {
       : inspection.extracted_frames || [];
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <nav className="bg-white shadow-sm">
+    <div className="min-h-screen bg-[#f8fafc]">
+      <nav className="border-b border-slate-200 bg-white/80 backdrop-blur-xl">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16">
-            <div className="flex items-center">
-              <Link href="/" className="text-xl font-bold text-gray-900">
+            <div className="flex items-center gap-2">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-600">
+                <Car className="h-5 w-5 text-white" />
+              </div>
+              <Link href="/" className="text-xl font-semibold text-slate-900">
                 Vehicle Intelligence Platform
               </Link>
             </div>
             <div className="flex items-center space-x-4">
               <button
                 onClick={downloadReport}
-                className="text-blue-600 hover:text-blue-700 px-3 py-2 rounded-md text-sm font-medium"
+                className="bg-blue-600 text-white hover:bg-blue-700 px-4 py-2 rounded-lg text-sm font-medium shadow-sm transition-colors"
               >
                 Download JSON
               </button>
               <Link
                 href="/"
-                className="text-gray-700 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium"
+                className="text-sm font-medium text-slate-700 hover:text-blue-600 transition-colors px-3 py-2 rounded-md"
               >
                 Home
               </Link>
@@ -154,17 +159,17 @@ export default function InspectionPage() {
 
       <main className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
         <div className="px-4 py-6">
-          <h1 className="text-3xl font-bold mb-6">Inspection Results</h1>
+          <h1 className="text-3xl font-bold mb-6 text-slate-900">Inspection Results</h1>
 
           {/* Summary Report */}
           {report && (
-            <div className="bg-white rounded-lg shadow p-6 mb-6">
-              <h2 className="text-xl font-semibold mb-4">Summary</h2>
-              <p className="text-gray-700">{report.summary}</p>
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 mb-6">
+              <h2 className="text-xl font-semibold mb-4 text-slate-900">Summary</h2>
+              <p className="text-slate-700 leading-relaxed">{report.summary}</p>
               {report.recommendations && report.recommendations.length > 0 && (
                 <div className="mt-4">
-                  <h3 className="font-semibold mb-2">Recommendations:</h3>
-                  <ul className="list-disc list-inside space-y-1 text-gray-700">
+                  <h3 className="font-semibold mb-2 text-slate-800">Recommendations:</h3>
+                  <ul className="list-disc list-inside space-y-1 text-slate-700">
                     {report.recommendations.map((rec: string, idx: number) => (
                       <li key={idx}>{rec}</li>
                     ))}
@@ -184,8 +189,8 @@ export default function InspectionPage() {
 
           {/* Frame Gallery */}
           {frames && frames.length > 0 && (
-            <div className="bg-white rounded-lg shadow p-6">
-              <h2 className="text-xl font-semibold mb-4">Extracted Frames</h2>
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+              <h2 className="text-xl font-semibold mb-4 text-slate-900">Extracted Frames</h2>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 {frames.slice(0, 12).map((frame: string, idx: number) => {
                   // Handle both relative and absolute paths
@@ -193,15 +198,15 @@ export default function InspectionPage() {
                     ? frame
                     : `uploads/${frame.replace(/^.*uploads\//, "")}`;
                   return (
-                    <img
-                      key={idx}
-                      src={`http://localhost:3001/${framePath}`}
-                      alt={`Frame ${idx + 1}`}
-                      className="w-full h-auto rounded-lg border border-gray-200"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).style.display = "none";
-                      }}
-                    />
+                    <div key={idx} className="relative aspect-video rounded-lg border border-slate-200 overflow-hidden shadow-sm hover:shadow-md transition-shadow">
+                      <Image
+                        src={`${BACKEND_BASE_URL}/${framePath}`}
+                        alt={`Frame ${idx + 1}`}
+                        fill
+                        className="object-cover"
+                        unoptimized
+                      />
+                    </div>
                   );
                 })}
               </div>

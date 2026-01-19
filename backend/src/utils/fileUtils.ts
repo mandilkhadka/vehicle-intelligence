@@ -43,6 +43,15 @@ export function isValidVideoFormat(filename: string): boolean {
 }
 
 /**
+ * Check if file is a valid image format
+ */
+export function isValidImageFormat(filename: string): boolean {
+  const validExtensions = [".jpg", ".jpeg", ".png", ".heic", ".webp"];
+  const ext = getFileExtension(filename);
+  return validExtensions.includes(ext);
+}
+
+/**
  * Get upload directory path
  */
 export function getUploadPath(subfolder: string = ""): string {

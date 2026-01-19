@@ -1,21 +1,26 @@
 import VideoUpload from "@/components/VideoUpload";
+import UploadGuide from "@/components/UploadGuide";
 import Link from "next/link";
+import { Car } from "lucide-react";
 
 export default function UploadPage() {
   return (
-    <div className="min-h-screen bg-gray-50">
-      <nav className="bg-white shadow-sm">
+    <div className="min-h-screen bg-[#f8fafc]">
+      <nav className="border-b border-slate-200 bg-white/80 backdrop-blur-xl">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16">
-            <div className="flex items-center">
-              <Link href="/" className="text-xl font-bold text-gray-900">
+            <div className="flex items-center gap-2">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-600">
+                <Car className="h-5 w-5 text-white" />
+              </div>
+              <Link href="/" className="text-xl font-semibold text-slate-900">
                 Vehicle Intelligence Platform
               </Link>
             </div>
             <div className="flex items-center space-x-4">
               <Link
                 href="/"
-                className="text-gray-700 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium"
+                className="text-sm font-medium text-slate-700 hover:text-blue-600 transition-colors px-3 py-2 rounded-md"
               >
                 Home
               </Link>
@@ -25,7 +30,10 @@ export default function UploadPage() {
       </nav>
 
       <main className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        <VideoUpload />
+        <div className="px-4">
+          <UploadGuide />
+          <VideoUpload />
+        </div>
       </main>
     </div>
   );

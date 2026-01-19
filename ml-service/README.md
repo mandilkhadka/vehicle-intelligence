@@ -6,7 +6,7 @@ Python FastAPI service for vehicle inspection processing.
 
 ```bash
 # Create virtual environment
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies
@@ -16,7 +16,7 @@ pip install -r requirements.txt
 export GEMINI_API_KEY=your_api_key_here  # Optional
 
 # Run service
-python src/main.py
+python3 src/main.py
 ```
 
 ## Services

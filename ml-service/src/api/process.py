@@ -23,6 +23,7 @@ class ProcessRequest(BaseModel):
     """Request model for video processing"""
     video_path: str
     inspection_id: str
+    odometer_image_path: Optional[str] = None
 
 
 class ProcessResponse(BaseModel):
@@ -85,20 +86,39 @@ async def process_video(request: ProcessRequest):
 
         # Step 3: Detect dashboard and read odometer
         print("Detecting dashboard and reading odometer...")
-        # Convert frame paths back to absolute for dashboard detection
-        frames_absolute = [os.path.join(backend_root, "backend", "uploads", f) for f in frames]
-        dashboard_frames = await dashboard_detector.detect(frames_absolute)
-        odometer_data = await odometer_reader.read(dashboard_frames)
         
-        # Convert dashboard frame paths to relative
-        if odometer_data.get("speedometer_image_path"):
-            abs_path = odometer_data["speedometer_image_path"]
-            rel_path = os.path.relpath(abs_path, os.path.join(backend_root, "backend", "uploads"))
-            odometer_data["speedometer_image_path"] = rel_path.replace("\\", "/")
+        # If odometer image was provided, use it directly
+        if request.odometer_image_path and os.path.exists(request.odometer_image_path):
+            print(f"Using provided odometer image: {request.odometer_image_path}")
+            # Use the uploaded odometer image directly
+            odometer_data = await odometer_reader.read([request.odometer_image_path])
+            
+            # Convert odometer image path to relative
+            if odometer_data.get("speedometer_image_path"):
+                abs_path = odometer_data["speedometer_image_path"]
+                rel_path = os.path.relpath(abs_path, os.path.join(backend_root, "backend", "uploads"))
+                odometer_data["speedometer_image_path"] = rel_path.replace("\\", "/")
+            else:
+                # Use the provided image path
+                rel_path = os.path.relpath(request.odometer_image_path, os.path.join(backend_root, "backend", "uploads"))
+                odometer_data["speedometer_image_path"] = rel_path.replace("\\", "/")
+        else:
+            # Convert frame paths back to absolute for dashboard detection
+            frames_absolute = [os.path.join(backend_root, "backend", "uploads", f) for f in frames]
+            dashboard_frames = await dashboard_detector.detect(frames_absolute)
+            odometer_data = await odometer_reader.read(dashboard_frames)
+            
+            # Convert dashboard frame paths to relative
+            if odometer_data.get("speedometer_image_path"):
+                abs_path = odometer_data["speedometer_image_path"]
+                rel_path = os.path.relpath(abs_path, os.path.join(backend_root, "backend", "uploads"))
+                odometer_data["speedometer_image_path"] = rel_path.replace("\\", "/")
 
         # Step 4: Detect vehicle damage
         print("Detecting vehicle damage...")
-        damage_data = await damage_detector.detect(frames)
+        # Convert frame paths back to absolute for damage detection
+        frames_absolute = [os.path.join(backend_root, "backend", "uploads", f) for f in frames]
+        damage_data = await damage_detector.detect(frames_absolute, request.inspection_id)
 
         # Step 5: Classify exhaust
         print("Classifying exhaust...")

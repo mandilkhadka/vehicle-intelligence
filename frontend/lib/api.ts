@@ -6,8 +6,11 @@
 import axios from "axios";
 
 // Base URL for the backend API
-// In production, this would be an environment variable
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001/api";
+
+// Base URL for backend server (for static file serving)
+export const BACKEND_BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 
+  API_BASE_URL.replace("/api", "") || "http://localhost:3001";
 
 // Create axios instance with default config
 const apiClient = axios.create({
@@ -20,15 +23,20 @@ const apiClient = axios.create({
 /**
  * Upload a video file to the backend
  * @param file - The video file to upload
+ * @param odometerImage - Optional odometer image file
  * @param onProgress - Optional callback for upload progress
  * @returns Promise with job ID and file info
  */
 export async function uploadVideo(
   file: File,
+  odometerImage?: File | null,
   onProgress?: (progress: number) => void
 ): Promise<{ jobId: string; fileId: string }> {
   const formData = new FormData();
   formData.append("video", file);
+  if (odometerImage) {
+    formData.append("odometer_image", odometerImage);
+  }
 
   const response = await apiClient.post("/upload", formData, {
     headers: {
@@ -57,7 +65,9 @@ export async function getJobStatus(jobId: string): Promise<{
   status: "pending" | "processing" | "completed" | "failed";
   progress?: number;
   inspectionId?: string;
+  inspection_id?: string;
   error?: string;
+  error_message?: string;
 }> {
   const response = await apiClient.get(`/jobs/${jobId}`);
   return response.data;

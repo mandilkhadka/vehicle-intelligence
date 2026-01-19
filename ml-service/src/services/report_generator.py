@@ -16,6 +16,12 @@ class ReportGenerator:
     def __init__(self):
         """Initialize report generator"""
         # Get API key from environment variable
+        # Try loading from .env file if not set
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+        except ImportError:
+            pass
         api_key = os.getenv("GEMINI_API_KEY", "")
         
         if not api_key:
@@ -83,52 +89,126 @@ class ReportGenerator:
         damage = inspection_data.get("damage", {})
         exhaust = inspection_data.get("exhaust", {})
 
-        prompt = f"""
-Generate a comprehensive vehicle inspection report in JSON format based on the following findings:
+        # Build detailed vehicle information
+        vehicle_type = vehicle_info.get('type', 'Unknown')
+        vehicle_brand = vehicle_info.get('brand', 'Unknown')
+        vehicle_model = vehicle_info.get('model', 'Unknown')
+        vehicle_color = vehicle_info.get('color', 'Unknown')
+        vehicle_confidence = vehicle_info.get('confidence', 0)
+        
+        # Build detailed odometer information
+        odometer_value = odometer.get('value')
+        odometer_confidence = odometer.get('confidence', 0)
+        odometer_status = "detected" if odometer_value is not None else "not detected"
+        
+        # Build detailed damage information
+        scratches_count = damage.get('scratches', {}).get('count', 0)
+        dents_count = damage.get('dents', {}).get('count', 0)
+        rust_count = damage.get('rust', {}).get('count', 0)
+        damage_severity = damage.get('severity', 'low')
+        
+        # Build exhaust information
+        exhaust_type = exhaust.get('type', 'Unknown')
+        exhaust_confidence = exhaust.get('confidence', 0)
 
-Vehicle Information:
-- Type: {vehicle_info.get('type', 'Unknown')}
-- Brand: {vehicle_info.get('brand', 'Unknown')}
-- Model: {vehicle_info.get('model', 'Unknown')}
-- Confidence: {vehicle_info.get('confidence', 0)}
+        prompt = f"""You are an expert vehicle inspection analyst. Generate a comprehensive, accurate, and professional vehicle inspection report based on the following AI-detected findings.
 
-Odometer Reading:
-- Value: {odometer.get('value', 'Not detected')} km
-- Confidence: {odometer.get('confidence', 0)}
+## INSPECTION DATA:
 
-Damage Assessment:
-- Scratches: {damage.get('scratches', {}).get('count', 0)} detected
-- Dents: {damage.get('dents', {}).get('count', 0)} detected
-- Rust: {damage.get('rust', {}).get('count', 0)} detected
-- Severity: {damage.get('severity', 'Unknown')}
+### Vehicle Identification:
+- Vehicle Type: {vehicle_type}
+- Brand: {vehicle_brand}
+- Model: {vehicle_model}
+- Color: {vehicle_color}
+- Detection Confidence: {vehicle_confidence:.1%}
 
-Exhaust System:
-- Type: {exhaust.get('type', 'Unknown')}
-- Confidence: {exhaust.get('confidence', 0)}
+### Odometer Reading:
+- Value: {odometer_value if odometer_value is not None else 'Not detected'} km
+- Detection Confidence: {odometer_confidence:.1%}
+- Status: {odometer_status}
 
-Please generate a structured JSON report with the following format:
+### Damage Assessment:
+- Scratches Detected: {scratches_count}
+- Dents Detected: {dents_count}
+- Rust Areas Detected: {rust_count}
+- Overall Severity: {damage_severity}
+
+### Exhaust System:
+- Type: {exhaust_type}
+- Detection Confidence: {exhaust_confidence:.1%}
+
+## INSTRUCTIONS:
+
+1. **Summary**: Write a concise 2-3 sentence professional summary that highlights the key findings, overall vehicle condition, and any critical observations. Be specific about what was detected and what was not detected.
+
+2. **Vehicle Details**: 
+   - Use the exact vehicle information provided including color
+   - Assess condition based on damage severity: "good" (low/no damage), "fair" (moderate damage), "poor" (significant damage)
+   - If confidence is below 50%, note uncertainty in the condition assessment
+
+3. **Odometer Reading**:
+   - If value is detected: Mark as "verified" if confidence > 70%, otherwise "unverified"
+   - If not detected: Mark as "unverified" and note that manual verification is required
+   - Include the exact value if available
+
+4. **Damage Assessment**:
+   - Provide specific details about the type and extent of damage found
+   - Use severity levels: "low" (minor cosmetic issues), "moderate" (noticeable damage), "high" (significant structural concerns)
+   - Be descriptive about what was found (e.g., "3 minor scratches on passenger side", "1 dent on rear bumper")
+
+5. **Exhaust Status**:
+   - Clearly state if exhaust is "stock" (original) or "modified" (aftermarket)
+   - Add relevant notes about compliance, condition, or concerns
+   - If confidence is low, note uncertainty
+
+6. **Recommendations**:
+   - Provide 3-5 actionable, specific recommendations
+   - Prioritize safety and legal compliance
+   - Include verification steps for uncertain readings
+   - Suggest next steps based on findings
+
+## OUTPUT FORMAT:
+
+Return ONLY valid JSON in this exact structure (no markdown, no code blocks, just pure JSON):
+
 {{
-  "summary": "Brief overall assessment",
+  "summary": "Professional 2-3 sentence summary of inspection findings and overall condition",
   "vehicle_details": {{
-    "type": "...",
-    "brand": "...",
-    "model": "...",
-    "condition": "good/fair/poor"
+    "type": "{vehicle_type}",
+    "brand": "{vehicle_brand}",
+    "model": "{vehicle_model}",
+    "color": "{vehicle_color}",
+    "condition": "good|fair|poor",
+    "notes": "Additional observations about vehicle condition"
   }},
   "odometer_reading": {{
-    "value": ...,
-    "status": "verified/unverified"
+    "value": {odometer_value if odometer_value is not None else 'null'},
+    "status": "verified|unverified",
+    "notes": "Specific notes about odometer reading reliability"
   }},
   "damage_assessment": {{
-    "overall_severity": "low/high",
-    "details": "Description of damage found"
+    "overall_severity": "low|moderate|high",
+    "scratches": {scratches_count},
+    "dents": {dents_count},
+    "rust": {rust_count},
+    "details": "Detailed description of all damage found, including locations and severity"
   }},
   "exhaust_status": {{
-    "type": "stock/modified",
-    "notes": "Additional observations"
+    "type": "{exhaust_type}",
+    "notes": "Detailed observations about exhaust system condition and compliance"
   }},
-  "recommendations": ["Recommendation 1", "Recommendation 2"]
+  "recommendations": [
+    "Specific recommendation 1",
+    "Specific recommendation 2",
+    "Specific recommendation 3"
+  ]
 }}
+
+IMPORTANT: 
+- Return ONLY the JSON object, no additional text before or after
+- Use null (not "null" as string) for missing numeric values
+- Be accurate and professional in all assessments
+- Base all conclusions strictly on the provided data
 """
 
         return prompt
@@ -168,6 +248,7 @@ Please generate a structured JSON report with the following format:
                 "type": vehicle_info.get("type", "Unknown"),
                 "brand": vehicle_info.get("brand", "Unknown"),
                 "model": vehicle_info.get("model", "Unknown"),
+                "color": vehicle_info.get("color", "Unknown"),
                 "condition": condition,
             },
             "odometer_reading": {

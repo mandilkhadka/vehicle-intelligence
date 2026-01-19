@@ -23,7 +23,8 @@ const ML_SERVICE_URL =
 export async function processVideoJob(
   jobId: string,
   fileId: string,
-  videoPath: string
+  videoPath: string,
+  odometerImagePath?: string
 ): Promise<void> {
   try {
     // Update job status to processing
@@ -46,16 +47,10 @@ export async function processVideoJob(
       progress: 20,
     });
 
-    // Convert absolute path to relative path for ML service
-    const path = require("path");
-    const relativeVideoPath = path.relative(
-      path.join(process.cwd(), ".."),
-      videoPath
-    );
-
     const response = await axios.post(`${ML_SERVICE_URL}/api/process`, {
       video_path: videoPath, // Use absolute path for ML service
       inspection_id: inspectionId,
+      odometer_image_path: odometerImagePath, // Optional odometer image path
     });
 
     // Update inspection with results
@@ -88,9 +83,24 @@ export async function processVideoJob(
     });
   } catch (error: any) {
     console.error(`Job ${jobId} processing error:`, error);
+    
+    // Extract meaningful error message
+    let errorMessage = "Unknown error during processing";
+    if (error.response?.data?.detail) {
+      errorMessage = error.response.data.detail;
+    } else if (error.response?.data?.message) {
+      errorMessage = error.response.data.message;
+    } else if (error.message) {
+      errorMessage = error.message;
+    } else if (error.code === "ECONNREFUSED") {
+      errorMessage = "ML service is not available. Please ensure the ML service is running.";
+    } else if (error.code === "ETIMEDOUT") {
+      errorMessage = "Request to ML service timed out. The video may be too large or the service is overloaded.";
+    }
+    
     updateJobStatus(jobId, {
       status: "failed",
-      error_message: error.message || "Unknown error during processing",
+      error_message: errorMessage,
     });
     throw error;
   }

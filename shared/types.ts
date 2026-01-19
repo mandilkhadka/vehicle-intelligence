@@ -30,6 +30,7 @@ export interface VehicleInfo {
   type: VehicleType;
   brand: string;
   model: string;
+  color?: string;
   confidence: number;
 }
 
@@ -62,7 +63,9 @@ export interface DamageInfo {
   locations?: Array<{
     type: string;
     frame: string;
+    snapshot?: string;
     confidence: number;
+    bbox?: [number, number, number, number];
   }>;
 }
 

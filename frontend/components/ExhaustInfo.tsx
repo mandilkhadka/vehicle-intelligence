@@ -15,9 +15,9 @@ interface ExhaustInfoProps {
 export default function ExhaustInfo({ exhaust }: ExhaustInfoProps) {
   if (!exhaust) {
     return (
-      <div className="bg-white rounded-lg shadow p-6">
-        <h3 className="text-lg font-semibold mb-4">Exhaust System</h3>
-        <p className="text-gray-500">No exhaust data available</p>
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+        <h3 className="text-lg font-semibold mb-4 text-slate-900">Exhaust System</h3>
+        <p className="text-slate-500">No exhaust data available</p>
       </div>
     );
   }
@@ -28,11 +28,11 @@ export default function ExhaustInfo({ exhaust }: ExhaustInfoProps) {
   const isModified = exhaust.type === "modified";
 
   return (
-    <div className="bg-white rounded-lg shadow p-6">
-      <h3 className="text-lg font-semibold mb-4">Exhaust System</h3>
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 hover:shadow-md transition-shadow">
+      <h3 className="text-lg font-semibold mb-4 text-slate-900">Exhaust System</h3>
       <div className="space-y-3">
         <div>
-          <span className="text-sm text-gray-600">Type:</span>
+          <span className="text-sm text-slate-600">Type:</span>
           <span
             className={`ml-2 px-3 py-1 rounded-full text-sm font-medium ${
               isModified
@@ -44,11 +44,11 @@ export default function ExhaustInfo({ exhaust }: ExhaustInfoProps) {
           </span>
         </div>
         <div>
-          <span className="text-sm text-gray-600">Confidence:</span>
-          <span className="ml-2 font-medium">{confidencePercent}%</span>
-          <div className="mt-1 w-full bg-gray-200 rounded-full h-2">
+          <span className="text-sm text-slate-600">Confidence:</span>
+          <span className="ml-2 font-medium text-blue-600">{confidencePercent}%</span>
+          <div className="mt-1 w-full bg-slate-200 rounded-full h-2">
             <div
-              className={`h-2 rounded-full ${
+              className={`h-2 rounded-full transition-all ${
                 isModified ? "bg-orange-600" : "bg-green-600"
               }`}
               style={{ width: `${confidencePercent}%` }}
@@ -56,10 +56,9 @@ export default function ExhaustInfo({ exhaust }: ExhaustInfoProps) {
           </div>
         </div>
         {isModified && (
-          <div className="p-3 bg-orange-50 rounded-lg">
+          <div className="p-3 bg-orange-50 rounded-lg border border-orange-200">
             <p className="text-sm text-orange-800">
-              Modified exhaust detected. Please verify compliance with local
-              regulations.
+              ⚠️ Modified exhaust detected. Please verify compliance with local regulations.
             </p>
           </div>
         )}
