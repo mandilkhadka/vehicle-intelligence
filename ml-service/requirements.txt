@@ -10,11 +10,11 @@ numpy==1.26.3
 pillow==11.3.0  # Security fix: GHSA-44wm-f244-xhp3 (updated to latest stable)
 
 # YOLOv8 for object detection
-ultralytics==8.1.0
-# Security Note: torch 2.1.2 has known vulnerabilities (PYSEC-2024-250/251/252/259, PYSEC-2025-41, GHSA-3749-ghw9-m3mg, GHSA-887c-mr87-cxwp)
-# Upgrading to 2.6.0+ may break ML model compatibility - test thoroughly before upgrading
-torch==2.1.2
-torchvision==0.16.2
+ultralytics>=8.4.6  # Updated to support torch 2.6+ and handle CVE-2025-32434
+# Security Fix: CVE-2025-32434 - torch.load vulnerability requires torch>=2.6.0
+# Upgraded to torch 2.6.0+ to fix critical security vulnerability
+torch>=2.6.0
+torchvision>=0.21.0  # Compatible with torch 2.6+
 
 # CLIP for vehicle identification
 transformers==4.53.0  # Security fixes: Multiple GHSA and PYSEC vulnerabilities

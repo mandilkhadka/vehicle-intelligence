@@ -16,7 +16,7 @@ export type JobStatus = "pending" | "processing" | "completed" | "failed";
 /**
  * Damage severity enumeration
  */
-export type DamageSeverity = "low" | "high";
+export type DamageSeverity = "low" | "medium" | "high";
 
 /**
  * Exhaust type enumeration

@@ -71,6 +71,7 @@ export async function processVideoJob(
       damage_severity: results.damage?.severity,
       exhaust_type: results.exhaust?.type,
       exhaust_confidence: results.exhaust?.confidence,
+      exhaust_image_path: results.exhaust?.exhaust_image_path,
       inspection_report: JSON.stringify(results.report || {}),
       extracted_frames: JSON.stringify(results.frames || []),
     });

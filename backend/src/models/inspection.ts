@@ -44,6 +44,7 @@ export interface InspectionRecord {
   damage_severity?: string;
   exhaust_type?: string;
   exhaust_confidence?: number;
+  exhaust_image_path?: string;
   inspection_report?: string;
   extracted_frames?: string;
   created_at: string;
@@ -215,6 +216,7 @@ export function updateInspection(
     "damage_severity",
     "exhaust_type",
     "exhaust_confidence",
+    "exhaust_image_path",
     "inspection_report",
     "extracted_frames",
   ];

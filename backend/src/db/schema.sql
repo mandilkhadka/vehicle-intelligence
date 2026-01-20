@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS inspections (
     exhaust_type TEXT,
     -- exhaust_type: 'stock', 'modified'
     exhaust_confidence REAL,
+    exhaust_image_path TEXT,
     
     -- Complete inspection report (JSON)
     inspection_report TEXT,

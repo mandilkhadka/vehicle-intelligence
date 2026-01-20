@@ -60,7 +60,9 @@ export default function DamageInfo({ damage }: DamageInfoProps) {
             className={`ml-2 px-3 py-1 rounded-full text-sm font-medium ${
               severity === "high"
                 ? "bg-red-100 text-red-800"
-                : "bg-yellow-100 text-yellow-800"
+                : severity === "medium"
+                ? "bg-yellow-100 text-yellow-800"
+                : "bg-green-100 text-green-800"
             }`}
           >
             {severity.toUpperCase()}
@@ -104,10 +106,17 @@ export default function DamageInfo({ damage }: DamageInfoProps) {
         {/* Damage snapshots */}
         {damage.locations && damage.locations.length > 0 && (
           <div className="mt-6">
-            <h4 className="text-sm font-semibold text-slate-700 mb-3">Damage Snapshots</h4>
+            <h4 className="text-sm font-semibold text-slate-700 mb-3">
+              Damage Snapshots
+              {damage.locations.filter((loc) => loc.snapshot && (loc.confidence || 0) >= 0.3).length > 0 && (
+                <span className="text-xs text-slate-500 font-normal ml-2">
+                  ({damage.locations.filter((loc) => loc.snapshot && (loc.confidence || 0) >= 0.3).length} high-confidence detections)
+                </span>
+              )}
+            </h4>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
               {damage.locations
-                .filter((loc) => loc.snapshot)
+                .filter((loc) => loc.snapshot && (loc.confidence || 0) >= 0.3) // Only show detections with >= 30% confidence
                 .slice(0, 9)
                 .map((location, idx) => {
                   const snapshotUrl = location.snapshot
@@ -115,6 +124,9 @@ export default function DamageInfo({ damage }: DamageInfoProps) {
                     : null;
                   
                   if (!snapshotUrl) return null;
+
+                  const confidence = location.confidence || 0;
+                  const confidencePercent = Math.round(confidence * 100);
 
                   const damageTypeColors = {
                     scratch: "border-yellow-300 bg-yellow-50",
@@ -127,10 +139,18 @@ export default function DamageInfo({ damage }: DamageInfoProps) {
                       location.type?.toLowerCase() as keyof typeof damageTypeColors
                     ] || "border-slate-300 bg-slate-50";
 
+                  // Confidence badge color
+                  const confidenceColor =
+                    confidence >= 0.7
+                      ? "bg-green-500"
+                      : confidence >= 0.5
+                      ? "bg-yellow-500"
+                      : "bg-orange-500";
+
                   return (
                     <div
                       key={idx}
-                      className={`relative rounded-lg border-2 overflow-hidden ${typeColor} group cursor-pointer`}
+                      className={`relative rounded-lg border-2 overflow-hidden ${typeColor} group cursor-pointer hover:shadow-lg transition-shadow`}
                     >
                       <div className="aspect-square relative">
                         <Image
@@ -140,12 +160,20 @@ export default function DamageInfo({ damage }: DamageInfoProps) {
                           className="object-cover"
                           sizes="(max-width: 768px) 50vw, 33vw"
                         />
+                        {/* Confidence badge */}
+                        {confidence >= 0.3 && (
+                          <div className="absolute top-2 right-2">
+                            <div className={`${confidenceColor} text-white text-xs font-semibold px-2 py-1 rounded-full shadow-lg`}>
+                              {confidencePercent}%
+                            </div>
+                          </div>
+                        )}
                       </div>
-                      <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-xs px-2 py-1">
-                        <div className="font-medium capitalize">{location.type}</div>
-                        {location.confidence && (
-                          <div className="text-xs opacity-90">
-                            {Math.round(location.confidence * 100)}% confidence
+                      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-black/60 text-white text-xs px-2 py-2">
+                        <div className="font-semibold capitalize">{location.type}</div>
+                        {confidence >= 0.5 && (
+                          <div className="text-xs opacity-90 mt-0.5">
+                            High confidence detection
                           </div>
                         )}
                       </div>
@@ -153,10 +181,17 @@ export default function DamageInfo({ damage }: DamageInfoProps) {
                   );
                 })}
             </div>
-            {damage.locations.filter((loc) => loc.snapshot).length === 0 && (
-              <p className="text-sm text-slate-500 italic">
-                No snapshots available for detected damage
-              </p>
+            {damage.locations.filter((loc) => loc.snapshot && (loc.confidence || 0) >= 0.3).length === 0 && (
+              <div className="text-center py-6">
+                <p className="text-sm text-slate-500 italic">
+                  No high-confidence damage snapshots available
+                </p>
+                {damage.locations.filter((loc) => loc.snapshot).length > 0 && (
+                  <p className="text-xs text-slate-400 mt-1">
+                    ({damage.locations.filter((loc) => loc.snapshot).length} low-confidence detections filtered out)
+                  </p>
+                )}
+              </div>
             )}
           </div>
         )}

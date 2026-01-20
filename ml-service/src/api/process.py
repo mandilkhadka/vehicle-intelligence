@@ -122,7 +122,15 @@ async def process_video(request: ProcessRequest):
 
         # Step 5: Classify exhaust
         print("Classifying exhaust...")
-        exhaust_data = await exhaust_classifier.classify(frames)
+        # Convert frame paths back to absolute for exhaust classification
+        frames_absolute = [os.path.join(backend_root, "backend", "uploads", f) for f in frames]
+        exhaust_data = await exhaust_classifier.classify(frames_absolute, request.inspection_id)
+        
+        # Convert exhaust image path to relative if present
+        if exhaust_data.get("exhaust_image_path"):
+            abs_path = exhaust_data["exhaust_image_path"]
+            rel_path = os.path.relpath(abs_path, os.path.join(backend_root, "backend", "uploads"))
+            exhaust_data["exhaust_image_path"] = rel_path.replace("\\", "/")
 
         # Step 6: Generate inspection report
         print("Generating inspection report...")

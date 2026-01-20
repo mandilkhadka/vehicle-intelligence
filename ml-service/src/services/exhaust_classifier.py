@@ -4,7 +4,8 @@ Classifies exhaust as stock or modified using YOLOv8 and image analysis
 """
 
 import asyncio
-from typing import Dict, Any, List
+import os
+from typing import Dict, Any, List, Optional
 from ultralytics import YOLO
 import cv2
 import numpy as np
@@ -19,26 +20,41 @@ class ExhaustClassifier:
         print("Loading YOLOv8 model for exhaust detection...")
         self.yolo_model = YOLO("yolov8n.pt")
 
-    async def classify(self, frame_paths: List[str]) -> Dict[str, Any]:
+    async def classify(self, frame_paths: List[str], inspection_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Classify exhaust system
         Args:
             frame_paths: List of frame image paths
+            inspection_id: Optional inspection ID for organizing snapshots
         Returns:
             Dictionary with exhaust classification results
         """
-        return await asyncio.to_thread(self._classify_sync, frame_paths)
+        return await asyncio.to_thread(self._classify_sync, frame_paths, inspection_id)
 
-    def _classify_sync(self, frame_paths: List[str]) -> Dict[str, Any]:
+    def _classify_sync(self, frame_paths: List[str], inspection_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        Synchronous exhaust classification
+        Synchronous exhaust classification with snapshot capture
         """
         # Look for exhaust region in frames
         # Typically at the rear of the vehicle (bottom-center or bottom-right)
         
-        exhaust_features = []
+        # Create snapshots directory if inspection_id is provided
+        snapshots_dir = None
+        backend_uploads_path = None
+        exhaust_image_path = None
         
-        for frame_path in frame_paths:
+        if inspection_id:
+            # Determine snapshots directory relative to backend/uploads
+            backend_root = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "..")
+            snapshots_dir = os.path.join(backend_root, "backend", "uploads", "frames", inspection_id, "exhaust_snapshots")
+            backend_uploads_path = os.path.join(backend_root, "backend", "uploads")
+            os.makedirs(snapshots_dir, exist_ok=True)
+        
+        exhaust_features = []
+        best_exhaust_frame = None
+        best_confidence = 0.0
+        
+        for frame_idx, frame_path in enumerate(frame_paths):
             try:
                 # Load image
                 image = cv2.imread(frame_path)
@@ -103,17 +119,46 @@ class ExhaustClassifier:
                     "confidence": confidence,
                     "frame": frame_path,
                 })
+                
+                # Track best frame for snapshot (highest confidence)
+                if confidence > best_confidence:
+                    best_confidence = confidence
+                    best_exhaust_frame = {
+                        "frame_path": frame_path,
+                        "frame_idx": frame_idx,
+                        "rear_region": rear_region,
+                        "confidence": confidence,
+                        "is_stock": is_stock,
+                    }
 
             except Exception as e:
                 print(f"Exhaust classification error for {frame_path}: {e}")
                 continue
 
+        # Save exhaust snapshot if we found a good frame
+        if best_exhaust_frame and snapshots_dir:
+            try:
+                snapshot_filename = f"exhaust_frame_{best_exhaust_frame['frame_idx']:04d}.jpg"
+                snapshot_path_full = os.path.join(snapshots_dir, snapshot_filename)
+                cv2.imwrite(snapshot_path_full, best_exhaust_frame["rear_region"])
+                
+                # Convert to relative path for serving
+                if backend_uploads_path:
+                    exhaust_image_path = os.path.relpath(snapshot_path_full, backend_uploads_path)
+                    exhaust_image_path = exhaust_image_path.replace("\\", "/")  # Normalize path separators
+                    print(f"Saved exhaust snapshot: {exhaust_image_path}")
+            except Exception as e:
+                print(f"Error saving exhaust snapshot: {e}")
+
         # Aggregate results
         if not exhaust_features:
-            return {
+            result = {
                 "type": "stock",
                 "confidence": 0.5,
             }
+            if exhaust_image_path:
+                result["exhaust_image_path"] = exhaust_image_path
+            return result
 
         # Use majority vote
         stock_count = sum(1 for f in exhaust_features if f["is_stock"])
@@ -122,7 +167,12 @@ class ExhaustClassifier:
         is_stock = stock_count > total_count / 2
         avg_confidence = np.mean([f["confidence"] for f in exhaust_features])
 
-        return {
+        result = {
             "type": "stock" if is_stock else "modified",
             "confidence": float(avg_confidence),
         }
+        
+        if exhaust_image_path:
+            result["exhaust_image_path"] = exhaust_image_path
+            
+        return result

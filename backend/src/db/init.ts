@@ -38,6 +38,21 @@ export function initDatabase(): Database.Database {
     }
   }
 
+  // Migrations: Add new columns if they don't exist
+  try {
+    // Check if exhaust_image_path column exists
+    const tableInfo = db.prepare("PRAGMA table_info(inspections)").all() as Array<{ name: string }>;
+    const columnNames = tableInfo.map((col) => col.name);
+    
+    if (!columnNames.includes("exhaust_image_path")) {
+      console.log("Adding exhaust_image_path column to inspections table...");
+      db.exec("ALTER TABLE inspections ADD COLUMN exhaust_image_path TEXT");
+    }
+  } catch (error) {
+    console.error("Migration error:", error);
+    // Continue even if migration fails
+  }
+
   console.log("Database initialized successfully");
 
   return db;

@@ -114,6 +114,7 @@ export default function InspectionPage() {
   const exhaust = {
     type: inspection.exhaust_type,
     confidence: inspection.exhaust_confidence,
+    exhaust_image_path: inspection.exhaust_image_path,
   };
 
   const report =

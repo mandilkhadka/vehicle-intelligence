@@ -5,10 +5,14 @@
  * Shows exhaust type (stock/modified) and confidence
  */
 
+import { BACKEND_BASE_URL } from "@/lib/api";
+import Image from "next/image";
+
 interface ExhaustInfoProps {
   exhaust?: {
     type?: string;
     confidence?: number;
+    exhaust_image_path?: string;
   };
 }
 
@@ -60,6 +64,23 @@ export default function ExhaustInfo({ exhaust }: ExhaustInfoProps) {
             <p className="text-sm text-orange-800">
               ⚠️ Modified exhaust detected. Please verify compliance with local regulations.
             </p>
+          </div>
+        )}
+
+        {/* Exhaust Image */}
+        {exhaust.exhaust_image_path && (
+          <div className="mt-4">
+            <h4 className="text-sm font-semibold text-slate-700 mb-3">Exhaust Image</h4>
+            <div className="relative aspect-video rounded-lg border border-slate-200 overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-slate-50">
+              <Image
+                src={`${BACKEND_BASE_URL}/${exhaust.exhaust_image_path}`}
+                alt="Exhaust system"
+                fill
+                className="object-cover"
+                sizes="(max-width: 768px) 100vw, 50vw"
+                unoptimized
+              />
+            </div>
           </div>
         )}
       </div>

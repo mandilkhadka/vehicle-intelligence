@@ -130,3 +130,6 @@ htmlcov/
 *.token
 credentials.json
 service-account*.json
+
+# Scripts
+START_SERVICES.sh
