@@ -1,3 +1,6 @@
+# Gitignore for GitHub
+# This file is optimized for GitHub repositories
+
 # Dependencies
 node_modules/
 venv/
@@ -11,6 +14,12 @@ __pycache__/
 .Python
 pip-log.txt
 pip-delete-this-directory.txt
+.pnp
+.pnp.js
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
 
 # Build outputs
 dist/
@@ -18,8 +27,10 @@ build/
 .next/
 out/
 *.tsbuildinfo
-.next/
+*.tsbuildinfo.*
 .vercel/
+.turbo/
+.swc/
 
 # Database
 *.db
@@ -69,6 +80,8 @@ secrets/
 *.sublime-project
 *.sublime-workspace
 *.code-workspace
+*.iml
+.vscode-test/
 
 # OS
 .DS_Store
@@ -107,6 +120,10 @@ temp/
 *.temp
 *.cache
 .cache/
+*.bak
+*.backup
+*.old
+*.orig
 
 # Coverage and testing
 coverage/
@@ -125,11 +142,28 @@ htmlcov/
 *.dylib
 *.dll
 
+# Archives and compressed files
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z
+*.gz
+
 # Security
 *.secret
 *.token
 credentials.json
 service-account*.json
+
+# GitHub
+.github/workflows/*.local.yml
+.github/ISSUE_TEMPLATE/*.local.md
+.github/PULL_REQUEST_TEMPLATE/*.local.md
+
+# Docker
+docker-compose.override.yml
+*.dockerignore.local
 
 # Scripts
 START_SERVICES.sh

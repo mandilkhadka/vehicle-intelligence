@@ -20,6 +20,10 @@ import {
   getUploadPath,
 } from "../utils/fileUtils";
 import { processVideoJob } from "../services/job_processor";
+import { asyncHandler } from "../middleware/errorHandler";
+import { CustomError } from "../middleware/errorHandler";
+import { config } from "../config/env";
+import logger from "../utils/logger";
 
 const router = Router();
 
@@ -81,7 +85,7 @@ const upload = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize: 500 * 1024 * 1024, // 500MB limit
+    fileSize: config.upload.maxSize,
   },
 });
 
@@ -124,7 +128,7 @@ const uploadWithOdometer = multer({
   storage: multiStorage,
   fileFilter: multiFileFilter,
   limits: {
-    fileSize: 500 * 1024 * 1024, // 500MB limit (applies to video, odometer images are typically smaller)
+    fileSize: config.upload.maxSize,
   },
 }).fields([
   { name: "video", maxCount: 1 },
@@ -135,51 +139,79 @@ const uploadWithOdometer = multer({
  * POST /api/upload
  * Upload a video file and optional odometer image, then create a processing job
  */
-router.post("/", (req: Request, res: Response, next: any) => {
-  uploadWithOdometer(req, res, (err: any) => {
-    if (err) {
-      // Handle multer errors
-      if (err instanceof multer.MulterError) {
-        if (err.code === "LIMIT_FILE_SIZE") {
-          return res.status(400).json({
-            error: "File too large",
-            message: err.message,
-          });
+router.post(
+  "/",
+  (req: Request, res: Response, next: any) => {
+    uploadWithOdometer(req, res, (err: any) => {
+      if (err) {
+        // Handle multer errors
+        if (err instanceof multer.MulterError) {
+          if (err.code === "LIMIT_FILE_SIZE") {
+            return next(
+              new CustomError(
+                `File size exceeds maximum allowed size of ${config.upload.maxSize / 1024 / 1024}MB`,
+                400,
+                "FILE_TOO_LARGE"
+              )
+            );
+          }
+          if (err.code === "LIMIT_UNEXPECTED_FILE") {
+            return next(
+              new CustomError("Invalid file field", 400, "INVALID_FILE_FIELD")
+            );
+          }
+          return next(
+            new CustomError(`Upload error: ${err.message}`, 400, "UPLOAD_ERROR")
+          );
         }
-        if (err.code === "LIMIT_UNEXPECTED_FILE") {
-          return res.status(400).json({
-            error: "Invalid file field",
-            message: err.message,
-          });
-        }
-        return res.status(400).json({
-          error: "Upload error",
-          message: err.message,
-        });
+        // Handle file filter errors
+        return next(
+          new CustomError(
+            err.message || "Invalid file format",
+            400,
+            "FILE_VALIDATION_ERROR"
+          )
+        );
       }
-      // Handle file filter errors
-      return res.status(400).json({
-        error: "File validation error",
-        message: err.message || "Invalid file format",
-      });
-    }
-    next();
-  });
-}, async (req: Request, res: Response) => {
-  try {
+      next();
+    });
+  },
+  asyncHandler(async (req: Request, res: Response) => {
     const files = req.files as { [fieldname: string]: Express.Multer.File[] };
-    
+
     // Check if video was uploaded
     if (!files || !files.video || !files.video[0]) {
-      return res.status(400).json({ error: "No video file uploaded" });
+      throw new CustomError("No video file uploaded", 400, "NO_VIDEO_FILE");
     }
 
     const videoFile = files.video[0];
     const odometerImageFile = files.odometer_image?.[0];
 
+    logger.info(
+      {
+        videoFilename: videoFile.originalname,
+        videoSize: videoFile.size,
+        hasOdometerImage: !!odometerImageFile,
+      },
+      "Processing video upload"
+    );
+
     // Validate odometer image if provided
     if (odometerImageFile && !isValidImageFormat(odometerImageFile.originalname)) {
-      return res.status(400).json({ error: "Invalid odometer image format. Supported: JPG, PNG, HEIC, WEBP" });
+      throw new CustomError(
+        "Invalid odometer image format. Supported: JPG, PNG, HEIC, WEBP",
+        400,
+        "INVALID_IMAGE_FORMAT"
+      );
+    }
+
+    // Validate video MIME type
+    if (!config.upload.allowedVideoTypes.includes(videoFile.mimetype)) {
+      throw new CustomError(
+        `Invalid video format. Allowed types: ${config.upload.allowedVideoTypes.join(", ")}`,
+        400,
+        "INVALID_VIDEO_FORMAT"
+      );
     }
 
     // Generate IDs
@@ -203,28 +235,23 @@ router.post("/", (req: Request, res: Response, next: any) => {
       status: "pending",
     });
 
+    logger.info({ jobId, fileId }, "Created job for video processing");
+
     // Start processing job asynchronously with odometer image path if provided
     const odometerImagePath = odometerImageFile ? odometerImageFile.path : undefined;
     processVideoJob(jobId, fileId, videoFile.path, odometerImagePath).catch((error) => {
-      console.error(`Job ${jobId} failed:`, error);
-      // Error handling is already done in processVideoJob, but ensure status is updated
-      // The error will be caught and handled by processVideoJob's try-catch
+      logger.error({ jobId, error }, "Job processing failed");
+      // Error handling is already done in processVideoJob
     });
 
     // Return job ID and file info
-    res.json({
+    res.status(202).json({
       jobId: jobRecord.id,
       fileId: fileRecord.id,
       message: "Video uploaded successfully. Processing started.",
       odometerImageUploaded: !!odometerImageFile,
     });
-  } catch (error: any) {
-    console.error("Upload error:", error);
-    res.status(500).json({
-      error: "Failed to upload video",
-      message: error.message,
-    });
-  }
-});
+  })
+);
 
 export default router;

@@ -3,18 +3,15 @@
  * Handles video processing jobs asynchronously
  */
 
-import axios from "axios";
+import axios, { AxiosError } from "axios";
 import { v4 as uuidv4 } from "uuid";
 import {
   updateJobStatus,
   createInspection,
   updateInspection,
 } from "../models/inspection";
-import * as path from "path";
-
-// ML Service URL - in production this would be an environment variable
-const ML_SERVICE_URL =
-  process.env.ML_SERVICE_URL || "http://localhost:8000";
+import { config } from "../config/env";
+import logger from "../utils/logger";
 
 /**
  * Process a video job
@@ -26,7 +23,11 @@ export async function processVideoJob(
   videoPath: string,
   odometerImagePath?: string
 ): Promise<void> {
+  const startTime = Date.now();
+  
   try {
+    logger.info({ jobId, fileId, videoPath }, "Starting video processing job");
+
     // Update job status to processing
     updateJobStatus(jobId, {
       status: "processing",
@@ -41,17 +42,33 @@ export async function processVideoJob(
       file_id: fileId,
     });
 
+    logger.debug({ jobId, inspectionId }, "Created inspection record");
+
     // Call ML service to process video
     updateJobStatus(jobId, {
       status: "processing",
       progress: 20,
     });
 
-    const response = await axios.post(`${ML_SERVICE_URL}/api/process`, {
-      video_path: videoPath, // Use absolute path for ML service
-      inspection_id: inspectionId,
-      odometer_image_path: odometerImagePath, // Optional odometer image path
-    });
+    const mlServiceUrl = `${config.mlService.url}/api/process`;
+    logger.debug({ jobId, mlServiceUrl }, "Calling ML service");
+
+    const response = await axios.post(
+      mlServiceUrl,
+      {
+        video_path: videoPath,
+        inspection_id: inspectionId,
+        odometer_image_path: odometerImagePath,
+      },
+      {
+        timeout: config.mlService.timeout,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    logger.info({ jobId, inspectionId }, "ML service processing completed");
 
     // Update inspection with results
     const results = response.data;
@@ -82,27 +99,46 @@ export async function processVideoJob(
       progress: 100,
       inspection_id: inspectionId,
     });
-  } catch (error: any) {
-    console.error(`Job ${jobId} processing error:`, error);
-    
+
+    const duration = Date.now() - startTime;
+    logger.info(
+      { jobId, inspectionId, duration },
+      "Video processing job completed successfully"
+    );
+  } catch (error) {
+    const duration = Date.now() - startTime;
+    const axiosError = error as AxiosError;
+
+    logger.error(
+      {
+        jobId,
+        error: axiosError.message,
+        code: axiosError.code,
+        response: axiosError.response?.data,
+        duration,
+      },
+      "Video processing job failed"
+    );
+
     // Extract meaningful error message
     let errorMessage = "Unknown error during processing";
-    if (error.response?.data?.detail) {
-      errorMessage = error.response.data.detail;
-    } else if (error.response?.data?.message) {
-      errorMessage = error.response.data.message;
-    } else if (error.message) {
-      errorMessage = error.message;
-    } else if (error.code === "ECONNREFUSED") {
+    
+    if (axiosError.response?.data) {
+      const data = axiosError.response.data as any;
+      errorMessage = data.detail || data.message || errorMessage;
+    } else if (axiosError.message) {
+      errorMessage = axiosError.message;
+    } else if (axiosError.code === "ECONNREFUSED") {
       errorMessage = "ML service is not available. Please ensure the ML service is running.";
-    } else if (error.code === "ETIMEDOUT") {
+    } else if (axiosError.code === "ETIMEDOUT" || axiosError.code === "ECONNABORTED") {
       errorMessage = "Request to ML service timed out. The video may be too large or the service is overloaded.";
     }
-    
+
     updateJobStatus(jobId, {
       status: "failed",
       error_message: errorMessage,
     });
+
     throw error;
   }
 }
