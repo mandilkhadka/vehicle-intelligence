@@ -191,6 +191,7 @@ router.post(
       {
         videoFilename: videoFile.originalname,
         videoSize: videoFile.size,
+        videoMimeType: videoFile.mimetype,
         hasOdometerImage: !!odometerImageFile,
       },
       "Processing video upload"
@@ -205,10 +206,24 @@ router.post(
       );
     }
 
-    // Validate video MIME type
-    if (!config.upload.allowedVideoTypes.includes(videoFile.mimetype)) {
+    // Validate video MIME type or extension
+    logger.debug({ videoMimeType: videoFile.mimetype, allowedTypes: config.upload.allowedVideoTypes }, "Checking video MIME type");
+    const validMimeType = (config.upload.allowedVideoTypes as readonly string[]).includes(videoFile.mimetype) || 
+                          videoFile.mimetype === "application/octet-stream"; // Allow octet-stream, will check extension
+    const validExtension = isValidVideoFormat(videoFile.originalname);
+    
+    if (!validMimeType && !validExtension) {
       throw new CustomError(
-        `Invalid video format. Allowed types: ${config.upload.allowedVideoTypes.join(", ")}`,
+        `Invalid video format. Received: ${videoFile.mimetype}. Allowed types: ${config.upload.allowedVideoTypes.join(", ")}`,
+        400,
+        "INVALID_VIDEO_FORMAT"
+      );
+    }
+    
+    // If MIME type is generic, verify extension
+    if (videoFile.mimetype === "application/octet-stream" && !validExtension) {
+      throw new CustomError(
+        `Invalid video format. File extension not supported.`,
         400,
         "INVALID_VIDEO_FORMAT"
       );
@@ -239,10 +254,34 @@ router.post(
 
     // Start processing job asynchronously with odometer image path if provided
     const odometerImagePath = odometerImageFile ? odometerImageFile.path : undefined;
-    processVideoJob(jobId, fileId, videoFile.path, odometerImagePath).catch((error) => {
-      logger.error({ jobId, error }, "Job processing failed");
-      // Error handling is already done in processVideoJob
+    
+    // Update status to processing immediately to show job has started
+    // This ensures the UI shows progress even if processVideoJob takes time to start
+    updateJobStatus(jobId, {
+      status: "processing",
+      progress: 0,
     });
+    
+    logger.debug({ jobId }, "Job status updated to processing, starting async processing");
+    
+    // Wrap in immediate async function to catch any synchronous errors
+    (async () => {
+      try {
+        await processVideoJob(jobId, fileId, videoFile.path, odometerImagePath);
+      } catch (error) {
+        // If processVideoJob didn't update the status (shouldn't happen, but safety net)
+        logger.error({ jobId, error }, "Job processing failed with unhandled error");
+        // Ensure job status is updated even if processVideoJob failed silently
+        try {
+          updateJobStatus(jobId, {
+            status: "failed",
+            error_message: error instanceof Error ? error.message : String(error),
+          });
+        } catch (updateError) {
+          logger.error({ jobId, updateError }, "Failed to update job status after error");
+        }
+      }
+    })();
 
     // Return job ID and file info
     res.status(202).json({

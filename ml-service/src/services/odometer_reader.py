@@ -66,12 +66,27 @@ class OdometerReader:
         except ImportError:
             pass
         
-        api_key = os.getenv("GEMINI_API_KEY", "")
-        if api_key and GEMINI_AVAILABLE:
-            genai.configure(api_key=api_key)
-            self.gemini_model = genai.GenerativeModel("gemini-pro")
-            self.use_gemini = True
-            print("Gemini LLM initialized for odometer validation")
+        api_key = os.getenv("GEMINI_API_KEY", "").strip()
+        if api_key and len(api_key) >= 20 and GEMINI_AVAILABLE:
+            try:
+                genai.configure(api_key=api_key)
+                # Try gemini-1.5-flash first (faster, more stable), fallback to gemini-1.5-pro
+                try:
+                    self.gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+                    print("Gemini LLM initialized with gemini-1.5-flash for odometer validation")
+                except Exception as e:
+                    print(f"Failed to initialize gemini-1.5-flash, trying gemini-1.5-pro: {e}")
+                    try:
+                        self.gemini_model = genai.GenerativeModel("gemini-1.5-pro")
+                        print("Gemini LLM initialized with gemini-1.5-pro for odometer validation")
+                    except Exception as e2:
+                        print(f"Failed to initialize gemini-1.5-pro, trying legacy gemini-pro: {e2}")
+                        self.gemini_model = genai.GenerativeModel("gemini-pro")
+                        print("Gemini LLM initialized with legacy gemini-pro for odometer validation")
+                self.use_gemini = True
+            except Exception as e:
+                print(f"Failed to configure Gemini API: {e}")
+                self.use_gemini = False
         else:
             self.use_gemini = False
             if not api_key:
@@ -327,7 +342,56 @@ Important:
 - Consider that OCR may misread: 0/O, 1/I, 5/S, 8/B, etc.
 - Return ONLY the JSON object, nothing else before or after"""
 
-            response = self.gemini_model.generate_content(prompt)
+            # Generate content with timeout and retry logic (30 seconds timeout, 2 retries)
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+            import time
+            
+            max_retries = 2
+            timeout_seconds = 30
+            
+            for attempt in range(max_retries + 1):
+                try:
+                    with ThreadPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(self.gemini_model.generate_content, prompt)
+                        response = future.result(timeout=timeout_seconds)
+                    
+                    if response is None:
+                        print(f"Gemini API call returned no response (attempt {attempt + 1}/{max_retries + 1})")
+                        if attempt < max_retries:
+                            time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s
+                            continue
+                        return None
+                    
+                    # Success - break out of retry loop
+                    break
+                    
+                except FutureTimeoutError:
+                    print(f"Gemini API call timed out after {timeout_seconds} seconds (attempt {attempt + 1}/{max_retries + 1})")
+                    if attempt < max_retries:
+                        time.sleep(2 ** attempt)  # Exponential backoff
+                        continue
+                    return None
+                    
+                except Exception as e:
+                    error_msg = str(e)
+                    print(f"Gemini API call failed (attempt {attempt + 1}/{max_retries + 1}): {error_msg}")
+                    
+                    # Check for specific error types that shouldn't be retried
+                    if "429" in error_msg or "quota" in error_msg.lower() or "rate limit" in error_msg.lower():
+                        print("Rate limit exceeded, not retrying")
+                        return None
+                    if "403" in error_msg or "permission" in error_msg.lower() or "invalid" in error_msg.lower():
+                        print("Authentication/permission error, not retrying")
+                        return None
+                    
+                    if attempt < max_retries:
+                        time.sleep(2 ** attempt)  # Exponential backoff
+                        continue
+                    return None
+            else:
+                # All retries exhausted
+                print("Gemini API call failed after all retries")
+                return None
             
             # Parse JSON response
             response_text = response.text.strip()

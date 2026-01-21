@@ -15,6 +15,15 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import uvicorn
+
+# Add parent directory (ml-service) to path to allow imports
+# When running from ml-service directory: python src/main.py
+# When running from project root: python ml-service/src/main.py
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+
 from src.api.process import router as process_router
 
 # Load environment variables

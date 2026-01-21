@@ -22,15 +22,34 @@ class ReportGenerator:
             load_dotenv()
         except ImportError:
             pass
-        api_key = os.getenv("GEMINI_API_KEY", "")
+        api_key = os.getenv("GEMINI_API_KEY", "").strip()
         
-        if not api_key:
-            print("Warning: GEMINI_API_KEY not set. Report generation will use mock data.")
+        # Validate API key format (basic check - Gemini keys typically start with AIza)
+        if not api_key or len(api_key) < 20:
+            print("Warning: GEMINI_API_KEY not set or invalid. Report generation will use mock data.")
             self.api_key = None
+            self.model = None
         else:
-            genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel("gemini-pro")
-            self.api_key = api_key
+            try:
+                genai.configure(api_key=api_key)
+                # Try gemini-1.5-flash first (faster, more stable), fallback to gemini-1.5-pro
+                try:
+                    self.model = genai.GenerativeModel("gemini-1.5-flash")
+                    print("Gemini LLM initialized with gemini-1.5-flash for report generation")
+                except Exception as e:
+                    print(f"Failed to initialize gemini-1.5-flash, trying gemini-1.5-pro: {e}")
+                    try:
+                        self.model = genai.GenerativeModel("gemini-1.5-pro")
+                        print("Gemini LLM initialized with gemini-1.5-pro for report generation")
+                    except Exception as e2:
+                        print(f"Failed to initialize gemini-1.5-pro, trying legacy gemini-pro: {e2}")
+                        self.model = genai.GenerativeModel("gemini-pro")
+                        print("Gemini LLM initialized with legacy gemini-pro for report generation")
+                self.api_key = api_key
+            except Exception as e:
+                print(f"Failed to configure Gemini API: {e}")
+                self.api_key = None
+                self.model = None
 
     async def generate(self, inspection_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -46,16 +65,71 @@ class ReportGenerator:
         """
         Synchronous report generation
         """
-        # If no API key, return a structured mock report
-        if not self.api_key:
+        # If no API key or model, return a structured mock report
+        if not self.api_key or not self.model:
             return self._generate_mock_report(inspection_data)
 
         try:
             # Prepare prompt for Gemini
             prompt = self._create_prompt(inspection_data)
 
-            # Generate report using Gemini
-            response = self.model.generate_content(prompt)
+            # Generate report using Gemini with timeout and retry logic (60 seconds timeout, 2 retries)
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+            import time
+            
+            max_retries = 2
+            timeout_seconds = 60
+            
+            response = None
+            for attempt in range(max_retries + 1):
+                try:
+                    with ThreadPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(self.model.generate_content, prompt)
+                        response = future.result(timeout=timeout_seconds)
+                    
+                    if response is None:
+                        print(f"Gemini API call returned no response (attempt {attempt + 1}/{max_retries + 1})")
+                        if attempt < max_retries:
+                            time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s
+                            continue
+                        # Fallback to mock report instead of raising
+                        print("Falling back to mock report after all retries failed")
+                        return self._generate_mock_report(inspection_data)
+                    
+                    # Success - break out of retry loop
+                    break
+                    
+                except FutureTimeoutError:
+                    print(f"Gemini API call timed out after {timeout_seconds} seconds (attempt {attempt + 1}/{max_retries + 1})")
+                    if attempt < max_retries:
+                        time.sleep(2 ** attempt)  # Exponential backoff
+                        continue
+                    # Fallback to mock report instead of raising
+                    print("Falling back to mock report after timeout")
+                    return self._generate_mock_report(inspection_data)
+                    
+                except Exception as e:
+                    error_msg = str(e)
+                    print(f"Gemini API call failed (attempt {attempt + 1}/{max_retries + 1}): {error_msg}")
+                    
+                    # Check for specific error types that shouldn't be retried
+                    if "429" in error_msg or "quota" in error_msg.lower() or "rate limit" in error_msg.lower():
+                        print("Rate limit exceeded, falling back to mock report")
+                        return self._generate_mock_report(inspection_data)
+                    if "403" in error_msg or "permission" in error_msg.lower() or "invalid" in error_msg.lower():
+                        print("Authentication/permission error, falling back to mock report")
+                        return self._generate_mock_report(inspection_data)
+                    
+                    if attempt < max_retries:
+                        time.sleep(2 ** attempt)  # Exponential backoff
+                        continue
+                    # Fallback to mock report instead of raising
+                    print("Falling back to mock report after all retries failed")
+                    return self._generate_mock_report(inspection_data)
+            
+            if response is None:
+                print("Gemini API call returned no response after all retries")
+                return self._generate_mock_report(inspection_data)
 
             # Parse response
             report_text = response.text

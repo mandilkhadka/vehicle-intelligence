@@ -1,6 +1,13 @@
 # Vehicle Intelligence Platform (VIP) - MVP
 
-AI-powered vehicle inspection system that extracts structured data from 360-degree vehicle videos.
+**Language / 言語:** [English](#english) | [日本語](#japanese)
+
+![Dashboard Screenshot](pic/Screenshot%202026-01-21%20at%2021.56.26.png)
+
+---
+
+<a id="english"></a>
+# English
 
 ## Overview
 
@@ -125,12 +132,14 @@ NEXT_PUBLIC_API_URL=http://localhost:3001/api
 ## Technology Stack
 
 ### Frontend
+
 - Next.js 14
 - TypeScript
 - Tailwind CSS
 - Axios
 
 ### Backend
+
 - Node.js
 - Express
 - TypeScript
@@ -138,6 +147,7 @@ NEXT_PUBLIC_API_URL=http://localhost:3001/api
 - Multer (file uploads)
 
 ### ML Service
+
 - Python 3.9+
 - FastAPI
 - OpenCV (frame extraction)
@@ -145,13 +155,6 @@ NEXT_PUBLIC_API_URL=http://localhost:3001/api
 - CLIP (vehicle identification)
 - PaddleOCR (OCR)
 - Google Gemini (report generation)
-
-## Development Notes
-
-- Code is written to be simple and understandable for junior engineers
-- All functions include clear comments explaining their purpose
-- Error handling is implemented throughout
-- The system processes jobs asynchronously and supports concurrent processing
 
 ## Limitations (MVP)
 
@@ -163,11 +166,172 @@ NEXT_PUBLIC_API_URL=http://localhost:3001/api
 ## Future Enhancements
 
 - Custom-trained models for vehicle-specific tasks
-- Real-time processing
+- Real-time processing and Background Jobs
 - Mobile application
-- VIN number detection
 - Audio-based exhaust analysis
 
-## License
+---
 
-MIT
+<a id="japanese"></a>
+# 日本語
+
+## 概要
+
+このMVPシステムは、車両動画を処理して以下を抽出します：
+- 車種、ブランド、モデルの識別
+- ダッシュボードからの走行距離の読み取り
+- 損傷検出（傷、へこみ、錆）
+- 排気システムの分類（純正 vs 改造）
+- 包括的な検査レポート
+
+## アーキテクチャ
+
+システムは3つの主要コンポーネントで構成されています：
+
+1. **フロントエンド** (Next.js + TypeScript) - アップロードと結果のユーザーインターフェース
+2. **バックエンドAPI** (Node.js + Express) - アップロード、ジョブ管理、データ提供を処理
+3. **MLサービス** (Python + FastAPI) - 動画を処理し、AI/MLモデルを実行
+
+## プロジェクト構造
+
+```
+vehicle-intelligence/
+├── frontend/          # Next.jsフロントエンドアプリケーション
+├── backend/           # Node.jsバックエンドAPI
+├── ml-service/        # Python MLサービス
+├── shared/            # 共有TypeScript型定義
+└── .context/          # PRDとドキュメント
+```
+
+## 前提条件
+
+- Node.js 18+ および npm
+- Python 3.9+
+- SQLite (Node.jsに含まれています)
+
+## セットアップ手順
+
+### 1. バックエンドのセットアップ
+
+```bash
+cd backend
+npm install
+npm run dev
+```
+
+バックエンドは `http://localhost:3001` で実行されます
+
+### 2. MLサービスのセットアップ
+
+```bash
+cd ml-service
+
+# 仮想環境の作成（推奨）
+python3 -m venv venv
+source venv/bin/activate  # Windowsの場合: venv\Scripts\activate
+
+# 依存関係のインストール
+pip install -r requirements.txt
+
+# Gemini APIキーの設定（オプション、レポート生成用）
+export GEMINI_API_KEY=your_api_key_here
+
+# サービスの実行
+python3 src/main.py
+```
+
+MLサービスは `http://localhost:8000` で実行されます
+
+### 3. フロントエンドのセットアップ
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+フロントエンドは `http://localhost:3000` で実行されます
+
+## 環境変数
+
+### バックエンド (.env)
+
+```env
+PORT=3001
+ML_SERVICE_URL=http://localhost:8000
+```
+
+### MLサービス (.env)
+
+```env
+GEMINI_API_KEY=your_gemini_api_key_here
+```
+
+### フロントエンド (.env.local)
+
+```env
+NEXT_PUBLIC_API_URL=http://localhost:3001/api
+```
+
+## 使用方法
+
+1. 3つのサービス（バックエンド、MLサービス、フロントエンド）を起動
+2. `http://localhost:3000` にアクセス
+3. 360度車両動画（MP4形式）をアップロード
+4. 処理が完了するまで待機
+5. 検査結果を表示
+
+## APIエンドポイント
+
+### バックエンドAPI (`http://localhost:3001/api`)
+
+- `POST /upload` - 動画ファイルのアップロード
+- `GET /jobs/:id` - ジョブステータスの取得
+- `GET /inspections` - すべての検査の取得
+- `GET /inspections/:id` - IDによる検査の取得
+
+### MLサービスAPI (`http://localhost:8000/api`)
+
+- `POST /process` - 動画を処理して検査データを抽出
+- `GET /health` - ヘルスチェック
+
+## 技術スタック
+
+### フロントエンド
+
+- Next.js 14
+- TypeScript
+- Tailwind CSS
+- Axios
+
+### バックエンド
+
+- Node.js
+- Express
+- TypeScript
+- SQLite (better-sqlite3)
+- Multer (ファイルアップロード)
+
+### MLサービス
+
+- Python 3.9+
+- FastAPI
+- OpenCV (フレーム抽出)
+- YOLOv8 (物体検出)
+- CLIP (車両識別)
+- PaddleOCR (OCR)
+- Google Gemini (レポート生成)
+
+## 制限事項（MVP）
+
+- 汎用モデルを使用（車両専用にカスタムトレーニングされていない）
+- OCRの精度は動画の品質に依存
+- 損傷検出はヒューリスティックを使用（専用モデルではない）
+- 排気システムの分類は簡略化されている
+
+## 今後の改善
+
+- 車両専用タスクのためのカスタムトレーニングモデル
+- リアルタイム処理とバックグラウンドジョブ
+- モバイルアプリケーション
+- 音声ベースの排気分析

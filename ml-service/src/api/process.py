@@ -5,6 +5,10 @@ Main endpoint for video processing pipeline with proper error handling
 
 import os
 import logging
+import asyncio
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any
@@ -22,48 +26,22 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+@router.post("/test")
+async def test_endpoint():
+    """Simple test endpoint to verify the service is receiving requests"""
+    logger.info("TEST ENDPOINT CALLED - Service is receiving requests")
+    return {
+        "status": "ok",
+        "message": "ML service is receiving requests",
+        "timestamp": time.time()
+    }
+
+
 class ProcessRequest(BaseModel):
     """Request model for video processing with validation"""
     video_path: str = Field(..., description="Path to the video file")
     inspection_id: str = Field(..., description="Unique inspection identifier")
     odometer_image_path: Optional[str] = Field(None, description="Optional path to odometer image")
-
-    @field_validator("video_path")
-    @classmethod
-    def validate_video_path(cls, v: str) -> str:
-        """Validate that video file exists"""
-        if not os.path.exists(v):
-            raise ValueError(f"Video file not found: {v}")
-        if not os.path.isfile(v):
-            raise ValueError(f"Video path is not a file: {v}")
-        # Check file extension
-        valid_extensions = {".mp4", ".mov", ".avi", ".mkv", ".m4v"}
-        if Path(v).suffix.lower() not in valid_extensions:
-            raise ValueError(f"Invalid video format. Supported: {valid_extensions}")
-        return v
-
-    @field_validator("inspection_id")
-    @classmethod
-    def validate_inspection_id(cls, v: str) -> str:
-        """Validate inspection ID format"""
-        if not v or len(v) < 10:
-            raise ValueError("Inspection ID must be at least 10 characters")
-        return v
-
-    @field_validator("odometer_image_path")
-    @classmethod
-    def validate_odometer_path(cls, v: Optional[str]) -> Optional[str]:
-        """Validate odometer image path if provided"""
-        if v is None:
-            return v
-        if not os.path.exists(v):
-            raise ValueError(f"Odometer image file not found: {v}")
-        if not os.path.isfile(v):
-            raise ValueError(f"Odometer image path is not a file: {v}")
-        valid_extensions = {".jpg", ".jpeg", ".png", ".heic", ".webp"}
-        if Path(v).suffix.lower() not in valid_extensions:
-            raise ValueError(f"Invalid image format. Supported: {valid_extensions}")
-        return v
 
 
 class ProcessResponse(BaseModel):
@@ -95,33 +73,166 @@ async def process_video(request: ProcessRequest):
     import time
     start_time = time.time()
     
+    # Log immediately when request arrives
+    logger.info("=" * 80)
+    logger.info(f"RECEIVED PROCESS REQUEST - Inspection ID: {request.inspection_id}")
+    logger.info(f"Video path: {request.video_path}")
+    logger.info(f"Odometer image path: {request.odometer_image_path or 'None'}")
+    logger.info("=" * 80)
+    
+    # Check if mock mode is enabled
+    mock_mode = os.getenv("MOCK_MODE", "false").lower() == "true"
+    if mock_mode:
+        logger.info("MOCK MODE ENABLED - Returning sample data immediately")
+        await asyncio.sleep(2)  # Simulate some processing time
+        
+        # Return mock data
+        return ProcessResponse(
+            inspection_id=request.inspection_id,
+            frames=["frames/sample/frame_0001.jpg", "frames/sample/frame_0002.jpg"],
+            vehicle_info={
+                "type": "sedan",
+                "brand": "Toyota",
+                "model": "Camry",
+                "confidence": 0.95
+            },
+            odometer={
+                "value": 45230,
+                "confidence": 0.88,
+                "speedometer_image_path": "odometer_images/sample.jpg"
+            },
+            damage={
+                "severity": "minor",
+                "scratches": {"count": 2, "locations": ["front-left", "rear-right"]},
+                "dents": {"count": 1, "locations": ["front-right"]},
+                "rust": {"count": 0, "locations": []}
+            },
+            exhaust={
+                "type": "single",
+                "confidence": 0.92,
+                "exhaust_image_path": "exhaust/sample.jpg"
+            },
+            report={
+                "summary": "Vehicle in good condition with minor cosmetic damage",
+                "recommendations": ["Repair minor scratches", "Regular maintenance recommended"]
+            }
+        )
+    
     logger.info(
         f"Starting video processing for inspection {request.inspection_id}, "
-        f"video: {request.video_path}"
+        f"video: {request.video_path}, "
+        f"odometer_image: {request.odometer_image_path or 'None'}"
     )
     
     try:
-        # Initialize services
-        frame_extractor = FrameExtractor()
-        vehicle_identifier = VehicleIdentifier()
-        dashboard_detector = DashboardDetector()
-        odometer_reader = OdometerReader()
-        damage_detector = DamageDetector()
-        exhaust_classifier = ExhaustClassifier()
-        report_generator = ReportGenerator()
+        # Verify video file exists and is readable
+        if not os.path.exists(request.video_path):
+            logger.error(f"Video file not found: {request.video_path}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Video file not found: {request.video_path}"
+            )
+        
+        # Verify odometer image if provided
+        if request.odometer_image_path:
+            if not os.path.exists(request.odometer_image_path):
+                logger.warning(f"Odometer image not found: {request.odometer_image_path}, proceeding without it")
+                # Don't fail, just proceed without odometer image
+                request.odometer_image_path = None
+        
+        # Initialize services with simpler approach
+        logger.info("Initializing ML services...")
+        init_start_time = time.time()
+        try:
+            # Initialize lightweight services first
+            logger.info("Initializing FrameExtractor...")
+            frame_extractor = FrameExtractor()
+            logger.info(f"FrameExtractor initialized ({time.time() - init_start_time:.2f}s)")
+            
+            logger.info("Initializing ReportGenerator...")
+            report_generator = ReportGenerator()
+            logger.info(f"ReportGenerator initialized ({time.time() - init_start_time:.2f}s)")
+            
+            logger.info("Initializing OdometerReader...")
+            odometer_reader = OdometerReader()
+            logger.info(f"OdometerReader initialized ({time.time() - init_start_time:.2f}s)")
+            
+            # Initialize heavier models - these will be loaded lazily
+            logger.info("Initializing VehicleIdentifier (lazy loading)...")
+            vehicle_identifier = VehicleIdentifier()
+            logger.info(f"VehicleIdentifier initialized ({time.time() - init_start_time:.2f}s)")
+            
+            logger.info("Initializing DashboardDetector (lazy loading)...")
+            dashboard_detector = DashboardDetector()
+            logger.info(f"DashboardDetector initialized ({time.time() - init_start_time:.2f}s)")
+            
+            logger.info("Initializing DamageDetector (lazy loading)...")
+            damage_detector = DamageDetector()
+            logger.info(f"DamageDetector initialized ({time.time() - init_start_time:.2f}s)")
+            
+            logger.info("Initializing ExhaustClassifier (lazy loading)...")
+            exhaust_classifier = ExhaustClassifier()
+            logger.info(f"ExhaustClassifier initialized ({time.time() - init_start_time:.2f}s)")
+            
+            total_init_time = time.time() - init_start_time
+            logger.info(f"All ML services initialized successfully in {total_init_time:.2f} seconds")
+        except Exception as e:
+            logger.error(f"Failed to initialize ML services: {str(e)}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to initialize ML services: {str(e)}"
+            )
 
         # Step 1: Extract frames from video (1 frame per second)
         logger.info(f"Step 1/6: Extracting frames from video: {request.video_path}")
+        
+        # Verify video file is accessible before starting extraction
+        if not os.path.isfile(request.video_path):
+            error_msg = f"Video file is not accessible: {request.video_path}"
+            logger.error(error_msg)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error_msg
+            )
+        
+        # Get video file size for logging
+        try:
+            video_size = os.path.getsize(request.video_path)
+            logger.info(f"Video file size: {video_size / (1024*1024):.2f} MB")
+        except Exception as e:
+            logger.warning(f"Could not get video file size: {e}")
+        
         # Determine output directory (relative to backend root)
         import os
         backend_root = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "..")
         frames_dir = os.path.join(backend_root, "backend", "uploads", "frames", request.inspection_id)
         os.makedirs(frames_dir, exist_ok=True)
+        logger.info(f"Frames will be saved to: {frames_dir}")
         
-        frames = await frame_extractor.extract_frames(
-            request.video_path, 
-            output_dir=frames_dir
-        )
+        logger.info("Starting frame extraction (this may take a while for long videos)...")
+        extraction_start = time.time()
+        try:
+            frames = await asyncio.wait_for(
+                frame_extractor.extract_frames(
+                    request.video_path, 
+                    output_dir=frames_dir
+                ),
+                timeout=300.0  # 5 minute timeout for frame extraction
+            )
+            extraction_duration = time.time() - extraction_start
+            logger.info(f"Frame extraction completed in {extraction_duration:.2f} seconds")
+        except asyncio.TimeoutError:
+            logger.error(f"Frame extraction timed out after 5 minutes for video: {request.video_path}")
+            raise HTTPException(
+                status_code=status.HTTP_408_REQUEST_TIMEOUT,
+                detail="Frame extraction timed out. The video may be too long or corrupted."
+            )
+        except Exception as e:
+            logger.error(f"Frame extraction failed: {str(e)}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to extract frames from video: {str(e)}"
+            )
         
         # Convert absolute paths to relative paths for serving
         frames_relative = []
@@ -151,8 +262,26 @@ async def process_video(request: ProcessRequest):
         # If odometer image was provided, use it directly
         if request.odometer_image_path and os.path.exists(request.odometer_image_path):
             logger.info(f"Using provided odometer image: {request.odometer_image_path}")
-            # Use the uploaded odometer image directly
-            odometer_data = await odometer_reader.read([request.odometer_image_path])
+            try:
+                # Use the uploaded odometer image directly
+                odometer_data = await asyncio.wait_for(
+                    odometer_reader.read([request.odometer_image_path]),
+                    timeout=60.0  # 1 minute timeout for OCR
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Odometer reading timed out, using default values")
+                odometer_data = {
+                    "value": None,
+                    "confidence": 0.0,
+                    "speedometer_image_path": request.odometer_image_path
+                }
+            except Exception as e:
+                logger.error(f"Odometer reading failed: {str(e)}", exc_info=True)
+                odometer_data = {
+                    "value": None,
+                    "confidence": 0.0,
+                    "speedometer_image_path": request.odometer_image_path
+                }
             
             # Convert odometer image path to relative
             if odometer_data.get("speedometer_image_path"):

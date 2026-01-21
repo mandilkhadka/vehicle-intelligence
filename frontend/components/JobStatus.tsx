@@ -90,24 +90,47 @@ export default function JobStatus({ jobId }: JobStatusProps) {
             <p className="text-slate-700 mb-3 font-semibold">Processing video...</p>
             <ul className="text-sm text-slate-600 space-y-2">
               <li className="flex items-center gap-2">
-                <span className="text-green-500">✓</span> Extracting frames
+                <span className={progress >= 20 ? "text-green-500" : "text-slate-400"}>
+                  {progress >= 20 ? "✓" : "○"}
+                </span> 
+                {progress < 20 ? "Preparing..." : "Video uploaded"}
               </li>
               <li className="flex items-center gap-2">
-                <span className="text-blue-500 animate-pulse">⏳</span> Identifying vehicle
+                <span className={progress >= 40 ? "text-green-500" : progress >= 20 ? "text-blue-500 animate-pulse" : "text-slate-400"}>
+                  {progress >= 40 ? "✓" : progress >= 20 ? "⏳" : "○"}
+                </span> 
+                Extracting frames
               </li>
               <li className="flex items-center gap-2">
-                <span className="text-blue-500 animate-pulse">⏳</span> Reading odometer
+                <span className={progress >= 55 ? "text-green-500" : progress >= 40 ? "text-blue-500 animate-pulse" : "text-slate-400"}>
+                  {progress >= 55 ? "✓" : progress >= 40 ? "⏳" : "○"}
+                </span> 
+                Identifying vehicle
               </li>
               <li className="flex items-center gap-2">
-                <span className="text-blue-500 animate-pulse">⏳</span> Detecting damage
+                <span className={progress >= 70 ? "text-green-500" : progress >= 55 ? "text-blue-500 animate-pulse" : "text-slate-400"}>
+                  {progress >= 70 ? "✓" : progress >= 55 ? "⏳" : "○"}
+                </span> 
+                Reading odometer
               </li>
               <li className="flex items-center gap-2">
-                <span className="text-blue-500 animate-pulse">⏳</span> Classifying exhaust
+                <span className={progress >= 85 ? "text-green-500" : progress >= 70 ? "text-blue-500 animate-pulse" : "text-slate-400"}>
+                  {progress >= 85 ? "✓" : progress >= 70 ? "⏳" : "○"}
+                </span> 
+                Detecting damage
               </li>
               <li className="flex items-center gap-2">
-                <span className="text-blue-500 animate-pulse">⏳</span> Generating report
+                <span className={progress >= 95 ? "text-green-500" : progress >= 85 ? "text-blue-500 animate-pulse" : "text-slate-400"}>
+                  {progress >= 95 ? "✓" : progress >= 85 ? "⏳" : "○"}
+                </span> 
+                Generating report
               </li>
             </ul>
+            {progress >= 20 && progress < 40 && (
+              <p className="text-xs text-blue-600 mt-3 italic">
+                Initializing AI models (this may take 30-60 seconds on first run)...
+              </p>
+            )}
           </div>
         )}
         {status === "completed" && (
@@ -119,8 +142,10 @@ export default function JobStatus({ jobId }: JobStatusProps) {
         {status === "failed" && (
           <div className="text-red-600">
             <p className="font-bold text-lg">Processing failed</p>
-            {error && error !== "Processing failed" && (
+            {error ? (
               <p className="text-sm mt-1">{error}</p>
+            ) : (
+              <p className="text-sm mt-1">An unexpected error occurred. Please try again or contact support.</p>
             )}
           </div>
         )}

@@ -38,24 +38,40 @@ out/
 *.sqlite3
 *.db-shm
 *.db-wal
+*.db-journal
+*.sql
+*.sql.gz
+*.dump
 
-# Uploads
+# Uploads and user-generated content
 uploads/
 backend/uploads/
 ml-service/uploads/
 frontend/uploads/
+**/uploads/**
+user-data/
+user_uploads/
 
 # Environment variables and secrets
 .env
+.env.*
 .env.local
 .env.*.local
 .env.development
+.env.development.local
 .env.production
+.env.production.local
 .env.test
+.env.test.local
 backend/.env
+backend/.env.*
 frontend/.env.local
 frontend/.env.production
+frontend/.env.production.local
 ml-service/.env
+ml-service/.env.*
+
+# API Keys and Credentials
 *.key
 *.pem
 *.p12
@@ -63,14 +79,50 @@ ml-service/.env
 *.crt
 *.cer
 *.der
+*.csr
+*.jks
+*.keystore
+*.truststore
 secrets/
 .secrets/
+credentials/
+.credentials/
+*.credentials
+*.credential
+
+# AWS/GCP/Azure credentials
+.aws/
+.gcp/
+.azure/
+aws-credentials.json
+gcp-credentials.json
+azure-credentials.json
+service-account*.json
+*-service-account*.json
+
+# SSH keys
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+id_dsa
+id_dsa.pub
+*.ppk
+known_hosts
+.ssh/
+
+# npm/yarn credentials
+.npmrc
+.yarnrc
+.npm/
+.yarn/
 
 # But keep example files
 !.env.example
 !backend/.env.example
 !frontend/.env.example
 !ml-service/.env.example
+!.env*.example
 
 # IDE
 .vscode/
@@ -150,11 +202,14 @@ htmlcov/
 *.7z
 *.gz
 
-# Security
+# Security - Additional patterns
 *.secret
 *.token
-credentials.json
-service-account*.json
+*.access_token
+*.refresh_token
+config.json
+local.config.json
+*.config.local.*
 
 # GitHub
 .github/workflows/*.local.yml
@@ -165,5 +220,9 @@ service-account*.json
 docker-compose.override.yml
 *.dockerignore.local
 
-# Scripts
+# Scripts with potential secrets (keep START_SERVICES.sh as it has no secrets)
 START_SERVICES.sh
+
+# Images and media files
+pic/
+pic/**

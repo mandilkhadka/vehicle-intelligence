@@ -19,19 +19,79 @@ class VehicleIdentifier:
 
     def __init__(self):
         """Initialize vehicle identifier with models"""
+        import time
+        import logging
+        import os
+        from pathlib import Path
+        
+        logger = logging.getLogger(__name__)
+        
         # Load YOLOv8 model for vehicle type detection
         # Using pretrained COCO model which includes 'car' class
         print("Loading YOLOv8 model for vehicle detection...")
-        self.yolo_model = YOLO("yolov8n.pt")  # nano model for speed
+        logger.info("Starting YOLOv8 model loading...")
+        yolo_start = time.time()
+        try:
+            self.yolo_model = YOLO("yolov8n.pt")  # nano model for speed
+            logger.info(f"YOLOv8 model loaded in {time.time() - yolo_start:.2f}s")
+        except Exception as e:
+            logger.error(f"Failed to load YOLOv8 model: {e}", exc_info=True)
+            raise
 
         # Load CLIP model for brand/model identification
         print("Loading CLIP model for vehicle identification...")
-        self.clip_model = CLIPModel.from_pretrained(
-            "openai/clip-vit-base-patch32"
-        )
-        self.clip_processor = CLIPProcessor.from_pretrained(
-            "openai/clip-vit-base-patch32"
-        )
+        logger.info("Starting CLIP model loading (this may take 30-60 seconds on first run)...")
+        clip_start = time.time()
+        
+        # Check if models are cached locally (optional diagnostic)
+        try:
+            try:
+                from transformers.utils import TRANSFORMERS_CACHE
+                cache_dir = TRANSFORMERS_CACHE
+            except ImportError:
+                try:
+                    from transformers import file_utils
+                    cache_dir = getattr(file_utils, 'default_cache_path', 'unknown')
+                except Exception:
+                    cache_dir = 'unknown'
+            
+            model_name = "openai/clip-vit-base-patch32"
+            logger.info(f"Transformers cache directory: {cache_dir}")
+            logger.info(f"Attempting to load model: {model_name}")
+        except Exception as e:
+            logger.warning(f"Could not check cache status: {e}")
+        
+        try:
+            logger.info("Loading CLIP model from HuggingFace Hub...")
+            # Set environment variable to avoid hanging on network issues
+            os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+            
+            # Load with explicit timeout handling
+            self.clip_model = CLIPModel.from_pretrained(
+                "openai/clip-vit-base-patch32",
+                local_files_only=False,
+                resume_download=True
+            )
+            logger.info(f"CLIP model loaded in {time.time() - clip_start:.2f}s")
+            
+            logger.info("Loading CLIP processor...")
+            processor_start = time.time()
+            self.clip_processor = CLIPProcessor.from_pretrained(
+                "openai/clip-vit-base-patch32",
+                local_files_only=False,
+                resume_download=True
+            )
+            logger.info(f"CLIP processor loaded in {time.time() - processor_start:.2f}s")
+            logger.info(f"Total CLIP initialization time: {time.time() - clip_start:.2f}s")
+            
+        except Exception as e:
+            logger.error(f"Failed to load CLIP model: {e}", exc_info=True)
+            logger.error("This might be due to:")
+            logger.error("  1. Network connectivity issues")
+            logger.error("  2. HuggingFace Hub being unavailable")
+            logger.error("  3. Insufficient disk space")
+            logger.error("  4. Permission issues with cache directory")
+            raise
 
         # Common vehicle brands and models
         self.vehicle_brands = [
