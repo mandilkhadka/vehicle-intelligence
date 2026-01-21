@@ -2,7 +2,7 @@
 
 **Language / 言語:** [English](#english) | [日本語](#japanese)
 
-![Dashboard Screenshot](pic/Screenshot%202026-01-21%20at%2021.56.26.png)
+![Dashboard Screenshot](dashboard.png)
 
 ---
 
