@@ -3,10 +3,9 @@
  * Handles video file uploads
  */
 
-import { Router, Request, Response } from "express";
+import { Router, Request, Response, NextFunction } from "express";
 import multer from "multer";
 import { v4 as uuidv4 } from "uuid";
-import * as path from "path";
 import {
   createFile,
   createJob,
@@ -55,19 +54,6 @@ const fileFilter = (
   }
 };
 
-// Configure multer for odometer images
-const odometerStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadPath = getUploadPath("odometer_images");
-    ensureDirectoryExists(uploadPath);
-    cb(null, uploadPath);
-  },
-  filename: (req, file, cb) => {
-    const uniqueFilename = generateUniqueFilename(file.originalname);
-    cb(null, uniqueFilename);
-  },
-});
-
 // File filter for images
 const imageFileFilter = (
   req: Request,
@@ -80,14 +66,6 @@ const imageFileFilter = (
     cb(new Error("Invalid file format. Only image files are allowed."));
   }
 };
-
-const upload = multer({
-  storage,
-  fileFilter,
-  limits: {
-    fileSize: config.upload.maxSize,
-  },
-});
 
 // Custom storage that handles different field names
 const multiStorage = multer.diskStorage({
@@ -141,8 +119,8 @@ const uploadWithOdometer = multer({
  */
 router.post(
   "/",
-  (req: Request, res: Response, next: any) => {
-    uploadWithOdometer(req, res, (err: any) => {
+  (req: Request, res: Response, next: NextFunction) => {
+    uploadWithOdometer(req, res, (err) => {
       if (err) {
         // Handle multer errors
         if (err instanceof multer.MulterError) {

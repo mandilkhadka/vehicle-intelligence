@@ -247,3 +247,171 @@ export function getAllInspections(): InspectionRecord[] {
   const stmt = db.prepare("SELECT * FROM inspections ORDER BY created_at DESC");
   return stmt.all() as InspectionRecord[];
 }
+
+/**
+ * Metrics response interface
+ */
+export interface MetricsResponse {
+  summary: {
+    totalInspections: number;
+    uniqueVehicles: number;
+    totalIssues: number;
+    avgProcessingTime: number;
+  };
+  dailyTrend: Array<{
+    date: string;
+    issues: number;
+  }>;
+  damageBreakdown: {
+    scratches: number;
+    dents: number;
+    rust: number;
+  };
+  vehicleBreakdown: Array<{
+    brand: string;
+    count: number;
+  }>;
+}
+
+/**
+ * Get inspections metrics for a date range
+ */
+export function getInspectionMetrics(startDate: string, endDate: string): MetricsResponse {
+  const db = getDatabase();
+
+  // Summary stats
+  const summaryStmt = db.prepare(`
+    SELECT
+      COUNT(*) as totalInspections,
+      COUNT(DISTINCT vehicle_brand || '-' || COALESCE(vehicle_model, '')) as uniqueVehicles,
+      COALESCE(SUM(scratches_detected), 0) + COALESCE(SUM(dents_detected), 0) + COALESCE(SUM(rust_detected), 0) as totalIssues
+    FROM inspections
+    WHERE created_at >= ? AND created_at < datetime(?, '+1 day')
+  `);
+  const summaryRow = summaryStmt.get(startDate, endDate) as {
+    totalInspections: number;
+    uniqueVehicles: number;
+    totalIssues: number;
+  };
+
+  // Daily trend
+  const trendStmt = db.prepare(`
+    SELECT
+      DATE(created_at) as date,
+      COALESCE(SUM(scratches_detected), 0) + COALESCE(SUM(dents_detected), 0) + COALESCE(SUM(rust_detected), 0) as issues
+    FROM inspections
+    WHERE created_at >= ? AND created_at < datetime(?, '+1 day')
+    GROUP BY DATE(created_at)
+    ORDER BY date
+  `);
+  const trendRows = trendStmt.all(startDate, endDate) as Array<{
+    date: string;
+    issues: number;
+  }>;
+
+  // Fill in missing dates with zeros
+  const dailyTrend = fillMissingDates(trendRows, startDate, endDate);
+
+  // Damage breakdown
+  const damageStmt = db.prepare(`
+    SELECT
+      COALESCE(SUM(scratches_detected), 0) as scratches,
+      COALESCE(SUM(dents_detected), 0) as dents,
+      COALESCE(SUM(rust_detected), 0) as rust
+    FROM inspections
+    WHERE created_at >= ? AND created_at < datetime(?, '+1 day')
+  `);
+  const damageRow = damageStmt.get(startDate, endDate) as {
+    scratches: number;
+    dents: number;
+    rust: number;
+  };
+
+  // Vehicle breakdown (top 5 + Other)
+  const vehicleStmt = db.prepare(`
+    SELECT
+      COALESCE(vehicle_brand, 'Unknown') as brand,
+      COUNT(*) as count
+    FROM inspections
+    WHERE created_at >= ? AND created_at < datetime(?, '+1 day')
+    GROUP BY vehicle_brand
+    ORDER BY count DESC
+    LIMIT 6
+  `);
+  const vehicleRows = vehicleStmt.all(startDate, endDate) as Array<{
+    brand: string;
+    count: number;
+  }>;
+
+  // If more than 5 brands, group extras as "Other"
+  let vehicleBreakdown = vehicleRows;
+  if (vehicleRows.length > 5) {
+    const top5 = vehicleRows.slice(0, 5);
+    const otherCount = vehicleRows.slice(5).reduce((sum, row) => sum + row.count, 0);
+    vehicleBreakdown = [...top5, { brand: "Other", count: otherCount }];
+  }
+
+  return {
+    summary: {
+      totalInspections: summaryRow.totalInspections || 0,
+      uniqueVehicles: summaryRow.uniqueVehicles || 0,
+      totalIssues: summaryRow.totalIssues || 0,
+      avgProcessingTime: 45, // Placeholder - would need actual processing time tracking
+    },
+    dailyTrend,
+    damageBreakdown: {
+      scratches: damageRow.scratches || 0,
+      dents: damageRow.dents || 0,
+      rust: damageRow.rust || 0,
+    },
+    vehicleBreakdown,
+  };
+}
+
+/**
+ * Fill missing dates with zero values
+ */
+function fillMissingDates(
+  data: Array<{ date: string; issues: number }>,
+  startDate: string,
+  endDate: string
+): Array<{ date: string; issues: number }> {
+  const result: Array<{ date: string; issues: number }> = [];
+  const dataMap = new Map(data.map((d) => [d.date, d.issues]));
+
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const dateStr = d.toISOString().split("T")[0];
+    result.push({
+      date: dateStr,
+      issues: dataMap.get(dateStr) || 0,
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Get inspections filtered by date range
+ */
+export function getInspectionsByDateRange(
+  startDate: string,
+  endDate: string,
+  limit?: number
+): InspectionRecord[] {
+  const db = getDatabase();
+  let query = `
+    SELECT * FROM inspections
+    WHERE created_at >= ? AND created_at < datetime(?, '+1 day')
+    ORDER BY created_at DESC
+  `;
+
+  if (limit) {
+    query += ` LIMIT ${limit}`;
+  }
+
+  const stmt = db.prepare(query);
+  return stmt.all(startDate, endDate) as InspectionRecord[];
+}

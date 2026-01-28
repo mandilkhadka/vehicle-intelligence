@@ -58,12 +58,13 @@ export const errorHandler = (
     logger.warn(logContext, "Client error occurred");
   }
 
-  // Send error response
+  // Send standardized error response
   res.status(statusCode).json({
+    success: false,
     error: {
       code,
       message,
-      ...(config.env === "development" && { stack: err.stack }),
+      ...(config.env === "development" && { details: err.stack }),
     },
     timestamp: new Date().toISOString(),
     path: req.path,

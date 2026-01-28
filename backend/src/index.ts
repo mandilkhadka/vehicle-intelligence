@@ -18,6 +18,7 @@ import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 import uploadRouter from "./routes/upload";
 import jobsRouter from "./routes/jobs";
 import inspectionsRouter from "./routes/inspections";
+import metricsRouter from "./routes/metrics";
 
 // Initialize database
 try {
@@ -141,6 +142,7 @@ app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 // API routes
 app.use("/api/upload", uploadRouter);
 app.use("/api/jobs", jobsRouter);
+app.use("/api/metrics", metricsRouter);
 app.use("/api/inspections", inspectionsRouter);
 
 // 404 handler

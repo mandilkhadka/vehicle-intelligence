@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { ArrowRight, ChevronRight, Loader2 } from "lucide-react"
 import { getInspections, BACKEND_BASE_URL } from "@/lib/api"
+import { showError } from "@/lib/toast"
 
 function formatTimeAgo(date: Date): string {
   const now = new Date()
@@ -160,7 +161,7 @@ export function RecentInspections() {
         
         setInspections(sorted)
       } catch (err) {
-        console.error("Failed to fetch inspections:", err)
+        showError("Failed to fetch inspections", err)
         const preparedSampleInspections = sampleInspections.map(sample => ({
           ...sample,
           dateString: formatTimeAgo(sample.date),
@@ -202,7 +203,7 @@ export function RecentInspections() {
             {inspections.map((inspection) => (
             <Link
               key={inspection.id}
-              href={`/inspect/results?id=${inspection.id}`}
+              href={`/inspection/${inspection.id}`}
               className="group flex items-center justify-between rounded-lg p-3 transition-colors hover:bg-secondary/50 cursor-pointer"
             >
               <div className="flex items-center gap-4">
@@ -213,6 +214,7 @@ export function RecentInspections() {
                       alt={inspection.vehicle}
                       fill
                       className="object-cover"
+                      unoptimized
                     />
                   </div>
                 ) : (

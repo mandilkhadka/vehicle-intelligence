@@ -20,6 +20,8 @@ pip-delete-this-directory.txt
 .yarn/unplugged
 .yarn/build-state.yml
 .yarn/install-state.gz
+.pnpm-store/
+.pnpm-debug.log*
 
 # Build outputs
 dist/
@@ -31,6 +33,7 @@ out/
 .vercel/
 .turbo/
 .swc/
+.next-env.d.ts
 
 # Database
 *.db
@@ -107,6 +110,8 @@ id_ed25519
 id_ed25519.pub
 id_dsa
 id_dsa.pub
+id_ecdsa
+id_ecdsa.pub
 *.ppk
 known_hosts
 .ssh/
@@ -127,7 +132,8 @@ known_hosts
 # IDE
 .vscode/
 .idea/
-*.swp
+.cursor/
+.claude/
 *.swo
 *.sublime-project
 *.sublime-workspace
@@ -176,6 +182,8 @@ temp/
 *.backup
 *.old
 *.orig
+*.swp
+*~
 
 # Coverage and testing
 coverage/
@@ -185,6 +193,8 @@ coverage/
 htmlcov/
 .pytest_cache/
 .tox/
+.jest/
+.jest-cache/
 
 # Python
 *.egg
@@ -193,6 +203,11 @@ htmlcov/
 *.so
 *.dylib
 *.dll
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.pyre/
+.pytype_output/
 
 # Archives and compressed files
 *.zip
@@ -201,6 +216,18 @@ htmlcov/
 *.rar
 *.7z
 *.gz
+*.bz2
+*.xz
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb_checkpoints/
+
+# Python virtual environments (additional patterns)
+venv*/
+ENV*/
+env*/
+virtualenv*/
 
 # Security - Additional patterns
 *.secret
@@ -210,6 +237,37 @@ htmlcov/
 config.json
 local.config.json
 *.config.local.*
+*_key
+*_KEY
+*_secret
+*_SECRET
+*_password
+*_PASSWORD
+*_token
+*_TOKEN
+*.pem
+*.key
+*.cert
+*.crt
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.truststore
+secrets.json
+credentials.json
+*.credentials
+*.credential
+.envrc
+.env.backup
+.env.save
+.env.old
+.env.tmp
+.env.*.bak
+*.env.backup
+*.env.save
+*.env.old
+*.env.tmp
 
 # GitHub
 .github/workflows/*.local.yml
@@ -220,9 +278,53 @@ local.config.json
 docker-compose.override.yml
 *.dockerignore.local
 
-# Scripts with potential secrets (keep START_SERVICES.sh as it has no secrets)
-START_SERVICES.sh
+# Root-level lock files (keep service-specific ones)
+/package-lock.json
 
 # Images and media files
 pic/
 pic/**
+
+# Documentation (keep only root README.md)
+docs/
+*.md
+!README.md
+SPEC.md
+CLAUDE.md
+
+# Test files and directories
+__tests__/
+tests/
+*.test.ts
+*.test.tsx
+*.test.js
+*.test.jsx
+*.spec.ts
+*.spec.tsx
+*.spec.js
+*.spec.jsx
+*.e2e.test.ts
+*.int.test.ts
+*.int.test.py
+
+# Test configuration
+jest.config.js
+jest.setup.tsx
+jest.setup.js
+*.config.test.*
+conftest.py
+
+# Scripts (non-essential)
+scripts/
+*.sh
+!START_SERVICES.sh
+
+# Design and planning files
+*.design.md
+*.plan.md
+*.prd.md
+*.spec.md
+
+# Context and documentation folders
+.context/
+start_services.sh

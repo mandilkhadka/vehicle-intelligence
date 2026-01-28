@@ -4,24 +4,63 @@ Detects scratches, dents, and rust using YOLOv8 and computer vision
 """
 
 import asyncio
-from typing import Dict, Any, List
+import logging
+from typing import Dict, Any, List, Optional
 from ultralytics import YOLO
 import cv2
 import numpy as np
 import os
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
+# Maximum frames to process for damage detection
+# Using evenly-spaced selection for 360-degree coverage
+MAX_FRAMES = 15
+
 
 class DamageDetector:
     """Detects vehicle damage (scratches, dents, rust)"""
 
-    def __init__(self):
-        """Initialize damage detector"""
-        # Load YOLOv8 model
-        # Note: For MVP, we use a general object detector
-        # In production, you'd use a custom-trained model for damage detection
-        print("Loading YOLOv8 model for damage detection...")
-        self.yolo_model = YOLO("yolov8n.pt")
+    def __init__(self, yolo_model: Optional[YOLO] = None):
+        """
+        Initialize damage detector.
+
+        Args:
+            yolo_model: Pre-loaded YOLOv8 model instance (from ModelRegistry)
+
+        If model is not provided, it will be loaded internally (legacy behavior).
+        For best performance, pass pre-loaded model from ModelRegistry.
+        """
+        if yolo_model is not None:
+            logger.info("DamageDetector: Using injected YOLOv8 model")
+            self.yolo_model = yolo_model
+        else:
+            logger.warning("DamageDetector: Loading YOLOv8 model internally (consider using ModelRegistry)")
+            self.yolo_model = YOLO("yolov8n.pt")
+
+    def _select_frames(self, frame_paths: List[str], max_frames: int) -> List[str]:
+        """
+        Select evenly-spaced frames from the input list.
+        This ensures good coverage across the entire 360-degree video.
+
+        Args:
+            frame_paths: Full list of frame paths
+            max_frames: Maximum number of frames to select
+
+        Returns:
+            List of evenly-spaced frame paths
+        """
+        if len(frame_paths) <= max_frames:
+            return frame_paths
+
+        # Calculate step size for even distribution
+        step = len(frame_paths) / max_frames
+        selected_indices = [int(i * step) for i in range(max_frames)]
+        selected_frames = [frame_paths[i] for i in selected_indices]
+
+        logger.info(f"DamageDetector: Selected {len(selected_frames)} frames from {len(frame_paths)} total (evenly spaced)")
+        return selected_frames
 
     async def detect(self, frame_paths: List[str], inspection_id: str = None) -> Dict[str, Any]:
         """
@@ -44,6 +83,9 @@ class DamageDetector:
         rust_count = 0
         damage_locations = []
 
+        # Apply frame limiting for performance (Phase 2 optimization)
+        selected_frames = self._select_frames(frame_paths, MAX_FRAMES)
+
         # Create snapshots directory if inspection_id is provided
         snapshots_dir = None
         backend_uploads_path = None
@@ -56,12 +98,12 @@ class DamageDetector:
 
         # Process frames to detect damage with improved filtering
         snapshot_counter = {"scratch": 0, "dent": 0, "rust": 0}
-        
+
         # Track detected regions to avoid duplicates
         detected_regions = {"scratch": [], "dent": [], "rust": []}
         MIN_CONFIDENCE_THRESHOLD = 0.3  # Filter out detections below 30% confidence
-        
-        for frame_idx, frame_path in enumerate(frame_paths):
+
+        for frame_idx, frame_path in enumerate(selected_frames):
             try:
                 # Load image
                 image = cv2.imread(frame_path)
@@ -386,7 +428,7 @@ class DamageDetector:
                                     })
 
             except Exception as e:
-                print(f"Damage detection error for {frame_path}: {e}")
+                logger.warning(f"Damage detection error for {frame_path}: {e}")
                 continue
 
         # Sort damage locations by confidence (highest first)
@@ -441,6 +483,6 @@ class DamageDetector:
                             x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                             return (int(x1), int(y1), int(x2), int(y2))
         except Exception as e:
-            print(f"Vehicle region detection error: {e}")
-        
+            logger.warning(f"Vehicle region detection error: {e}")
+
         return None

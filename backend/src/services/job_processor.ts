@@ -3,7 +3,7 @@
  * Handles video processing jobs asynchronously
  */
 
-import axios, { AxiosError } from "axios";
+import axios, { AxiosError, AxiosResponse } from "axios";
 import { v4 as uuidv4 } from "uuid";
 import * as fs from "fs";
 import * as path from "path";
@@ -14,6 +14,54 @@ import {
 } from "../models/inspection";
 import { config } from "../config/env";
 import logger from "../utils/logger";
+
+// Retry configuration
+const RETRY_CONFIG = {
+  maxRetries: 3,
+  baseDelayMs: 1000, // 1 second base delay
+  maxDelayMs: 30000, // 30 seconds max delay
+};
+
+/**
+ * Calculate exponential backoff delay
+ * @param attempt - Current retry attempt (0-based)
+ * @returns Delay in milliseconds
+ */
+function calculateBackoffDelay(attempt: number): number {
+  const delay = RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt);
+  return Math.min(delay, RETRY_CONFIG.maxDelayMs);
+}
+
+/**
+ * Determine if an error is retryable
+ * @param error - The error to check
+ * @returns true if the error is retryable
+ */
+function isRetryableError(error: unknown): boolean {
+  if (axios.isAxiosError(error)) {
+    const axiosError = error as AxiosError;
+    // Retry on connection errors
+    if (axiosError.code === "ECONNREFUSED" ||
+        axiosError.code === "ETIMEDOUT" ||
+        axiosError.code === "ECONNABORTED" ||
+        axiosError.code === "ENOTFOUND") {
+      return true;
+    }
+    // Retry on 5xx server errors
+    if (axiosError.response?.status && axiosError.response.status >= 500) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Sleep for a specified duration
+ * @param ms - Duration in milliseconds
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
  * Process a video job
@@ -146,11 +194,15 @@ export async function processVideoJob(
     };
 
     const requestStartTime = Date.now();
-    let response;
+    let response!: AxiosResponse;
+
+    // ML service call with retry logic
+    let retryAttempt = 0;
+
     try {
       // Start progress simulation
       startProgressSimulation();
-      
+
       // Update progress to indicate ML service is initializing
       updateJobStatus(jobId, {
         status: "processing",
@@ -158,45 +210,82 @@ export async function processVideoJob(
       });
       logger.debug({ jobId }, "ML service initializing models (this may take 30-60 seconds)...");
 
-      response = await axios.post(
-        mlServiceUrl,
-        {
-          video_path: absoluteVideoPath,
-          inspection_id: inspectionId,
-          odometer_image_path: absoluteOdometerPath,
-        },
-        {
-          timeout: config.mlService.timeout,
-          headers: {
-            "Content-Type": "application/json",
-          },
-          // Add request timeout handler
-          validateStatus: (status) => status < 500, // Don't throw on 4xx errors
-          // Increase max content length
-          maxContentLength: Infinity,
-          maxBodyLength: Infinity,
+      // Retry loop for ML service requests
+      while (retryAttempt <= RETRY_CONFIG.maxRetries) {
+        try {
+          if (retryAttempt > 0) {
+            const delay = calculateBackoffDelay(retryAttempt - 1);
+            logger.info(
+              { jobId, attempt: retryAttempt, maxRetries: RETRY_CONFIG.maxRetries, delayMs: delay },
+              `Retrying ML service request after ${delay}ms delay`
+            );
+            await sleep(delay);
+
+            // Update job status to indicate retry
+            updateJobStatus(jobId, {
+              status: "processing",
+              progress: 20 + retryAttempt * 2,
+            });
+          }
+
+          response = await axios.post(
+            mlServiceUrl,
+            {
+              video_path: absoluteVideoPath,
+              inspection_id: inspectionId,
+              odometer_image_path: absoluteOdometerPath,
+            },
+            {
+              timeout: config.mlService.timeout,
+              headers: {
+                "Content-Type": "application/json",
+              },
+              // Add request timeout handler
+              validateStatus: (status) => status < 500, // Don't throw on 4xx errors
+              // Increase max content length
+              maxContentLength: Infinity,
+              maxBodyLength: Infinity,
+            }
+          );
+
+          // Check for error responses (4xx errors - not retryable)
+          if (response.status >= 400) {
+            const errorMessage = response.data?.detail || response.data?.error || `ML service returned error: ${response.status}`;
+            logger.error({ jobId, status: response.status, error: errorMessage }, "ML service returned error");
+            throw new Error(errorMessage);
+          }
+
+          // Success - break out of retry loop
+          break;
+        } catch (attemptError) {
+
+          // Check if error is retryable and we have retries left
+          if (isRetryableError(attemptError) && retryAttempt < RETRY_CONFIG.maxRetries) {
+            retryAttempt++;
+            logger.warn(
+              { jobId, attempt: retryAttempt, maxRetries: RETRY_CONFIG.maxRetries, error: attemptError },
+              "ML service request failed, will retry"
+            );
+            continue;
+          }
+
+          // Non-retryable error or out of retries
+          throw attemptError;
         }
-      );
-      
+      }
+
       // Stop progress simulation
       stopProgressSimulation();
-      
+
       const requestDuration = Date.now() - requestStartTime;
       logger.info(
-        { jobId, duration: requestDuration },
+        { jobId, duration: requestDuration, retryAttempts: retryAttempt },
         "ML service request completed successfully"
       );
-      
-      // Check for error responses
-      if (response.status >= 400) {
-        const errorMessage = response.data?.detail || response.data?.error || `ML service returned error: ${response.status}`;
-        logger.error({ jobId, status: response.status, error: errorMessage }, "ML service returned error");
-        throw new Error(errorMessage);
-      }
     } catch (requestError) {
       // Stop progress simulation on error
       stopProgressSimulation();
-      
+
       const requestDuration = Date.now() - requestStartTime;
       logger.error(
         {
@@ -204,8 +293,9 @@ export async function processVideoJob(
           error: requestError,
           duration: requestDuration,
           url: mlServiceUrl,
+          totalAttempts: retryAttempt + 1,
         },
-        "ML service request failed"
+        "ML service request failed after all retry attempts"
       );
       throw requestError;
     }

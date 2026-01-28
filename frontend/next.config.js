@@ -14,7 +14,16 @@ const nextConfig = {
         hostname: 'images.unsplash.com',
       },
     ],
-    unoptimized: true,
+  },
+  async redirects() {
+    return [
+      {
+        source: '/inspect/results',
+        has: [{ type: 'query', key: 'id', value: '(?<id>.*)' }],
+        destination: '/inspection/:id',
+        permanent: true,
+      },
+    ];
   },
 };
 

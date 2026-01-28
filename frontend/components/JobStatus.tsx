@@ -8,6 +8,11 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { getJobStatus } from "@/lib/api";
+import { PROGRESS } from "@/lib/constants";
+import { showError } from "@/lib/toast";
+
+// Destructure thresholds for cleaner code
+const { UPLOAD_COMPLETE, FRAME_EXTRACTION, VEHICLE_IDENTIFIED, ODOMETER_READ, DAMAGE_DETECTED, REPORT_GENERATED } = PROGRESS.THRESHOLDS;
 
 interface JobStatusProps {
   jobId: string;
@@ -38,8 +43,9 @@ export default function JobStatus({ jobId }: JobStatusProps) {
           setError(jobData.error_message || jobData.error || "Processing failed");
         }
       } catch (err: any) {
-        setError("Failed to fetch job status");
-        console.error(err);
+        const msg = "Failed to fetch job status";
+        setError(msg);
+        showError(msg, err);
       }
     };
 
@@ -90,43 +96,43 @@ export default function JobStatus({ jobId }: JobStatusProps) {
             <p className="text-slate-700 mb-3 font-semibold">Processing video...</p>
             <ul className="text-sm text-slate-600 space-y-2">
               <li className="flex items-center gap-2">
-                <span className={progress >= 20 ? "text-green-500" : "text-slate-400"}>
-                  {progress >= 20 ? "✓" : "○"}
-                </span> 
-                {progress < 20 ? "Preparing..." : "Video uploaded"}
+                <span className={progress >= UPLOAD_COMPLETE ? "text-green-500" : "text-slate-400"}>
+                  {progress >= UPLOAD_COMPLETE ? "✓" : "○"}
+                </span>
+                {progress < UPLOAD_COMPLETE ? "Preparing..." : "Video uploaded"}
               </li>
               <li className="flex items-center gap-2">
-                <span className={progress >= 40 ? "text-green-500" : progress >= 20 ? "text-blue-500 animate-pulse" : "text-slate-400"}>
-                  {progress >= 40 ? "✓" : progress >= 20 ? "⏳" : "○"}
-                </span> 
+                <span className={progress >= FRAME_EXTRACTION ? "text-green-500" : progress >= UPLOAD_COMPLETE ? "text-blue-500 animate-pulse" : "text-slate-400"}>
+                  {progress >= FRAME_EXTRACTION ? "✓" : progress >= UPLOAD_COMPLETE ? "⏳" : "○"}
+                </span>
                 Extracting frames
               </li>
               <li className="flex items-center gap-2">
-                <span className={progress >= 55 ? "text-green-500" : progress >= 40 ? "text-blue-500 animate-pulse" : "text-slate-400"}>
-                  {progress >= 55 ? "✓" : progress >= 40 ? "⏳" : "○"}
-                </span> 
+                <span className={progress >= VEHICLE_IDENTIFIED ? "text-green-500" : progress >= FRAME_EXTRACTION ? "text-blue-500 animate-pulse" : "text-slate-400"}>
+                  {progress >= VEHICLE_IDENTIFIED ? "✓" : progress >= FRAME_EXTRACTION ? "⏳" : "○"}
+                </span>
                 Identifying vehicle
               </li>
               <li className="flex items-center gap-2">
-                <span className={progress >= 70 ? "text-green-500" : progress >= 55 ? "text-blue-500 animate-pulse" : "text-slate-400"}>
-                  {progress >= 70 ? "✓" : progress >= 55 ? "⏳" : "○"}
-                </span> 
+                <span className={progress >= ODOMETER_READ ? "text-green-500" : progress >= VEHICLE_IDENTIFIED ? "text-blue-500 animate-pulse" : "text-slate-400"}>
+                  {progress >= ODOMETER_READ ? "✓" : progress >= VEHICLE_IDENTIFIED ? "⏳" : "○"}
+                </span>
                 Reading odometer
               </li>
               <li className="flex items-center gap-2">
-                <span className={progress >= 85 ? "text-green-500" : progress >= 70 ? "text-blue-500 animate-pulse" : "text-slate-400"}>
-                  {progress >= 85 ? "✓" : progress >= 70 ? "⏳" : "○"}
-                </span> 
+                <span className={progress >= DAMAGE_DETECTED ? "text-green-500" : progress >= ODOMETER_READ ? "text-blue-500 animate-pulse" : "text-slate-400"}>
+                  {progress >= DAMAGE_DETECTED ? "✓" : progress >= ODOMETER_READ ? "⏳" : "○"}
+                </span>
                 Detecting damage
               </li>
               <li className="flex items-center gap-2">
-                <span className={progress >= 95 ? "text-green-500" : progress >= 85 ? "text-blue-500 animate-pulse" : "text-slate-400"}>
-                  {progress >= 95 ? "✓" : progress >= 85 ? "⏳" : "○"}
-                </span> 
+                <span className={progress >= REPORT_GENERATED ? "text-green-500" : progress >= DAMAGE_DETECTED ? "text-blue-500 animate-pulse" : "text-slate-400"}>
+                  {progress >= REPORT_GENERATED ? "✓" : progress >= DAMAGE_DETECTED ? "⏳" : "○"}
+                </span>
                 Generating report
               </li>
             </ul>
-            {progress >= 20 && progress < 40 && (
+            {progress >= UPLOAD_COMPLETE && progress < FRAME_EXTRACTION && (
               <p className="text-xs text-blue-600 mt-3 italic">
                 Initializing AI models (this may take 30-60 seconds on first run)...
               </p>

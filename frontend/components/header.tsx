@@ -1,6 +1,6 @@
 "use client"
 
-import { Bell, Search, Settings, User } from "lucide-react"
+import { Search, User } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -41,17 +41,6 @@ export function Header() {
 
       <div className="flex items-center gap-2">
         <ThemeToggle />
-
-        <Button variant="ghost" size="icon" className="relative">
-          <Bell className="h-5 w-5" />
-          <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-accent" />
-          <span className="sr-only">Notifications</span>
-        </Button>
-
-        <Button variant="ghost" size="icon">
-          <Settings className="h-5 w-5" />
-          <span className="sr-only">Settings</span>
-        </Button>
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

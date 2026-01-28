@@ -4,21 +4,62 @@ Classifies exhaust as stock or modified using YOLOv8 and image analysis
 """
 
 import asyncio
+import logging
 import os
 from typing import Dict, Any, List, Optional
 from ultralytics import YOLO
 import cv2
 import numpy as np
 
+logger = logging.getLogger(__name__)
+
+# Maximum frames to process for exhaust classification
+# Using evenly-spaced selection for 360-degree coverage
+MAX_FRAMES = 15
+
 
 class ExhaustClassifier:
     """Classifies exhaust system as stock or modified"""
 
-    def __init__(self):
-        """Initialize exhaust classifier"""
-        # Load YOLOv8 model for object detection
-        print("Loading YOLOv8 model for exhaust detection...")
-        self.yolo_model = YOLO("yolov8n.pt")
+    def __init__(self, yolo_model: Optional[YOLO] = None):
+        """
+        Initialize exhaust classifier.
+
+        Args:
+            yolo_model: Pre-loaded YOLOv8 model instance (from ModelRegistry)
+
+        If model is not provided, it will be loaded internally (legacy behavior).
+        For best performance, pass pre-loaded model from ModelRegistry.
+        """
+        if yolo_model is not None:
+            logger.info("ExhaustClassifier: Using injected YOLOv8 model")
+            self.yolo_model = yolo_model
+        else:
+            logger.warning("ExhaustClassifier: Loading YOLOv8 model internally (consider using ModelRegistry)")
+            self.yolo_model = YOLO("yolov8n.pt")
+
+    def _select_frames(self, frame_paths: List[str], max_frames: int) -> List[str]:
+        """
+        Select evenly-spaced frames from the input list.
+        This ensures good coverage across the entire 360-degree video.
+
+        Args:
+            frame_paths: Full list of frame paths
+            max_frames: Maximum number of frames to select
+
+        Returns:
+            List of evenly-spaced frame paths
+        """
+        if len(frame_paths) <= max_frames:
+            return frame_paths
+
+        # Calculate step size for even distribution
+        step = len(frame_paths) / max_frames
+        selected_indices = [int(i * step) for i in range(max_frames)]
+        selected_frames = [frame_paths[i] for i in selected_indices]
+
+        logger.info(f"ExhaustClassifier: Selected {len(selected_frames)} frames from {len(frame_paths)} total (evenly spaced)")
+        return selected_frames
 
     async def classify(self, frame_paths: List[str], inspection_id: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -35,26 +76,29 @@ class ExhaustClassifier:
         """
         Synchronous exhaust classification with snapshot capture
         """
+        # Apply frame limiting for performance (Phase 2 optimization)
+        selected_frames = self._select_frames(frame_paths, MAX_FRAMES)
+
         # Look for exhaust region in frames
         # Typically at the rear of the vehicle (bottom-center or bottom-right)
-        
+
         # Create snapshots directory if inspection_id is provided
         snapshots_dir = None
         backend_uploads_path = None
         exhaust_image_path = None
-        
+
         if inspection_id:
             # Determine snapshots directory relative to backend/uploads
             backend_root = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "..")
             snapshots_dir = os.path.join(backend_root, "backend", "uploads", "frames", inspection_id, "exhaust_snapshots")
             backend_uploads_path = os.path.join(backend_root, "backend", "uploads")
             os.makedirs(snapshots_dir, exist_ok=True)
-        
+
         exhaust_features = []
         best_exhaust_frame = None
         best_confidence = 0.0
-        
-        for frame_idx, frame_path in enumerate(frame_paths):
+
+        for frame_idx, frame_path in enumerate(selected_frames):
             try:
                 # Load image
                 image = cv2.imread(frame_path)

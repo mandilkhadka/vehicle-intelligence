@@ -25,6 +25,7 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from src.api.process import router as process_router
+from src.services.model_registry import get_model_registry
 
 # Load environment variables
 load_dotenv()
@@ -55,6 +56,18 @@ async def lifespan(app: FastAPI):
     logger.info("Starting ML Service...")
     logger.info(f"Environment: {NODE_ENV}")
     logger.info(f"Port: {PORT}")
+
+    # Initialize ML models at startup (singleton pattern)
+    logger.info("Initializing ML models at startup...")
+    try:
+        model_registry = get_model_registry()
+        model_registry.initialize_all_models()
+        app.state.model_registry = model_registry
+        logger.info("ML models initialized and stored in app.state")
+    except Exception as e:
+        logger.error(f"Failed to initialize ML models: {e}", exc_info=True)
+        raise RuntimeError(f"ML Service startup failed: {e}") from e
+
     yield
     # Shutdown
     logger.info("Shutting down ML Service...")
@@ -165,8 +178,14 @@ async def health_check():
 @app.get("/ready")
 async def readiness_check():
     """Readiness check endpoint"""
-    # Add dependency checks here if needed (e.g., model loading)
-    return {"status": "ready"}
+    # Verify ML models are loaded
+    try:
+        model_registry = app.state.model_registry
+        if not model_registry.is_initialized:
+            return {"status": "not_ready", "reason": "ML models not initialized"}
+        return {"status": "ready", "models_loaded": True}
+    except AttributeError:
+        return {"status": "not_ready", "reason": "Model registry not available"}
 
 
 @app.get("/")

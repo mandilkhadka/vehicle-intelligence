@@ -72,6 +72,15 @@ export function initDatabase(): Database.Database {
       logger.warn({ error }, "Migration error (non-critical)");
     }
 
+    // Add indexes for metrics queries
+    try {
+      db.exec("CREATE INDEX IF NOT EXISTS idx_inspections_created_at ON inspections(created_at)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_inspections_vehicle_brand ON inspections(vehicle_brand)");
+      logger.info("Database indexes created/verified");
+    } catch (error) {
+      logger.warn({ error }, "Index creation error (non-critical)");
+    }
+
     logger.info({ dbPath }, "Database initialized successfully");
 
     return db;

@@ -92,4 +92,60 @@ export async function getInspections(): Promise<any[]> {
   return response.data;
 }
 
+/**
+ * Metrics response from backend
+ */
+export interface MetricsResponse {
+  summary: {
+    totalInspections: number;
+    uniqueVehicles: number;
+    totalIssues: number;
+    avgProcessingTime: number;
+  };
+  dailyTrend: Array<{
+    date: string;
+    issues: number;
+  }>;
+  damageBreakdown: {
+    scratches: number;
+    dents: number;
+    rust: number;
+  };
+  vehicleBreakdown: Array<{
+    brand: string;
+    count: number;
+  }>;
+}
+
+/**
+ * Get dashboard metrics for a date range
+ * @param startDate - Start date (YYYY-MM-DD)
+ * @param endDate - End date (YYYY-MM-DD)
+ * @returns Promise with metrics data
+ */
+export async function getMetrics(startDate: string, endDate: string): Promise<MetricsResponse> {
+  const response = await apiClient.get("/metrics", {
+    params: { startDate, endDate },
+  });
+  return response.data;
+}
+
+/**
+ * Get inspections filtered by date range
+ * @param startDate - Start date (YYYY-MM-DD)
+ * @param endDate - End date (YYYY-MM-DD)
+ * @param limit - Optional limit for results
+ * @returns Promise with list of inspections
+ */
+export async function getInspectionsByDateRange(
+  startDate: string,
+  endDate: string,
+  limit?: number
+): Promise<any[]> {
+  const response = await apiClient.get("/inspections", {
+    params: { startDate, endDate, limit },
+  });
+  return response.data;
+}
+
 export default apiClient;
