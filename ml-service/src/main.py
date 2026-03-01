@@ -24,7 +24,7 @@ parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-from src.api.process import router as process_router
+from src.api.process import router as process_router, initialize_ml_services
 from src.services.model_registry import get_model_registry
 
 # Load environment variables
@@ -44,9 +44,6 @@ PORT = int(os.getenv("PORT", "8000"))
 CORS_ALLOWED_ORIGINS = os.getenv(
     "CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001"
 ).split(",")
-RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "true").lower() == "true"
-RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "10"))
-RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
 
 
 @asynccontextmanager
@@ -64,6 +61,11 @@ async def lifespan(app: FastAPI):
         model_registry.initialize_all_models()
         app.state.model_registry = model_registry
         logger.info("ML models initialized and stored in app.state")
+
+        # Cache ML service instances to avoid re-initialization per request
+        ml_services = initialize_ml_services(model_registry)
+        app.state.ml_services = ml_services
+        logger.info("ML services initialized and cached in app.state")
     except Exception as e:
         logger.error(f"Failed to initialize ML models: {e}", exc_info=True)
         raise RuntimeError(f"ML Service startup failed: {e}") from e

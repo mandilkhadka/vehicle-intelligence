@@ -74,7 +74,7 @@ export function createFile(file: {
     file.original_filename,
     file.file_path,
     file.file_size,
-    file.mime_type
+    file.mime_type,
   );
 
   return getFileById(file.id);
@@ -127,7 +127,7 @@ export function updateJobStatus(
     progress?: number;
     error_message?: string;
     inspection_id?: string;
-  }
+  },
 ): JobRecord {
   const db = getDatabase();
   const updatesList: string[] = [];
@@ -154,7 +154,7 @@ export function updateJobStatus(
   values.push(id);
 
   const stmt = db.prepare(
-    `UPDATE jobs SET ${updatesList.join(", ")} WHERE id = ?`
+    `UPDATE jobs SET ${updatesList.join(", ")} WHERE id = ?`,
   );
   stmt.run(...values);
 
@@ -194,7 +194,7 @@ export function getInspectionById(id: string): InspectionRecord {
  */
 export function updateInspection(
   id: string,
-  updates: Partial<InspectionRecord>
+  updates: Partial<InspectionRecord>,
 ): InspectionRecord {
   const db = getDatabase();
   const updatesList: string[] = [];
@@ -232,7 +232,7 @@ export function updateInspection(
   values.push(id);
 
   const stmt = db.prepare(
-    `UPDATE inspections SET ${updatesList.join(", ")} WHERE id = ?`
+    `UPDATE inspections SET ${updatesList.join(", ")} WHERE id = ?`,
   );
   stmt.run(...values);
 
@@ -276,7 +276,10 @@ export interface MetricsResponse {
 /**
  * Get inspections metrics for a date range
  */
-export function getInspectionMetrics(startDate: string, endDate: string): MetricsResponse {
+export function getInspectionMetrics(
+  startDate: string,
+  endDate: string,
+): MetricsResponse {
   const db = getDatabase();
 
   // Summary stats
@@ -347,16 +350,33 @@ export function getInspectionMetrics(startDate: string, endDate: string): Metric
   let vehicleBreakdown = vehicleRows;
   if (vehicleRows.length > 5) {
     const top5 = vehicleRows.slice(0, 5);
-    const otherCount = vehicleRows.slice(5).reduce((sum, row) => sum + row.count, 0);
+    const otherCount = vehicleRows
+      .slice(5)
+      .reduce((sum, row) => sum + row.count, 0);
     vehicleBreakdown = [...top5, { brand: "Other", count: otherCount }];
   }
+
+  // Average processing time (seconds) for completed jobs in date range
+  const avgTimeStmt = db.prepare(`
+    SELECT AVG(
+      (julianday(j.updated_at) - julianday(j.created_at)) * 86400
+    ) as avg_seconds
+    FROM jobs j
+    INNER JOIN inspections i ON j.id = i.job_id
+    WHERE j.status = 'completed'
+      AND i.created_at >= ? AND i.created_at < datetime(?, '+1 day')
+  `);
+  const avgTimeRow = avgTimeStmt.get(startDate, endDate) as {
+    avg_seconds: number | null;
+  };
+  const avgProcessingTime = Math.round(avgTimeRow?.avg_seconds ?? 0);
 
   return {
     summary: {
       totalInspections: summaryRow.totalInspections || 0,
       uniqueVehicles: summaryRow.uniqueVehicles || 0,
       totalIssues: summaryRow.totalIssues || 0,
-      avgProcessingTime: 45, // Placeholder - would need actual processing time tracking
+      avgProcessingTime,
     },
     dailyTrend,
     damageBreakdown: {
@@ -374,7 +394,7 @@ export function getInspectionMetrics(startDate: string, endDate: string): Metric
 function fillMissingDates(
   data: Array<{ date: string; issues: number }>,
   startDate: string,
-  endDate: string
+  endDate: string,
 ): Array<{ date: string; issues: number }> {
   const result: Array<{ date: string; issues: number }> = [];
   const dataMap = new Map(data.map((d) => [d.date, d.issues]));
@@ -399,9 +419,11 @@ function fillMissingDates(
 export function getInspectionsByDateRange(
   startDate: string,
   endDate: string,
-  limit?: number
+  limit?: number,
 ): InspectionRecord[] {
   const db = getDatabase();
+  const params: (string | number)[] = [startDate, endDate];
+
   let query = `
     SELECT * FROM inspections
     WHERE created_at >= ? AND created_at < datetime(?, '+1 day')
@@ -409,9 +431,10 @@ export function getInspectionsByDateRange(
   `;
 
   if (limit) {
-    query += ` LIMIT ${limit}`;
+    query += ` LIMIT ?`;
+    params.push(limit);
   }
 
   const stmt = db.prepare(query);
-  return stmt.all(startDate, endDate) as InspectionRecord[];
+  return stmt.all(...params) as InspectionRecord[];
 }

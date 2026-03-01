@@ -6,11 +6,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import multer from "multer";
 import { v4 as uuidv4 } from "uuid";
-import {
-  createFile,
-  createJob,
-  updateJobStatus,
-} from "../models/inspection";
+import { createFile, createJob, updateJobStatus } from "../models/inspection";
 import {
   ensureDirectoryExists,
   generateUniqueFilename,
@@ -45,7 +41,7 @@ const storage = multer.diskStorage({
 const fileFilter = (
   req: Request,
   file: Express.Multer.File,
-  cb: multer.FileFilterCallback
+  cb: multer.FileFilterCallback,
 ) => {
   if (isValidVideoFormat(file.originalname)) {
     cb(null, true);
@@ -58,7 +54,7 @@ const fileFilter = (
 const imageFileFilter = (
   req: Request,
   file: Express.Multer.File,
-  cb: multer.FileFilterCallback
+  cb: multer.FileFilterCallback,
 ) => {
   if (isValidImageFormat(file.originalname)) {
     cb(null, true);
@@ -91,7 +87,7 @@ const multiStorage = multer.diskStorage({
 const multiFileFilter = (
   req: Request,
   file: Express.Multer.File,
-  cb: multer.FileFilterCallback
+  cb: multer.FileFilterCallback,
 ) => {
   if (file.fieldname === "odometer_image") {
     imageFileFilter(req, file, cb);
@@ -129,17 +125,21 @@ router.post(
               new CustomError(
                 `File size exceeds maximum allowed size of ${config.upload.maxSize / 1024 / 1024}MB`,
                 400,
-                "FILE_TOO_LARGE"
-              )
+                "FILE_TOO_LARGE",
+              ),
             );
           }
           if (err.code === "LIMIT_UNEXPECTED_FILE") {
             return next(
-              new CustomError("Invalid file field", 400, "INVALID_FILE_FIELD")
+              new CustomError("Invalid file field", 400, "INVALID_FILE_FIELD"),
             );
           }
           return next(
-            new CustomError(`Upload error: ${err.message}`, 400, "UPLOAD_ERROR")
+            new CustomError(
+              `Upload error: ${err.message}`,
+              400,
+              "UPLOAD_ERROR",
+            ),
           );
         }
         // Handle file filter errors
@@ -147,8 +147,8 @@ router.post(
           new CustomError(
             err.message || "Invalid file format",
             400,
-            "FILE_VALIDATION_ERROR"
-          )
+            "FILE_VALIDATION_ERROR",
+          ),
         );
       }
       next();
@@ -172,38 +172,48 @@ router.post(
         videoMimeType: videoFile.mimetype,
         hasOdometerImage: !!odometerImageFile,
       },
-      "Processing video upload"
+      "Processing video upload",
     );
 
     // Validate odometer image if provided
-    if (odometerImageFile && !isValidImageFormat(odometerImageFile.originalname)) {
+    if (
+      odometerImageFile &&
+      !isValidImageFormat(odometerImageFile.originalname)
+    ) {
       throw new CustomError(
         "Invalid odometer image format. Supported: JPG, PNG, HEIC, WEBP",
         400,
-        "INVALID_IMAGE_FORMAT"
+        "INVALID_IMAGE_FORMAT",
       );
     }
 
     // Validate video MIME type or extension
-    logger.debug({ videoMimeType: videoFile.mimetype, allowedTypes: config.upload.allowedVideoTypes }, "Checking video MIME type");
-    const validMimeType = (config.upload.allowedVideoTypes as readonly string[]).includes(videoFile.mimetype) || 
-                          videoFile.mimetype === "application/octet-stream"; // Allow octet-stream, will check extension
+    logger.debug(
+      {
+        videoMimeType: videoFile.mimetype,
+        allowedTypes: config.upload.allowedVideoTypes,
+      },
+      "Checking video MIME type",
+    );
+    const isKnownMimeType = (
+      config.upload.allowedVideoTypes as readonly string[]
+    ).includes(videoFile.mimetype);
+    const isOctetStream = videoFile.mimetype === "application/octet-stream";
     const validExtension = isValidVideoFormat(videoFile.originalname);
-    
-    if (!validMimeType && !validExtension) {
+
+    if (isKnownMimeType) {
+      // Known video MIME type — accept
+    } else if (isOctetStream && validExtension) {
+      // Generic MIME but valid video extension — accept
+      logger.debug(
+        { filename: videoFile.originalname },
+        "Accepting octet-stream with valid video extension",
+      );
+    } else {
       throw new CustomError(
         `Invalid video format. Received: ${videoFile.mimetype}. Allowed types: ${config.upload.allowedVideoTypes.join(", ")}`,
         400,
-        "INVALID_VIDEO_FORMAT"
-      );
-    }
-    
-    // If MIME type is generic, verify extension
-    if (videoFile.mimetype === "application/octet-stream" && !validExtension) {
-      throw new CustomError(
-        `Invalid video format. File extension not supported.`,
-        400,
-        "INVALID_VIDEO_FORMAT"
+        "INVALID_VIDEO_FORMAT",
       );
     }
 
@@ -231,32 +241,42 @@ router.post(
     logger.info({ jobId, fileId }, "Created job for video processing");
 
     // Start processing job asynchronously with odometer image path if provided
-    const odometerImagePath = odometerImageFile ? odometerImageFile.path : undefined;
-    
-    // Update status to processing immediately to show job has started
-    // This ensures the UI shows progress even if processVideoJob takes time to start
+    const odometerImagePath = odometerImageFile
+      ? odometerImageFile.path
+      : undefined;
+
+    // Update status to processing — job_processor owns all progress updates
     updateJobStatus(jobId, {
       status: "processing",
-      progress: 0,
     });
-    
-    logger.debug({ jobId }, "Job status updated to processing, starting async processing");
-    
+
+    logger.debug(
+      { jobId },
+      "Job status updated to processing, starting async processing",
+    );
+
     // Wrap in immediate async function to catch any synchronous errors
     (async () => {
       try {
         await processVideoJob(jobId, fileId, videoFile.path, odometerImagePath);
       } catch (error) {
         // If processVideoJob didn't update the status (shouldn't happen, but safety net)
-        logger.error({ jobId, error }, "Job processing failed with unhandled error");
+        logger.error(
+          { jobId, error },
+          "Job processing failed with unhandled error",
+        );
         // Ensure job status is updated even if processVideoJob failed silently
         try {
           updateJobStatus(jobId, {
             status: "failed",
-            error_message: error instanceof Error ? error.message : String(error),
+            error_message:
+              error instanceof Error ? error.message : String(error),
           });
         } catch (updateError) {
-          logger.error({ jobId, updateError }, "Failed to update job status after error");
+          logger.error(
+            { jobId, updateError },
+            "Failed to update job status after error",
+          );
         }
       }
     })();
@@ -268,7 +288,7 @@ router.post(
       message: "Video uploaded successfully. Processing started.",
       odometerImageUploaded: !!odometerImageFile,
     });
-  })
+  }),
 );
 
 export default router;

@@ -6,11 +6,14 @@
 import axios from "axios";
 
 // Base URL for the backend API
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001/api";
+const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001/api";
 
 // Base URL for backend server (for static file serving)
-export const BACKEND_BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 
-  API_BASE_URL.replace("/api", "") || "http://localhost:3001";
+export const BACKEND_BASE_URL =
+  process.env.NEXT_PUBLIC_BACKEND_URL ||
+  API_BASE_URL.replace("/api", "") ||
+  "http://localhost:3001";
 
 // Create axios instance with default config
 const apiClient = axios.create({
@@ -30,7 +33,7 @@ const apiClient = axios.create({
 export async function uploadVideo(
   file: File,
   odometerImage?: File | null,
-  onProgress?: (progress: number) => void
+  onProgress?: (progress: number) => void,
 ): Promise<{ jobId: string; fileId: string }> {
   const formData = new FormData();
   formData.append("video", file);
@@ -45,7 +48,7 @@ export async function uploadVideo(
     onUploadProgress: (progressEvent) => {
       if (onProgress && progressEvent.total) {
         const percentCompleted = Math.round(
-          (progressEvent.loaded * 100) / progressEvent.total
+          (progressEvent.loaded * 100) / progressEvent.total,
         );
         onProgress(percentCompleted);
       }
@@ -74,11 +77,41 @@ export async function getJobStatus(jobId: string): Promise<{
 }
 
 /**
+ * Inspection record returned by the backend API
+ */
+export interface InspectionRecord {
+  id: string;
+  job_id: string;
+  file_id: string;
+  vehicle_type?: string;
+  vehicle_brand?: string;
+  vehicle_model?: string;
+  vehicle_confidence?: number;
+  odometer_value?: number;
+  odometer_confidence?: number;
+  speedometer_image_path?: string;
+  damage_summary?: string | Record<string, unknown>;
+  scratches_detected?: number;
+  dents_detected?: number;
+  rust_detected?: number;
+  damage_severity?: string;
+  exhaust_type?: string;
+  exhaust_confidence?: number;
+  exhaust_image_path?: string;
+  inspection_report?: string | Record<string, unknown>;
+  extracted_frames?: string | string[];
+  created_at: string;
+  updated_at: string;
+}
+
+/**
  * Get inspection results by ID
  * @param inspectionId - The inspection ID
  * @returns Promise with inspection data
  */
-export async function getInspection(inspectionId: string): Promise<any> {
+export async function getInspection(
+  inspectionId: string,
+): Promise<InspectionRecord> {
   const response = await apiClient.get(`/inspections/${inspectionId}`);
   return response.data;
 }
@@ -87,7 +120,7 @@ export async function getInspection(inspectionId: string): Promise<any> {
  * Get all inspections
  * @returns Promise with list of inspections
  */
-export async function getInspections(): Promise<any[]> {
+export async function getInspections(): Promise<InspectionRecord[]> {
   const response = await apiClient.get("/inspections");
   return response.data;
 }
@@ -123,7 +156,10 @@ export interface MetricsResponse {
  * @param endDate - End date (YYYY-MM-DD)
  * @returns Promise with metrics data
  */
-export async function getMetrics(startDate: string, endDate: string): Promise<MetricsResponse> {
+export async function getMetrics(
+  startDate: string,
+  endDate: string,
+): Promise<MetricsResponse> {
   const response = await apiClient.get("/metrics", {
     params: { startDate, endDate },
   });
@@ -140,8 +176,8 @@ export async function getMetrics(startDate: string, endDate: string): Promise<Me
 export async function getInspectionsByDateRange(
   startDate: string,
   endDate: string,
-  limit?: number
-): Promise<any[]> {
+  limit?: number,
+): Promise<InspectionRecord[]> {
   const response = await apiClient.get("/inspections", {
     params: { startDate, endDate, limit },
   });

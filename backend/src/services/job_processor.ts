@@ -13,6 +13,7 @@ import {
   updateInspection,
 } from "../models/inspection";
 import { config } from "../config/env";
+import { PROGRESS_SIMULATION } from "../config/constants";
 import logger from "../utils/logger";
 
 // Retry configuration
@@ -41,10 +42,12 @@ function isRetryableError(error: unknown): boolean {
   if (axios.isAxiosError(error)) {
     const axiosError = error as AxiosError;
     // Retry on connection errors
-    if (axiosError.code === "ECONNREFUSED" ||
-        axiosError.code === "ETIMEDOUT" ||
-        axiosError.code === "ECONNABORTED" ||
-        axiosError.code === "ENOTFOUND") {
+    if (
+      axiosError.code === "ECONNREFUSED" ||
+      axiosError.code === "ETIMEDOUT" ||
+      axiosError.code === "ECONNABORTED" ||
+      axiosError.code === "ENOTFOUND"
+    ) {
       return true;
     }
     // Retry on 5xx server errors
@@ -71,10 +74,10 @@ export async function processVideoJob(
   jobId: string,
   fileId: string,
   videoPath: string,
-  odometerImagePath?: string
+  odometerImagePath?: string,
 ): Promise<void> {
   const startTime = Date.now();
-  
+
   try {
     logger.info({ jobId, fileId, videoPath }, "Starting video processing job");
 
@@ -95,16 +98,19 @@ export async function processVideoJob(
     logger.debug({ jobId, inspectionId }, "Created inspection record");
 
     // Verify video file exists
-    const absoluteVideoPath = path.isAbsolute(videoPath) 
-      ? videoPath 
+    const absoluteVideoPath = path.isAbsolute(videoPath)
+      ? videoPath
       : path.join(process.cwd(), videoPath);
-    
+
     if (!fs.existsSync(absoluteVideoPath)) {
       throw new Error(`Video file not found: ${absoluteVideoPath}`);
     }
-    
-    logger.debug({ jobId, videoPath: absoluteVideoPath }, "Video file verified");
-    
+
+    logger.debug(
+      { jobId, videoPath: absoluteVideoPath },
+      "Video file verified",
+    );
+
     updateJobStatus(jobId, {
       status: "processing",
       progress: 10,
@@ -113,20 +119,23 @@ export async function processVideoJob(
     // Check ML service health before processing
     const mlServiceHealthUrl = `${config.mlService.url}/health`;
     try {
-      logger.debug({ jobId, url: mlServiceHealthUrl }, "Checking ML service health");
+      logger.debug(
+        { jobId, url: mlServiceHealthUrl },
+        "Checking ML service health",
+      );
       await axios.get(mlServiceHealthUrl, { timeout: 10000 });
       logger.debug({ jobId }, "ML service is healthy");
     } catch (healthError) {
       logger.error(
         { jobId, error: healthError, url: mlServiceHealthUrl },
-        "ML service health check failed"
+        "ML service health check failed",
       );
       throw new Error(
         "ML service is not available. Please ensure the ML service is running on " +
-        `${config.mlService.url}. Check the service logs for details.`
+          `${config.mlService.url}. Check the service logs for details.`,
       );
     }
-    
+
     updateJobStatus(jobId, {
       status: "processing",
       progress: 15,
@@ -139,49 +148,59 @@ export async function processVideoJob(
     });
 
     const mlServiceUrl = `${config.mlService.url}/api/process`;
-    
+
     // Prepare odometer image path if provided
     let absoluteOdometerPath: string | undefined;
     if (odometerImagePath) {
       absoluteOdometerPath = path.isAbsolute(odometerImagePath)
         ? odometerImagePath
         : path.join(process.cwd(), odometerImagePath);
-      
+
       if (!fs.existsSync(absoluteOdometerPath)) {
-        logger.warn({ jobId, path: absoluteOdometerPath }, "Odometer image not found, proceeding without it");
+        logger.warn(
+          { jobId, path: absoluteOdometerPath },
+          "Odometer image not found, proceeding without it",
+        );
         absoluteOdometerPath = undefined;
       } else {
-        logger.debug({ jobId, odometerPath: absoluteOdometerPath }, "Odometer image verified");
+        logger.debug(
+          { jobId, odometerPath: absoluteOdometerPath },
+          "Odometer image verified",
+        );
       }
     }
 
     logger.info(
-      { 
-        jobId, 
-        mlServiceUrl, 
+      {
+        jobId,
+        mlServiceUrl,
         videoPath: absoluteVideoPath,
         hasOdometerImage: !!absoluteOdometerPath,
-        timeout: config.mlService.timeout 
-      }, 
-      "Calling ML service for video processing"
+        timeout: config.mlService.timeout,
+      },
+      "Calling ML service for video processing",
     );
 
     // Set up progress simulation during ML service processing
     // This helps show that processing is ongoing even if ML service takes time
     let progressInterval: NodeJS.Timeout | null = null;
-    let currentProgress = 20;
-    const progressIncrement = 5; // Increment by 5% every 10 seconds
-    const progressIntervalMs = 10000; // Update every 10 seconds
-    
+    let currentProgress = PROGRESS_SIMULATION.MIN_PROGRESS;
+    const progressIncrement = PROGRESS_SIMULATION.INCREMENT;
+    const progressIntervalMs = PROGRESS_SIMULATION.INTERVAL_MS;
+
     const startProgressSimulation = () => {
       progressInterval = setInterval(() => {
-        if (currentProgress < 85) { // Cap at 85% during simulation
+        if (currentProgress < PROGRESS_SIMULATION.MAX_PROGRESS) {
+          // Cap at 85% during simulation
           currentProgress += progressIncrement;
           updateJobStatus(jobId, {
             status: "processing",
             progress: currentProgress,
           });
-          logger.debug({ jobId, progress: currentProgress }, "Progress update during ML processing");
+          logger.debug(
+            { jobId, progress: currentProgress },
+            "Progress update during ML processing",
+          );
         }
       }, progressIntervalMs);
     };
@@ -208,7 +227,10 @@ export async function processVideoJob(
         status: "processing",
         progress: 25,
       });
-      logger.debug({ jobId }, "ML service initializing models (this may take 30-60 seconds)...");
+      logger.debug(
+        { jobId },
+        "ML service initializing models (this may take 30-60 seconds)...",
+      );
 
       // Retry loop for ML service requests
       while (retryAttempt <= RETRY_CONFIG.maxRetries) {
@@ -216,8 +238,13 @@ export async function processVideoJob(
           if (retryAttempt > 0) {
             const delay = calculateBackoffDelay(retryAttempt - 1);
             logger.info(
-              { jobId, attempt: retryAttempt, maxRetries: RETRY_CONFIG.maxRetries, delayMs: delay },
-              `Retrying ML service request after ${delay}ms delay`
+              {
+                jobId,
+                attempt: retryAttempt,
+                maxRetries: RETRY_CONFIG.maxRetries,
+                delayMs: delay,
+              },
+              `Retrying ML service request after ${delay}ms delay`,
             );
             await sleep(delay);
 
@@ -242,29 +269,41 @@ export async function processVideoJob(
               },
               // Add request timeout handler
               validateStatus: (status) => status < 500, // Don't throw on 4xx errors
-              // Increase max content length
-              maxContentLength: Infinity,
-              maxBodyLength: Infinity,
-            }
+              maxContentLength: 50 * 1024 * 1024, // 50MB
+              maxBodyLength: 50 * 1024 * 1024, // 50MB
+            },
           );
 
           // Check for error responses (4xx errors - not retryable)
           if (response.status >= 400) {
-            const errorMessage = response.data?.detail || response.data?.error || `ML service returned error: ${response.status}`;
-            logger.error({ jobId, status: response.status, error: errorMessage }, "ML service returned error");
+            const errorMessage =
+              response.data?.detail ||
+              response.data?.error ||
+              `ML service returned error: ${response.status}`;
+            logger.error(
+              { jobId, status: response.status, error: errorMessage },
+              "ML service returned error",
+            );
             throw new Error(errorMessage);
           }
 
           // Success - break out of retry loop
           break;
         } catch (attemptError) {
-
           // Check if error is retryable and we have retries left
-          if (isRetryableError(attemptError) && retryAttempt < RETRY_CONFIG.maxRetries) {
+          if (
+            isRetryableError(attemptError) &&
+            retryAttempt < RETRY_CONFIG.maxRetries
+          ) {
             retryAttempt++;
             logger.warn(
-              { jobId, attempt: retryAttempt, maxRetries: RETRY_CONFIG.maxRetries, error: attemptError },
-              "ML service request failed, will retry"
+              {
+                jobId,
+                attempt: retryAttempt,
+                maxRetries: RETRY_CONFIG.maxRetries,
+                error: attemptError,
+              },
+              "ML service request failed, will retry",
             );
             continue;
           }
@@ -280,7 +319,7 @@ export async function processVideoJob(
       const requestDuration = Date.now() - requestStartTime;
       logger.info(
         { jobId, duration: requestDuration, retryAttempts: retryAttempt },
-        "ML service request completed successfully"
+        "ML service request completed successfully",
       );
     } catch (requestError) {
       // Stop progress simulation on error
@@ -295,7 +334,7 @@ export async function processVideoJob(
           url: mlServiceUrl,
           totalAttempts: retryAttempt + 1,
         },
-        "ML service request failed after all retry attempts"
+        "ML service request failed after all retry attempts",
       );
       throw requestError;
     }
@@ -341,11 +380,11 @@ export async function processVideoJob(
     const duration = Date.now() - startTime;
     logger.info(
       { jobId, inspectionId, duration },
-      "Video processing job completed successfully"
+      "Video processing job completed successfully",
     );
   } catch (error) {
     const duration = Date.now() - startTime;
-    
+
     // Extract meaningful error message
     let errorMessage = "Unknown error during processing";
     let errorDetails: any = {};
@@ -353,7 +392,7 @@ export async function processVideoJob(
     // Check if it's an AxiosError
     if (axios.isAxiosError(error)) {
       const axiosError = error as AxiosError;
-      
+
       errorDetails = {
         message: axiosError.message,
         code: axiosError.code,
@@ -375,18 +414,28 @@ export async function processVideoJob(
           errorMessage = data.error;
         }
       }
-      
+
       // Handle specific error codes
       if (axiosError.code === "ECONNREFUSED") {
-        errorMessage = "ML service is not available. Please ensure the ML service is running.";
-      } else if (axiosError.code === "ETIMEDOUT" || axiosError.code === "ECONNABORTED") {
-        errorMessage = "Request to ML service timed out. The video may be too large or the service is overloaded.";
+        errorMessage =
+          "ML service is not available. Please ensure the ML service is running.";
+      } else if (
+        axiosError.code === "ETIMEDOUT" ||
+        axiosError.code === "ECONNABORTED"
+      ) {
+        errorMessage =
+          "Request to ML service timed out. The video may be too large or the service is overloaded.";
       } else if (axiosError.code === "ENOTFOUND") {
-        errorMessage = "Cannot reach ML service. Please check the service URL configuration.";
+        errorMessage =
+          "Cannot reach ML service. Please check the service URL configuration.";
       } else if (axiosError.response?.status === 400) {
-        errorMessage = errorMessage || "Invalid request to ML service. Please check the video file.";
+        errorMessage =
+          errorMessage ||
+          "Invalid request to ML service. Please check the video file.";
       } else if (axiosError.response?.status === 500) {
-        errorMessage = errorMessage || "ML service encountered an internal error. Please try again later.";
+        errorMessage =
+          errorMessage ||
+          "ML service encountered an internal error. Please try again later.";
       } else if (axiosError.message && !errorMessage.includes("Unknown")) {
         errorMessage = axiosError.message;
       }
@@ -413,7 +462,7 @@ export async function processVideoJob(
         ...errorDetails,
         duration,
       },
-      "Video processing job failed"
+      "Video processing job failed",
     );
 
     updateJobStatus(jobId, {

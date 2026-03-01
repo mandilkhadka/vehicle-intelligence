@@ -36,17 +36,19 @@ const app: Express = express();
 app.set("trust proxy", 1);
 
 // Security middleware
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'"],
-      imgSrc: ["'self'", "data:", "blob:"],
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        scriptSrc: ["'self'"],
+        imgSrc: ["'self'", "data:", "blob:"],
+      },
     },
-  },
-  crossOriginEmbedderPolicy: false,
-}));
+    crossOriginEmbedderPolicy: false,
+  }),
+);
 
 // Compression middleware
 app.use(compression());
@@ -69,7 +71,7 @@ app.use(
     customErrorMessage: (req, res, err) => {
       return `${req.method} ${req.url} failed`;
     },
-  })
+  }),
 );
 
 // CORS configuration
@@ -85,7 +87,7 @@ app.use(
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "X-Request-ID"],
-  })
+  }),
 );
 
 // Body parsing middleware
@@ -110,7 +112,7 @@ app.use("/api/", limiter);
 app.get("/health", (req, res) => {
   const db = getDatabase();
   const dbHealthy = db ? true : false;
-  
+
   const health = {
     status: dbHealthy ? "healthy" : "degraded",
     timestamp: new Date().toISOString(),
@@ -136,8 +138,25 @@ app.get("/ready", (req, res) => {
   res.json({ status: "ready" });
 });
 
-// Serve static files (uploads directory)
-app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
+// Serve static files with access control — block raw video downloads
+app.use(
+  "/uploads",
+  (req, res, next) => {
+    // Block access to raw video files
+    if (req.path.startsWith("/videos/")) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    // Only allow known resource directories
+    const allowedPrefixes = ["/frames/", "/odometer_images/"];
+    if (!allowedPrefixes.some((prefix) => req.path.startsWith(prefix))) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    next();
+  },
+  express.static(path.join(process.cwd(), "uploads")),
+);
 
 // API routes
 app.use("/api/upload", uploadRouter);
@@ -153,8 +172,11 @@ app.use(errorHandler);
 
 // Graceful shutdown handler
 const gracefulShutdown = (signal: string) => {
-  logger.info({ signal }, "Received shutdown signal, closing server gracefully");
-  
+  logger.info(
+    { signal },
+    "Received shutdown signal, closing server gracefully",
+  );
+
   try {
     const db = getDatabase();
     if (db) {
@@ -164,7 +186,7 @@ const gracefulShutdown = (signal: string) => {
   } catch (error) {
     logger.error({ error }, "Error closing database connection");
   }
-  
+
   process.exit(0);
 };
 
@@ -190,7 +212,7 @@ const server = app.listen(config.port, () => {
       environment: config.env,
       nodeVersion: process.version,
     },
-    "Backend API server started"
+    "Backend API server started",
   );
 });
 

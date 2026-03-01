@@ -10,6 +10,7 @@ from typing import Dict, Any, List, Optional
 from ultralytics import YOLO
 import cv2
 import numpy as np
+from src.utils.frame_utils import select_frames
 
 logger = logging.getLogger(__name__)
 
@@ -39,27 +40,8 @@ class ExhaustClassifier:
             self.yolo_model = YOLO("yolov8n.pt")
 
     def _select_frames(self, frame_paths: List[str], max_frames: int) -> List[str]:
-        """
-        Select evenly-spaced frames from the input list.
-        This ensures good coverage across the entire 360-degree video.
-
-        Args:
-            frame_paths: Full list of frame paths
-            max_frames: Maximum number of frames to select
-
-        Returns:
-            List of evenly-spaced frame paths
-        """
-        if len(frame_paths) <= max_frames:
-            return frame_paths
-
-        # Calculate step size for even distribution
-        step = len(frame_paths) / max_frames
-        selected_indices = [int(i * step) for i in range(max_frames)]
-        selected_frames = [frame_paths[i] for i in selected_indices]
-
-        logger.info(f"ExhaustClassifier: Selected {len(selected_frames)} frames from {len(frame_paths)} total (evenly spaced)")
-        return selected_frames
+        """Select evenly-spaced frames from the input list."""
+        return select_frames(frame_paths, max_frames, "ExhaustClassifier")
 
     async def classify(self, frame_paths: List[str], inspection_id: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -176,7 +158,7 @@ class ExhaustClassifier:
                     }
 
             except Exception as e:
-                print(f"Exhaust classification error for {frame_path}: {e}")
+                logger.warning(f"Exhaust classification error for {frame_path}: {e}")
                 continue
 
         # Save exhaust snapshot if we found a good frame
@@ -190,9 +172,9 @@ class ExhaustClassifier:
                 if backend_uploads_path:
                     exhaust_image_path = os.path.relpath(snapshot_path_full, backend_uploads_path)
                     exhaust_image_path = exhaust_image_path.replace("\\", "/")  # Normalize path separators
-                    print(f"Saved exhaust snapshot: {exhaust_image_path}")
+                    logger.info(f"Saved exhaust snapshot: {exhaust_image_path}")
             except Exception as e:
-                print(f"Error saving exhaust snapshot: {e}")
+                logger.error(f"Error saving exhaust snapshot: {e}")
 
         # Aggregate results
         if not exhaust_features:

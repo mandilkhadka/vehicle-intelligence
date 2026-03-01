@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 import os
 from pathlib import Path
+from src.utils.frame_utils import select_frames
 
 logger = logging.getLogger(__name__)
 
@@ -40,27 +41,8 @@ class DamageDetector:
             self.yolo_model = YOLO("yolov8n.pt")
 
     def _select_frames(self, frame_paths: List[str], max_frames: int) -> List[str]:
-        """
-        Select evenly-spaced frames from the input list.
-        This ensures good coverage across the entire 360-degree video.
-
-        Args:
-            frame_paths: Full list of frame paths
-            max_frames: Maximum number of frames to select
-
-        Returns:
-            List of evenly-spaced frame paths
-        """
-        if len(frame_paths) <= max_frames:
-            return frame_paths
-
-        # Calculate step size for even distribution
-        step = len(frame_paths) / max_frames
-        selected_indices = [int(i * step) for i in range(max_frames)]
-        selected_frames = [frame_paths[i] for i in selected_indices]
-
-        logger.info(f"DamageDetector: Selected {len(selected_frames)} frames from {len(frame_paths)} total (evenly spaced)")
-        return selected_frames
+        """Select evenly-spaced frames from the input list."""
+        return select_frames(frame_paths, max_frames, "DamageDetector")
 
     async def detect(self, frame_paths: List[str], inspection_id: str = None) -> Dict[str, Any]:
         """

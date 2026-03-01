@@ -33,24 +33,25 @@ VEHICLE_TYPES = {
 }
 
 # Color Detection Ranges (HSV format)
-# Each color has lower and upper bounds for HSV values
-# Red has two ranges because it wraps around the hue spectrum
+# Each color has "lower" and "upper" keys, both containing lists of tuples.
+# Colors with multiple ranges (e.g., red wrapping around hue 0/180) have multiple entries.
+# Single-range colors have a list with one tuple for consistency.
 COLOR_RANGES = {
     "white": {
-        "lower": (0, 0, 200),
-        "upper": (180, 30, 255),
+        "lower": [(0, 0, 200)],
+        "upper": [(180, 30, 255)],
     },
     "black": {
-        "lower": (0, 0, 0),
-        "upper": (180, 255, 50),
+        "lower": [(0, 0, 0)],
+        "upper": [(180, 255, 50)],
     },
     "gray": {
-        "lower": (0, 0, 50),
-        "upper": (180, 30, 200),
+        "lower": [(0, 0, 50)],
+        "upper": [(180, 30, 200)],
     },
     "silver": {
-        "lower": (0, 0, 150),
-        "upper": (180, 20, 220),
+        "lower": [(0, 0, 150)],
+        "upper": [(180, 20, 220)],
     },
     "red": {
         # Red wraps around hue 0/180, so we need two ranges
@@ -58,40 +59,40 @@ COLOR_RANGES = {
         "upper": [(10, 255, 255), (180, 255, 255)],
     },
     "blue": {
-        "lower": (100, 100, 100),
-        "upper": (130, 255, 255),
+        "lower": [(100, 100, 100)],
+        "upper": [(130, 255, 255)],
     },
     "green": {
-        "lower": (35, 100, 100),
-        "upper": (85, 255, 255),
+        "lower": [(35, 100, 100)],
+        "upper": [(85, 255, 255)],
     },
     "yellow": {
-        "lower": (20, 100, 100),
-        "upper": (35, 255, 255),
+        "lower": [(20, 100, 100)],
+        "upper": [(35, 255, 255)],
     },
     "orange": {
-        "lower": (10, 100, 100),
-        "upper": (20, 255, 255),
+        "lower": [(10, 100, 100)],
+        "upper": [(20, 255, 255)],
     },
     "brown": {
-        "lower": (10, 100, 50),
-        "upper": (20, 255, 150),
+        "lower": [(10, 100, 50)],
+        "upper": [(20, 255, 150)],
     },
     "beige": {
-        "lower": (15, 30, 150),
-        "upper": (25, 80, 220),
+        "lower": [(15, 30, 150)],
+        "upper": [(25, 80, 220)],
     },
     "gold": {
-        "lower": (20, 100, 150),
-        "upper": (30, 255, 255),
+        "lower": [(20, 100, 150)],
+        "upper": [(30, 255, 255)],
     },
     "purple": {
-        "lower": (130, 100, 100),
-        "upper": (160, 255, 255),
+        "lower": [(130, 100, 100)],
+        "upper": [(160, 255, 255)],
     },
     "pink": {
-        "lower": (150, 50, 150),
-        "upper": (170, 150, 255),
+        "lower": [(150, 50, 150)],
+        "upper": [(170, 150, 255)],
     },
 }
 

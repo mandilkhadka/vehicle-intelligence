@@ -297,20 +297,25 @@ async def process_video(request: ProcessRequest, http_request: Request):
         # Validate input files
         _validate_input_files(request)
 
-        # Get model registry from app.state (initialized at startup)
-        model_registry = getattr(http_request.app.state, 'model_registry', None)
-
-        # Initialize ML services with shared models
-        logger.info("Initializing ML services...")
-        try:
+        # Get cached ML services from app.state (initialized at startup)
+        ml_services = getattr(http_request.app.state, 'ml_services', None)
+        if ml_services is not None:
             (frame_extractor, vehicle_identifier, dashboard_detector,
-             odometer_reader, damage_detector, exhaust_classifier, report_generator) = initialize_ml_services(model_registry)
-        except Exception as e:
-            logger.error(f"Failed to initialize ML services: {str(e)}", exc_info=True)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to initialize ML services: {str(e)}"
-            )
+             odometer_reader, damage_detector, exhaust_classifier, report_generator) = ml_services
+            logger.debug("Using cached ML services from app.state")
+        else:
+            # Fallback: initialize per-request (should not happen in normal operation)
+            logger.warning("ML services not found in app.state, initializing per-request")
+            model_registry = getattr(http_request.app.state, 'model_registry', None)
+            try:
+                (frame_extractor, vehicle_identifier, dashboard_detector,
+                 odometer_reader, damage_detector, exhaust_classifier, report_generator) = initialize_ml_services(model_registry)
+            except Exception as e:
+                logger.error(f"Failed to initialize ML services: {str(e)}", exc_info=True)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to initialize ML services: {str(e)}"
+                )
 
         backend_root = get_backend_root()
 
