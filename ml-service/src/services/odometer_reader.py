@@ -70,19 +70,8 @@ class OdometerReader:
         if api_key and len(api_key) >= 20 and GEMINI_AVAILABLE:
             try:
                 genai.configure(api_key=api_key)
-                # Try gemini-1.5-flash first (faster, more stable), fallback to gemini-1.5-pro
-                try:
-                    self.gemini_model = genai.GenerativeModel("gemini-1.5-flash")
-                    print("Gemini LLM initialized with gemini-1.5-flash for odometer validation")
-                except Exception as e:
-                    print(f"Failed to initialize gemini-1.5-flash, trying gemini-1.5-pro: {e}")
-                    try:
-                        self.gemini_model = genai.GenerativeModel("gemini-1.5-pro")
-                        print("Gemini LLM initialized with gemini-1.5-pro for odometer validation")
-                    except Exception as e2:
-                        print(f"Failed to initialize gemini-1.5-pro, trying legacy gemini-pro: {e2}")
-                        self.gemini_model = genai.GenerativeModel("gemini-pro")
-                        print("Gemini LLM initialized with legacy gemini-pro for odometer validation")
+                self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
+                print("Gemini LLM initialized with gemini-2.5-pro for odometer validation")
                 self.use_gemini = True
             except Exception as e:
                 print(f"Failed to configure Gemini API: {e}")

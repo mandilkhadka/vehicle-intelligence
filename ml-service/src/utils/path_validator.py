@@ -8,6 +8,7 @@ provides an extra layer of protection at the ML service boundary.
 import os
 import logging
 from pathlib import Path
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ class PathValidator:
         safe_path = validator.validate_or_raise(user_provided_path, "video")
     """
 
-    def __init__(self, allowed_base_paths: list[str] | None = None):
+    def __init__(self, allowed_base_paths: Optional[List[str]] = None):
         """
         Initialize the path validator.
 

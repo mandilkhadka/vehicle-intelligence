@@ -197,40 +197,6 @@ async def read_odometer_from_frames(dashboard_detector: DashboardDetector,
     return odometer_data
 
 
-def get_mock_response(inspection_id: str) -> "ProcessResponse":
-    """Return mock data for testing."""
-    return ProcessResponse(
-        inspection_id=inspection_id,
-        frames=["frames/sample/frame_0001.jpg", "frames/sample/frame_0002.jpg"],
-        vehicle_info={
-            "type": "sedan",
-            "brand": "Toyota",
-            "model": "Camry",
-            "confidence": 0.95
-        },
-        odometer={
-            "value": 45230,
-            "confidence": 0.88,
-            "speedometer_image_path": "odometer_images/sample.jpg"
-        },
-        damage={
-            "severity": "minor",
-            "scratches": {"count": 2, "locations": ["front-left", "rear-right"]},
-            "dents": {"count": 1, "locations": ["front-right"]},
-            "rust": {"count": 0, "locations": []}
-        },
-        exhaust={
-            "type": "single",
-            "confidence": 0.92,
-            "exhaust_image_path": "exhaust/sample.jpg"
-        },
-        report={
-            "summary": "Vehicle in good condition with minor cosmetic damage",
-            "recommendations": ["Repair minor scratches", "Regular maintenance recommended"]
-        }
-    )
-
-
 @router.post("/test")
 async def test_endpoint():
     """Simple test endpoint to verify the service is receiving requests"""
@@ -284,12 +250,6 @@ async def process_video(request: ProcessRequest, http_request: Request):
     logger.info(f"Video path: {request.video_path}")
     logger.info(f"Odometer image path: {request.odometer_image_path or 'None'}")
     logger.info("=" * 80)
-
-    # Check for mock mode
-    if os.getenv("MOCK_MODE", "false").lower() == "true":
-        logger.info("MOCK MODE ENABLED - Returning sample data immediately")
-        await asyncio.sleep(2)
-        return get_mock_response(request.inspection_id)
 
     logger.info(f"Starting video processing for inspection {request.inspection_id}")
 
@@ -351,6 +311,9 @@ async def process_video(request: ProcessRequest, http_request: Request):
         async def detect_damage():
             logger.info("  [Parallel] Starting damage detection...")
             result = await damage_detector.detect(frames_absolute, request.inspection_id)
+            for loc in result.get("locations", []) or []:
+                if loc.get("frame"):
+                    loc["frame"] = convert_to_relative_path(loc["frame"], backend_root)
             logger.info(f"  [Parallel] Damage detection completed. Severity: {result.get('severity', 'unknown')}")
             return result
 

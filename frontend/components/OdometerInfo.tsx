@@ -1,11 +1,8 @@
 "use client";
 
-/**
- * Odometer information display component
- * Shows odometer reading and speedometer image
- */
-
 import Image from "next/image";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
 import { BACKEND_BASE_URL } from "@/lib/api";
 
 interface OdometerInfoProps {
@@ -19,56 +16,55 @@ interface OdometerInfoProps {
 export default function OdometerInfo({ odometer }: OdometerInfoProps) {
   if (!odometer) {
     return (
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
-        <h3 className="text-lg font-semibold mb-4 text-slate-900">Odometer Reading</h3>
-        <p className="text-slate-500">No odometer data available</p>
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Odometer</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">No odometer data available</p>
+        </CardContent>
+      </Card>
     );
   }
 
-  const confidencePercent = odometer.confidence
-    ? Math.round(odometer.confidence * 100)
-    : 0;
+  const pct = Math.round((odometer.confidence || 0) * 100);
+  const value =
+    odometer.value !== null && odometer.value !== undefined
+      ? `${odometer.value.toLocaleString()} km`
+      : "Not detected";
+
+  const imgPath = odometer.speedometer_image_path
+    ? `uploads/${odometer.speedometer_image_path.replace(/^.*uploads\//, "")}`
+    : null;
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 hover:shadow-md transition-shadow">
-      <h3 className="text-lg font-semibold mb-4 text-slate-900">Odometer Reading</h3>
-      <div className="space-y-4">
+    <Card>
+      <CardHeader>
+        <CardTitle>Odometer</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
         <div>
-          <span className="text-sm text-slate-600">Value:</span>
-          <span className="ml-2 text-2xl font-bold text-slate-900">
-            {odometer.value !== null && odometer.value !== undefined
-              ? `${odometer.value.toLocaleString()} km`
-              : "Not detected"}
-          </span>
+          <p className="text-2xl font-bold tracking-tight">{value}</p>
         </div>
         <div>
-          <span className="text-sm text-slate-600">Confidence:</span>
-          <span className="ml-2 font-medium text-green-600">{confidencePercent}%</span>
-          <div className="mt-1 w-full bg-slate-200 rounded-full h-2">
-            <div
-              className="bg-green-600 h-2 rounded-full transition-all"
-              style={{ width: `${confidencePercent}%` }}
+          <div className="mb-1 flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">Confidence</span>
+            <span className="font-medium">{pct}%</span>
+          </div>
+          <Progress value={pct} className="h-1.5" />
+        </div>
+        {imgPath && (
+          <div className="relative aspect-video overflow-hidden rounded-lg border border-border bg-secondary/40">
+            <Image
+              src={`${BACKEND_BASE_URL}/${imgPath}`}
+              alt="Speedometer"
+              fill
+              className="object-contain"
+              unoptimized
             />
           </div>
-        </div>
-        {odometer.speedometer_image_path && (
-          <div>
-            <span className="text-sm text-slate-600 block mb-2">
-              Speedometer Image:
-            </span>
-            <div className="relative w-full aspect-video rounded-lg border border-slate-200 overflow-hidden bg-slate-50">
-              <Image
-                src={`${BACKEND_BASE_URL}/uploads/${odometer.speedometer_image_path.replace(/^.*uploads\//, "")}`}
-                alt="Speedometer"
-                fill
-                className="object-contain"
-                unoptimized
-              />
-            </div>
-          </div>
         )}
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }

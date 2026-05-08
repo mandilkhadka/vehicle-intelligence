@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation"
 import { Header } from "@/components/header"
 import { Sidebar } from "@/components/sidebar"
 import { UploadDropzone } from "@/components/inspect/upload-dropzone"
-import { InspectionOptions } from "@/components/inspect/inspection-options"
 import { Button } from "@/components/ui/button"
 import { ArrowRight, Loader2 } from "lucide-react"
 
@@ -23,16 +22,12 @@ export default function InspectPage() {
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([])
   const [isStarting, setIsStarting] = useState(false)
 
-  const handleFilesUploaded = (files: UploadedFile[]) => {
-    setUploadedFiles(files)
-  }
+  const completedFile = uploadedFiles.find((f) => f.status === "complete" && f.jobId)
+  const canStart = Boolean(completedFile?.jobId) && !isStarting
 
   const handleStartInspection = () => {
-    const completedFile = uploadedFiles.find((f) => f.status === "complete" && f.jobId)
     if (!completedFile?.jobId) return
-
     setIsStarting(true)
-    // Redirect to job status page to monitor processing
     router.push(`/job/${completedFile.jobId}`)
   }
 
@@ -42,25 +37,22 @@ export default function InspectPage() {
       <div className="flex">
         <Sidebar />
         <main className="flex-1 overflow-auto">
-          <div className="p-6">
-            <div className="mb-6 flex items-center justify-between">
-              <div>
-                <h1 className="text-2xl font-bold tracking-tight">
-                  New Inspection
-                </h1>
-                <p className="text-muted-foreground">
-                  Upload a 360° vehicle video for AI analysis
-                </p>
-              </div>
-              <Button
-                onClick={handleStartInspection}
-                disabled={!uploadedFiles.some((f) => f.status === "complete" && f.jobId) || isStarting}
-                className="gap-2"
-              >
+          <div className="mx-auto max-w-3xl p-6">
+            <div className="mb-6">
+              <h1 className="text-2xl font-bold tracking-tight">New Inspection</h1>
+              <p className="text-muted-foreground">
+                Upload a 360° vehicle video. Optionally include a clear odometer photo.
+              </p>
+            </div>
+
+            <UploadDropzone onFilesUploaded={setUploadedFiles} />
+
+            <div className="mt-6 flex justify-end">
+              <Button onClick={handleStartInspection} disabled={!canStart} className="gap-2">
                 {isStarting ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    Starting...
+                    Starting…
                   </>
                 ) : (
                   <>
@@ -69,15 +61,6 @@ export default function InspectPage() {
                   </>
                 )}
               </Button>
-            </div>
-
-            <div className="grid gap-6 lg:grid-cols-3">
-              <div className="lg:col-span-2">
-                <UploadDropzone onFilesUploaded={handleFilesUploaded} />
-              </div>
-              <div>
-                <InspectionOptions />
-              </div>
             </div>
           </div>
         </main>

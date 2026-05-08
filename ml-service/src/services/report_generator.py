@@ -32,19 +32,9 @@ class ReportGenerator:
         else:
             try:
                 genai.configure(api_key=api_key)
-                # Try gemini-1.5-flash first (faster, more stable), fallback to gemini-1.5-pro
-                try:
-                    self.model = genai.GenerativeModel("gemini-1.5-flash")
-                    print("Gemini LLM initialized with gemini-1.5-flash for report generation")
-                except Exception as e:
-                    print(f"Failed to initialize gemini-1.5-flash, trying gemini-1.5-pro: {e}")
-                    try:
-                        self.model = genai.GenerativeModel("gemini-1.5-pro")
-                        print("Gemini LLM initialized with gemini-1.5-pro for report generation")
-                    except Exception as e2:
-                        print(f"Failed to initialize gemini-1.5-pro, trying legacy gemini-pro: {e2}")
-                        self.model = genai.GenerativeModel("gemini-pro")
-                        print("Gemini LLM initialized with legacy gemini-pro for report generation")
+                # Use gemini-2.5-pro (fast and capable)
+                self.model = genai.GenerativeModel("gemini-2.5-pro")
+                print("Gemini LLM initialized with gemini-2.5-pro for report generation")
                 self.api_key = api_key
             except Exception as e:
                 print(f"Failed to configure Gemini API: {e}")

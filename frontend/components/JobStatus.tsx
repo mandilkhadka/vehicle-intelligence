@@ -1,18 +1,25 @@
 "use client";
 
-/**
- * Job status component
- * Displays job processing status and redirects to results when complete
- */
-
-import { useState, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
+import { CheckCircle2, Circle, Loader2, XCircle } from "lucide-react";
 import { getJobStatus } from "@/lib/api";
 import { PROGRESS } from "@/lib/constants";
 import { showError } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 
-// Destructure thresholds for cleaner code
-const { UPLOAD_COMPLETE, FRAME_EXTRACTION, VEHICLE_IDENTIFIED, ODOMETER_READ, DAMAGE_DETECTED, REPORT_GENERATED } = PROGRESS.THRESHOLDS;
+const T = PROGRESS.THRESHOLDS;
+
+const STAGES: Array<{ label: string; at: number }> = [
+  { label: "Video uploaded", at: T.UPLOAD_COMPLETE },
+  { label: "Extracting frames", at: T.FRAME_EXTRACTION },
+  { label: "Identifying vehicle", at: T.VEHICLE_IDENTIFIED },
+  { label: "Reading odometer", at: T.ODOMETER_READ },
+  { label: "Detecting damage", at: T.DAMAGE_DETECTED },
+  { label: "Generating report", at: T.REPORT_GENERATED },
+];
 
 interface JobStatusProps {
   jobId: string;
@@ -23,139 +30,104 @@ export default function JobStatus({ jobId }: JobStatusProps) {
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
+  const stoppedRef = useRef(false);
 
-  /**
-   * Poll job status
-   */
   useEffect(() => {
-    const pollStatus = async () => {
-      try {
-        const jobData = await getJobStatus(jobId);
-        setStatus(jobData.status);
-        setProgress(jobData.progress || 0);
+    stoppedRef.current = false;
 
-        if (jobData.status === "completed" && (jobData.inspectionId || jobData.inspection_id)) {
-          // Redirect to inspection results
-          setTimeout(() => {
-            router.push(`/inspection/${jobData.inspectionId || jobData.inspection_id}`);
-          }, 1000);
-        } else if (jobData.status === "failed") {
-          setError(jobData.error_message || jobData.error || "Processing failed");
+    const poll = async () => {
+      if (stoppedRef.current) return;
+      try {
+        const data = await getJobStatus(jobId);
+        setStatus(data.status);
+        setProgress(data.progress ?? 0);
+
+        if (data.status === "completed") {
+          stoppedRef.current = true;
+          const inspectionId = data.inspectionId || data.inspection_id;
+          if (inspectionId) {
+            setTimeout(() => router.push(`/inspection/${inspectionId}`), 800);
+          }
+        } else if (data.status === "failed") {
+          stoppedRef.current = true;
+          setError(data.error_message || data.error || "Processing failed");
         }
-      } catch (err: any) {
-        const msg = "Failed to fetch job status";
-        setError(msg);
-        showError(msg, err);
+      } catch (err) {
+        setError("Failed to fetch job status");
+        showError("Failed to fetch job status", err);
       }
     };
 
-    // Poll immediately
-    pollStatus();
-
-    // Poll every 2 seconds if not completed or failed
+    poll();
     const interval = setInterval(() => {
-      if (status !== "completed" && status !== "failed") {
-        pollStatus();
-      }
+      if (!stoppedRef.current) poll();
     }, 2000);
 
-    return () => clearInterval(interval);
-  }, [jobId, status, router]);
+    return () => {
+      stoppedRef.current = true;
+      clearInterval(interval);
+    };
+  }, [jobId, router]);
+
+  const isFailed = status === "failed";
+  const isDone = status === "completed";
 
   return (
-    <div className="max-w-2xl mx-auto p-6">
-      <h2 className="text-2xl font-bold mb-6 text-slate-900">Processing Video</h2>
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle className="capitalize">{status}</CardTitle>
+        <span className="text-sm font-medium text-muted-foreground">{progress}%</span>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        <Progress
+          value={progress}
+          className={cn(
+            "h-2",
+            isFailed && "[&>div]:bg-destructive",
+            isDone && "[&>div]:bg-emerald-500",
+          )}
+        />
 
-      {/* Status display */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
-        <div className="mb-4">
-          <div className="flex justify-between text-sm text-slate-700 mb-2 font-medium">
-            <span className="capitalize">Status: <span className="font-bold">{status}</span></span>
-            <span className="font-bold text-blue-600">{progress}%</span>
-          </div>
-          <div className="w-full bg-slate-200 rounded-full h-3">
-            <div
-              className={`h-3 rounded-full transition-all duration-300 ${
-                status === "failed"
-                  ? "bg-red-600"
-                  : status === "completed"
-                  ? "bg-green-600"
-                  : "bg-blue-600"
-              }`}
-              style={{ width: `${progress}%` }}
-            />
-          </div>
-        </div>
+        <ul className="space-y-2">
+          {STAGES.map((stage) => {
+            const reached = progress >= stage.at;
+            const active = !reached && progress >= (STAGES[STAGES.indexOf(stage) - 1]?.at ?? 0);
+            return (
+              <li key={stage.label} className="flex items-center gap-3 text-sm">
+                {reached ? (
+                  <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                ) : active && !isFailed ? (
+                  <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                ) : (
+                  <Circle className="h-4 w-4 text-muted-foreground/40" />
+                )}
+                <span className={cn(reached ? "text-foreground" : "text-muted-foreground")}>
+                  {stage.label}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
 
-        {/* Status messages */}
-        {status === "pending" && (
-          <p className="text-slate-600 font-medium">Job is queued and waiting to start...</p>
+        {progress >= T.UPLOAD_COMPLETE && progress < T.FRAME_EXTRACTION && !isFailed && (
+          <p className="text-xs text-muted-foreground">
+            Initializing AI models — this may take 30–60s on the first run.
+          </p>
         )}
-        {status === "processing" && (
-          <div>
-            <p className="text-slate-700 mb-3 font-semibold">Processing video...</p>
-            <ul className="text-sm text-slate-600 space-y-2">
-              <li className="flex items-center gap-2">
-                <span className={progress >= UPLOAD_COMPLETE ? "text-green-500" : "text-slate-400"}>
-                  {progress >= UPLOAD_COMPLETE ? "✓" : "○"}
-                </span>
-                {progress < UPLOAD_COMPLETE ? "Preparing..." : "Video uploaded"}
-              </li>
-              <li className="flex items-center gap-2">
-                <span className={progress >= FRAME_EXTRACTION ? "text-green-500" : progress >= UPLOAD_COMPLETE ? "text-blue-500 animate-pulse" : "text-slate-400"}>
-                  {progress >= FRAME_EXTRACTION ? "✓" : progress >= UPLOAD_COMPLETE ? "⏳" : "○"}
-                </span>
-                Extracting frames
-              </li>
-              <li className="flex items-center gap-2">
-                <span className={progress >= VEHICLE_IDENTIFIED ? "text-green-500" : progress >= FRAME_EXTRACTION ? "text-blue-500 animate-pulse" : "text-slate-400"}>
-                  {progress >= VEHICLE_IDENTIFIED ? "✓" : progress >= FRAME_EXTRACTION ? "⏳" : "○"}
-                </span>
-                Identifying vehicle
-              </li>
-              <li className="flex items-center gap-2">
-                <span className={progress >= ODOMETER_READ ? "text-green-500" : progress >= VEHICLE_IDENTIFIED ? "text-blue-500 animate-pulse" : "text-slate-400"}>
-                  {progress >= ODOMETER_READ ? "✓" : progress >= VEHICLE_IDENTIFIED ? "⏳" : "○"}
-                </span>
-                Reading odometer
-              </li>
-              <li className="flex items-center gap-2">
-                <span className={progress >= DAMAGE_DETECTED ? "text-green-500" : progress >= ODOMETER_READ ? "text-blue-500 animate-pulse" : "text-slate-400"}>
-                  {progress >= DAMAGE_DETECTED ? "✓" : progress >= ODOMETER_READ ? "⏳" : "○"}
-                </span>
-                Detecting damage
-              </li>
-              <li className="flex items-center gap-2">
-                <span className={progress >= REPORT_GENERATED ? "text-green-500" : progress >= DAMAGE_DETECTED ? "text-blue-500 animate-pulse" : "text-slate-400"}>
-                  {progress >= REPORT_GENERATED ? "✓" : progress >= DAMAGE_DETECTED ? "⏳" : "○"}
-                </span>
-                Generating report
-              </li>
-            </ul>
-            {progress >= UPLOAD_COMPLETE && progress < FRAME_EXTRACTION && (
-              <p className="text-xs text-blue-600 mt-3 italic">
-                Initializing AI models (this may take 30-60 seconds on first run)...
-              </p>
-            )}
+
+        {isDone && (
+          <p className="flex items-center gap-2 text-sm font-medium text-emerald-600">
+            <CheckCircle2 className="h-4 w-4" /> Complete — redirecting to results…
+          </p>
+        )}
+
+        {isFailed && (
+          <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+            <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{error || "An unexpected error occurred."}</span>
           </div>
         )}
-        {status === "completed" && (
-          <div className="text-green-600">
-            <p className="font-bold text-lg">Processing complete! 🎉</p>
-            <p className="text-sm mt-1">Redirecting to results...</p>
-          </div>
-        )}
-        {status === "failed" && (
-          <div className="text-red-600">
-            <p className="font-bold text-lg">Processing failed</p>
-            {error ? (
-              <p className="text-sm mt-1">{error}</p>
-            ) : (
-              <p className="text-sm mt-1">An unexpected error occurred. Please try again or contact support.</p>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }

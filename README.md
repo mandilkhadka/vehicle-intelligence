@@ -2,7 +2,7 @@
 
 **Language / 言語:** [English](#english) | [日本語](#japanese)
 
-![Dashboard Screenshot](dashboard.png)
+![Dashboard Screenshot](pic/dashboard.png)
 
 ---
 

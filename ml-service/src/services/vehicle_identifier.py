@@ -295,14 +295,14 @@ class VehicleIdentifier:
             confidence = avg_probs[best_brand_idx].item()
             
             best_brand = self.vehicle_brands[best_brand_idx]
-            
-            # For MVP, use generic model name
-            # In production, you'd have a more sophisticated model identification
-            model = f"{best_brand} Model"
-            
+
+            # CLIP can identify brand but not specific model without a fine-tuned
+            # head — leave model empty rather than fabricating "<Brand> Model".
+            model = ""
+
             return best_brand, model, confidence
-            
+
         except Exception as e:
-            logger.warning(f"Brand/model identification error: {e}")
-            return "Unknown", "Unknown", 0.0
+            logger.warning(f"Brand/model identification error: {e}", exc_info=True)
+            return "Unknown", "", 0.0
 

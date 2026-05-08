@@ -276,10 +276,15 @@ export async function processVideoJob(
 
           // Check for error responses (4xx errors - not retryable)
           if (response.status >= 400) {
-            const errorMessage =
+            const rawError =
               response.data?.detail ||
+              response.data?.error?.message ||
               response.data?.error ||
               `ML service returned error: ${response.status}`;
+            const errorMessage =
+              typeof rawError === "string"
+                ? rawError
+                : JSON.stringify(rawError);
             logger.error(
               { jobId, status: response.status, error: errorMessage },
               "ML service returned error",

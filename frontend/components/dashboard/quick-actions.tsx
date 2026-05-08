@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { Upload, Camera, FileText, Gauge } from "lucide-react"
+import { Upload, History } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 
 const actions = [
@@ -13,25 +13,11 @@ const actions = [
     color: "bg-primary/10 text-primary",
   },
   {
-    title: "Quick Scan",
-    description: "Single image analysis",
-    icon: Camera,
-    href: "/inspect?mode=quick",
+    title: "Inspection History",
+    description: "Browse past inspections",
+    icon: History,
+    href: "/history",
     color: "bg-accent/10 text-accent",
-  },
-  {
-    title: "Generate Report",
-    description: "Export inspection data",
-    icon: FileText,
-    href: "/reports/new",
-    color: "bg-emerald-500/10 text-emerald-500",
-  },
-  {
-    title: "View Analytics",
-    description: "Performance metrics",
-    icon: Gauge,
-    href: "/analytics",
-    color: "bg-sky-500/10 text-sky-500",
   },
 ]
 

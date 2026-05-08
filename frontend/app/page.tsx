@@ -102,7 +102,7 @@ export default function DashboardPage() {
               <div>
                 <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
                 <p className="text-muted-foreground">
-                  AI-powered vehicle inspection overview
+                  Inspections at a glance
                 </p>
               </div>
               <div className="flex items-center gap-2">

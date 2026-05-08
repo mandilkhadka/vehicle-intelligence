@@ -14,7 +14,7 @@ from pathlib import Path
 class FrameExtractor:
     """Extracts frames from video files with quality filtering"""
 
-    def __init__(self, fps: int = 1, min_blur_threshold: float = 100.0, jpeg_quality: int = 98):
+    def __init__(self, fps: int = 1, min_blur_threshold: float = 15.0, jpeg_quality: int = 98):
         """
         Initialize frame extractor
         Args:

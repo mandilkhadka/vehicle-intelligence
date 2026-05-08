@@ -2,7 +2,7 @@
 fastapi==0.128.0  # Updated to support newer starlette (security fix: PYSEC-2024-38)
 uvicorn[standard]==0.27.0
 python-multipart==0.0.20  # Security fixes: GHSA-2jv5-9r88-3w3p, GHSA-59g5-xgcq-4qw3
-pydantic==2.5.3
+pydantic>=2.7.0
 
 # Computer Vision and ML
 opencv-python==4.9.0.80
