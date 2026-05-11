@@ -28,7 +28,7 @@ export function Sidebar() {
     <TooltipProvider delayDuration={0}>
       <aside
         className={cn(
-          "flex h-[calc(100vh-4rem)] flex-col border-r border-border bg-sidebar transition-all duration-300",
+          "hidden h-[calc(100vh-3.5rem)] flex-col border-r border-sidebar-border bg-sidebar transition-all duration-300 md:flex",
           collapsed ? "w-16" : "w-64"
         )}
       >
@@ -43,7 +43,7 @@ export function Sidebar() {
                   <Link
                     href={item.href}
                     className={cn(
-                      "flex h-10 w-10 items-center justify-center rounded-lg transition-colors",
+                      "flex h-10 w-10 items-center justify-center rounded-md transition-colors",
                       isActive
                         ? "bg-sidebar-primary text-sidebar-primary-foreground"
                         : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
@@ -60,7 +60,7 @@ export function Sidebar() {
                 key={item.href}
                 href={item.href}
                 className={cn(
-                  "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                  "flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium transition-colors",
                   isActive
                     ? "bg-sidebar-primary text-sidebar-primary-foreground"
                     : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
@@ -72,6 +72,19 @@ export function Sidebar() {
             )
           })}
         </nav>
+
+        {!collapsed && (
+          <div className="mx-3 mb-2 rounded-md border border-sidebar-border bg-background/45 p-3">
+            <p className="font-mono text-[11px] uppercase tracking-normal text-muted-foreground">
+              Pipeline
+            </p>
+            <div className="mt-2 grid grid-cols-3 gap-1.5 text-center text-[11px]">
+              <span className="rounded bg-primary/10 px-1.5 py-1 text-primary">Video</span>
+              <span className="rounded bg-accent/15 px-1.5 py-1 text-accent-foreground">AI</span>
+              <span className="rounded bg-emerald-500/10 px-1.5 py-1 text-emerald-600 dark:text-emerald-400">Report</span>
+            </div>
+          </div>
+        )}
 
         <div className="border-t border-sidebar-border p-3">
           <Button

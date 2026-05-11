@@ -75,13 +75,13 @@ export function StatsCards({ metrics, isLoading = false }: StatsCardsProps) {
               <CardTitle className="text-sm font-medium text-muted-foreground">
                 {stat.title}
               </CardTitle>
-              <div className="rounded-md bg-secondary p-2">
+              <div className="rounded-md border border-border bg-secondary p-2">
                 <Icon className="h-4 w-4 text-primary" />
               </div>
             </CardHeader>
             <CardContent>
-              <div className="text-3xl font-bold">{stat.value}</div>
-              <div className="mt-1 text-sm text-muted-foreground">
+              <div className="font-mono text-3xl font-semibold tracking-normal">{stat.value}</div>
+              <div className="mt-1 text-xs uppercase tracking-normal text-muted-foreground">
                 {stat.description}
               </div>
             </CardContent>

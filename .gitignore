@@ -1,11 +1,7 @@
-# Gitignore for GitHub
-# This file is optimized for GitHub repositories
-
 # Dependencies
 node_modules/
 venv/
 env/
-ENV/
 .venv/
 __pycache__/
 *.pyc
@@ -28,6 +24,9 @@ dist/
 build/
 .next/
 out/
+.output/
+.parcel-cache/
+.vite/
 *.tsbuildinfo
 *.tsbuildinfo.*
 .vercel/
@@ -35,15 +34,13 @@ out/
 .swc/
 .next-env.d.ts
 
-# Database
+# Database files
 *.db
 *.sqlite
 *.sqlite3
 *.db-shm
 *.db-wal
 *.db-journal
-*.sql
-*.sql.gz
 *.dump
 
 # Uploads and user-generated content
@@ -60,19 +57,13 @@ user_uploads/
 .env.*
 .env.local
 .env.*.local
-.env.development
-.env.development.local
-.env.production
-.env.production.local
-.env.test
-.env.test.local
-backend/.env
-backend/.env.*
-frontend/.env.local
-frontend/.env.production
-frontend/.env.production.local
-ml-service/.env
-ml-service/.env.*
+.ENV
+.ENV.*
+!.env.example
+!.env*.example
+!backend/.env.example
+!frontend/.env.example
+!ml-service/.env.example
 
 # API Keys and Credentials
 *.key
@@ -92,8 +83,16 @@ credentials/
 .credentials/
 *.credentials
 *.credential
+*.secret
+*.token
+*.access_token
+*.refresh_token
+secrets.json
+credentials.json
+.env.json
+*.env.json
 
-# AWS/GCP/Azure credentials
+# Cloud credentials
 .aws/
 .gcp/
 .azure/
@@ -122,24 +121,37 @@ known_hosts
 .npm/
 .yarn/
 
-# But keep example files
-!.env.example
-!backend/.env.example
-!frontend/.env.example
-!ml-service/.env.example
-!.env*.example
-
 # IDE
 .vscode/
 .idea/
 .cursor/
 .claude/
 *.swo
+*.swp
 *.sublime-project
 *.sublime-workspace
 *.code-workspace
 *.iml
 .vscode-test/
+
+# Playwright MCP scratch dir
+.playwright-mcp/
+playwright-report/
+test-results/
+
+# Screenshots and reference images (kept locally only)
+/pic/*
+/*.png
+/*.jpg
+/*.jpeg
+/*.gif
+/*.webp
+/*.PNG
+/*.JPG
+/*.JPEG
+
+# Images referenced from README/docs — keep tracked
+!/pic/dashboard.png
 
 # OS
 .DS_Store
@@ -160,9 +172,15 @@ pnpm-debug.log*
 lerna-debug.log*
 logs/
 *.log.*
+*.har
+*.pcap
+*.pcapng
 
 # ML Models (large files)
 ml-service/models/
+.huggingface/
+hf_cache/
+model_cache/
 *.pt
 *.pth
 *.onnx
@@ -182,10 +200,9 @@ temp/
 *.backup
 *.old
 *.orig
-*.swp
 *~
 
-# Coverage and testing
+# Coverage and testing output
 coverage/
 .nyc_output/
 *.lcov
@@ -195,6 +212,7 @@ htmlcov/
 .tox/
 .jest/
 .jest-cache/
+.eslintcache
 
 # Python
 *.egg
@@ -208,6 +226,8 @@ htmlcov/
 .pytype/
 .pyre/
 .pytype_output/
+venv*/
+virtualenv*/
 
 # Archives and compressed files
 *.zip
@@ -223,108 +243,20 @@ htmlcov/
 .ipynb_checkpoints/
 *.ipynb_checkpoints/
 
-# Python virtual environments (additional patterns)
-venv*/
-ENV*/
-env*/
-virtualenv*/
-
-# Security - Additional patterns
-*.secret
-*.token
-*.access_token
-*.refresh_token
-config.json
-local.config.json
-*.config.local.*
-*_key
-*_KEY
-*_secret
-*_SECRET
-*_password
-*_PASSWORD
-*_token
-*_TOKEN
-*.pem
-*.key
-*.cert
-*.crt
-*.p12
-*.pfx
-*.jks
-*.keystore
-*.truststore
-secrets.json
-credentials.json
-*.credentials
-*.credential
+# Security - additional env patterns
 .envrc
 .env.backup
 .env.save
 .env.old
 .env.tmp
 .env.*.bak
-*.env.backup
-*.env.save
-*.env.old
-*.env.tmp
 
 # GitHub
 .github/workflows/*.local.yml
-.github/ISSUE_TEMPLATE/*.local.md
-.github/PULL_REQUEST_TEMPLATE/*.local.md
 
 # Docker
 docker-compose.override.yml
-*.dockerignore.local
 
 # Root-level lock files (keep service-specific ones)
 /package-lock.json
 
-# Images and media files
-pic/
-pic/**
-
-# Documentation (keep only root README.md)
-docs/
-*.md
-!README.md
-SPEC.md
-CLAUDE.md
-
-# Test files and directories
-__tests__/
-tests/
-*.test.ts
-*.test.tsx
-*.test.js
-*.test.jsx
-*.spec.ts
-*.spec.tsx
-*.spec.js
-*.spec.jsx
-*.e2e.test.ts
-*.int.test.ts
-*.int.test.py
-
-# Test configuration
-jest.config.js
-jest.setup.tsx
-jest.setup.js
-*.config.test.*
-conftest.py
-
-# Scripts (non-essential)
-scripts/
-*.sh
-!START_SERVICES.sh
-
-# Design and planning files
-*.design.md
-*.plan.md
-*.prd.md
-*.spec.md
-
-# Context and documentation folders
-.context/
-start_services.sh

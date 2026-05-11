@@ -1,12 +1,11 @@
 "use client";
 
-/**
- * Exhaust information display component
- * Shows exhaust type (stock/modified) and confidence
- */
-
-import { BACKEND_BASE_URL } from "@/lib/api";
 import Image from "next/image";
+import { AlertTriangle } from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
+import { BACKEND_BASE_URL } from "@/lib/api";
 
 interface ExhaustInfoProps {
   exhaust?: {
@@ -19,71 +18,69 @@ interface ExhaustInfoProps {
 export default function ExhaustInfo({ exhaust }: ExhaustInfoProps) {
   if (!exhaust) {
     return (
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
-        <h3 className="text-lg font-semibold mb-4 text-slate-900">Exhaust System</h3>
-        <p className="text-slate-500">No exhaust data available</p>
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Exhaust</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">No exhaust data available</p>
+        </CardContent>
+      </Card>
     );
   }
 
-  const confidencePercent = exhaust.confidence
-    ? Math.round(exhaust.confidence * 100)
-    : 0;
+  const pct = Math.round((exhaust.confidence || 0) * 100);
   const isModified = exhaust.type === "modified";
+  const imgPath = exhaust.exhaust_image_path
+    ? exhaust.exhaust_image_path.startsWith("uploads/")
+      ? exhaust.exhaust_image_path
+      : `uploads/${exhaust.exhaust_image_path}`
+    : null;
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 hover:shadow-md transition-shadow">
-      <h3 className="text-lg font-semibold mb-4 text-slate-900">Exhaust System</h3>
-      <div className="space-y-3">
+    <Card>
+      <CardHeader className="flex-row items-center justify-between">
+        <CardTitle>Exhaust</CardTitle>
+        <Badge
+          variant="outline"
+          className={
+            isModified
+              ? "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+              : "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+          }
+        >
+          {exhaust.type ? exhaust.type.toUpperCase() : "UNKNOWN"}
+        </Badge>
+      </CardHeader>
+      <CardContent className="space-y-4">
         <div>
-          <span className="text-sm text-slate-600">Type:</span>
-          <span
-            className={`ml-2 px-3 py-1 rounded-full text-sm font-medium ${
-              isModified
-                ? "bg-orange-100 text-orange-800"
-                : "bg-green-100 text-green-800"
-            }`}
-          >
-            {exhaust.type ? exhaust.type.toUpperCase() : "Unknown"}
-          </span>
-        </div>
-        <div>
-          <span className="text-sm text-slate-600">Confidence:</span>
-          <span className="ml-2 font-medium text-blue-600">{confidencePercent}%</span>
-          <div className="mt-1 w-full bg-slate-200 rounded-full h-2">
-            <div
-              className={`h-2 rounded-full transition-all ${
-                isModified ? "bg-orange-600" : "bg-green-600"
-              }`}
-              style={{ width: `${confidencePercent}%` }}
-            />
+          <div className="mb-1 flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">Confidence</span>
+            <span className="font-medium">{pct}%</span>
           </div>
+          <Progress value={pct} className="h-1.5" />
         </div>
+
         {isModified && (
-          <div className="p-3 bg-orange-50 rounded-lg border border-orange-200">
-            <p className="text-sm text-orange-800">
-              ⚠️ Modified exhaust detected. Please verify compliance with local regulations.
-            </p>
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>Modified exhaust detected. Verify compliance with local regulations.</span>
           </div>
         )}
 
-        {/* Exhaust Image */}
-        {exhaust.exhaust_image_path && (
-          <div className="mt-4">
-            <h4 className="text-sm font-semibold text-slate-700 mb-3">Exhaust Image</h4>
-            <div className="relative aspect-video rounded-lg border border-slate-200 overflow-hidden shadow-sm hover:shadow-md transition-shadow bg-slate-50">
-              <Image
-                src={`${BACKEND_BASE_URL}/${exhaust.exhaust_image_path}`}
-                alt="Exhaust system"
-                fill
-                className="object-cover"
-                sizes="(max-width: 768px) 100vw, 50vw"
-                unoptimized
-              />
-            </div>
+        {imgPath && (
+          <div className="relative aspect-video overflow-hidden rounded-lg border border-border bg-secondary/40">
+            <Image
+              src={`${BACKEND_BASE_URL}/${imgPath}`}
+              alt="Exhaust system"
+              fill
+              className="object-cover"
+              sizes="(max-width: 768px) 100vw, 50vw"
+              unoptimized
+            />
           </div>
         )}
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }

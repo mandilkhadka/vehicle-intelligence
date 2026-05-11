@@ -1,75 +1,65 @@
 "use client";
 
-/**
- * Vehicle information display component
- * Shows vehicle type, brand, model, and confidence score
- */
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
 
 interface VehicleInfoProps {
   vehicleInfo?: {
     type?: string;
     brand?: string;
     model?: string;
+    year?: string;
+    variant?: string;
     color?: string;
     confidence?: number;
   };
 }
 
 export default function VehicleInfo({ vehicleInfo }: VehicleInfoProps) {
-  if (!vehicleInfo) {
-    return (
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
-        <h3 className="text-lg font-semibold mb-4 text-slate-900">Vehicle Information</h3>
-        <p className="text-slate-500">No vehicle information available</p>
-      </div>
-    );
-  }
-
-  const confidencePercent = vehicleInfo.confidence
-    ? Math.round(vehicleInfo.confidence * 100)
-    : 0;
-
   return (
-    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 hover:shadow-md transition-shadow">
-      <h3 className="text-lg font-semibold mb-4 text-slate-900">Vehicle Information</h3>
-      <div className="space-y-3">
-        <div>
-          <span className="text-sm text-slate-600">Type:</span>
-          <span className="ml-2 font-medium text-slate-900 capitalize">
-            {vehicleInfo.type || "Unknown"}
-          </span>
-        </div>
-        <div>
-          <span className="text-sm text-slate-600">Brand:</span>
-          <span className="ml-2 font-medium text-slate-900">
-            {vehicleInfo.brand || "Unknown"}
-          </span>
-        </div>
-        <div>
-          <span className="text-sm text-slate-600">Model:</span>
-          <span className="ml-2 font-medium text-slate-900">
-            {vehicleInfo.model || "Unknown"}
-          </span>
-        </div>
-        {vehicleInfo.color && (
-          <div>
-            <span className="text-sm text-slate-600">Color:</span>
-            <span className="ml-2 font-medium text-slate-900 capitalize">
-              {vehicleInfo.color}
-            </span>
-          </div>
+    <Card>
+      <CardHeader>
+        <CardTitle>Vehicle</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {!vehicleInfo ? (
+          <p className="text-sm text-muted-foreground">No vehicle data available</p>
+        ) : (
+          <dl className="space-y-3 text-sm">
+            <Row label="Type" value={vehicleInfo.type} capitalize />
+            <Row label="Brand" value={vehicleInfo.brand} />
+            <Row label="Model" value={vehicleInfo.model} />
+            {vehicleInfo.year && <Row label="Year" value={vehicleInfo.year} />}
+            {vehicleInfo.variant && <Row label="Variant" value={vehicleInfo.variant} />}
+            {vehicleInfo.color && <Row label="Color" value={vehicleInfo.color} capitalize />}
+            <ConfidenceRow value={vehicleInfo.confidence} />
+          </dl>
         )}
-        <div>
-          <span className="text-sm text-slate-600">Confidence:</span>
-          <span className="ml-2 font-medium text-blue-600">{confidencePercent}%</span>
-          <div className="mt-1 w-full bg-slate-200 rounded-full h-2">
-            <div
-              className="bg-blue-600 h-2 rounded-full transition-all"
-              style={{ width: `${confidencePercent}%` }}
-            />
-          </div>
-        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function Row({ label, value, capitalize }: { label: string; value?: string; capitalize?: boolean }) {
+  return (
+    <div className="flex items-center justify-between">
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className={capitalize ? "font-medium capitalize" : "font-medium"}>
+        {value || "Unknown"}
+      </dd>
+    </div>
+  );
+}
+
+function ConfidenceRow({ value }: { value?: number }) {
+  const pct = Math.round((value || 0) * 100);
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between">
+        <dt className="text-muted-foreground">Confidence</dt>
+        <dd className="font-medium">{pct}%</dd>
       </div>
+      <Progress value={pct} className="h-1.5" />
     </div>
   );
 }

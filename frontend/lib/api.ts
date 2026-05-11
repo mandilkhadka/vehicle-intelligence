@@ -9,11 +9,11 @@ import axios from "axios";
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001/api";
 
-// Base URL for backend server (for static file serving)
-export const BACKEND_BASE_URL =
-  process.env.NEXT_PUBLIC_BACKEND_URL ||
-  API_BASE_URL.replace("/api", "") ||
-  "http://localhost:3001";
+// Base URL for static asset references (frame images, snapshots, etc.).
+// We rewrite /uploads/* through Next so Next/Image can optimize without
+// being blocked by the private-IP guard. An override is still supported
+// for deployments that serve assets from a different origin.
+export const BACKEND_BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "";
 
 // Create axios instance with default config
 const apiClient = axios.create({
@@ -122,7 +122,8 @@ export async function getInspection(
  */
 export async function getInspections(): Promise<InspectionRecord[]> {
   const response = await apiClient.get("/inspections");
-  return response.data;
+  const result = response.data;
+  return Array.isArray(result) ? result : result.data || [];
 }
 
 /**
@@ -181,7 +182,8 @@ export async function getInspectionsByDateRange(
   const response = await apiClient.get("/inspections", {
     params: { startDate, endDate, limit },
   });
-  return response.data;
+  const result = response.data;
+  return Array.isArray(result) ? result : result.data || [];
 }
 
 export default apiClient;

@@ -1,13 +1,13 @@
 # FastAPI and server dependencies
 fastapi==0.128.0  # Updated to support newer starlette (security fix: PYSEC-2024-38)
 uvicorn[standard]==0.27.0
-python-multipart==0.0.20  # Security fixes: GHSA-2jv5-9r88-3w3p, GHSA-59g5-xgcq-4qw3
-pydantic==2.5.3
+python-multipart==0.0.27  # Security fixes: CVE-2026-24486, CVE-2026-40347, CVE-2026-42561
+pydantic>=2.7.0
 
 # Computer Vision and ML
 opencv-python==4.9.0.80
 numpy==1.26.3
-pillow==11.3.0  # Security fix: GHSA-44wm-f244-xhp3 (updated to latest stable)
+pillow==12.2.0  # Security fixes: CVE-2026-40192, CVE-2026-42308-CVE-2026-42311
 
 # YOLOv8 for object detection
 ultralytics>=8.4.6  # Updated to support torch 2.6+ and handle CVE-2025-32434
@@ -17,8 +17,8 @@ torch>=2.6.0
 torchvision>=0.21.0  # Compatible with torch 2.6+
 
 # CLIP for vehicle identification
-transformers==4.53.0  # Security fixes: Multiple GHSA and PYSEC vulnerabilities
-sentencepiece==0.1.99
+transformers>=5.0.0rc3  # Security fix: CVE-2026-1839
+sentencepiece==0.2.1  # Security fix: CVE-2026-1260
 
 # OCR
 # Note: PaddlePaddle installation can be complex, using alternative OCR approach
@@ -31,6 +31,6 @@ pytesseract==0.3.13  # Updated to latest
 google-generativeai==0.3.2
 
 # Utilities
-requests==2.32.5  # Security fixes: GHSA-9wx4-h78v-vm56, GHSA-9hjg-9r4m-mvj7
+requests==2.33.0  # Security fix: CVE-2026-25645
 aiofiles==25.1.0  # Updated to latest
-python-dotenv==1.0.0
+python-dotenv==1.2.2  # Security fix: CVE-2026-28684

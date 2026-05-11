@@ -1,20 +1,21 @@
 "use client";
 
-/**
- * Inspection results page
- * Displays complete inspection data including all findings
- */
-
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
-import { Car } from "lucide-react";
-import { getInspection, BACKEND_BASE_URL } from "@/lib/api";
+import { BrainCircuit, Download, Loader2 } from "lucide-react";
+import { AppShell } from "@/components/app-shell";
+import { PageHeader } from "@/components/page-header";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import VehicleInfo from "@/components/VehicleInfo";
 import OdometerInfo from "@/components/OdometerInfo";
 import DamageInfo from "@/components/DamageInfo";
 import ExhaustInfo from "@/components/ExhaustInfo";
+import { getInspection, BACKEND_BASE_URL } from "@/lib/api";
+import { safeParseJsonOrValue } from "@/lib/utils/safe-json";
 
 export default function InspectionPage() {
   const params = useParams();
@@ -24,32 +25,28 @@ export default function InspectionPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const fetchInspection = async () => {
+    if (!inspectionId) return;
+    let cancelled = false;
+    (async () => {
       try {
         const data = await getInspection(inspectionId);
-        setInspection(data);
-      } catch (err: any) {
-        setError("Failed to load inspection data");
+        if (!cancelled) setInspection(data);
+      } catch (err) {
         console.error(err);
+        if (!cancelled) setError("Failed to load inspection data");
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
+    })();
+    return () => {
+      cancelled = true;
     };
-
-    if (inspectionId) {
-      fetchInspection();
-    }
   }, [inspectionId]);
 
-  /**
-   * Download inspection report as JSON
-   */
   const downloadReport = () => {
     if (!inspection) return;
-
-    const dataStr = JSON.stringify(inspection, null, 2);
-    const dataBlob = new Blob([dataStr], { type: "application/json" });
-    const url = URL.createObjectURL(dataBlob);
+    const blob = new Blob([JSON.stringify(inspection, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
     link.download = `inspection-${inspectionId}.json`;
@@ -57,43 +54,73 @@ export default function InspectionPage() {
     URL.revokeObjectURL(url);
   };
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-[#f8fafc] flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-          <p className="mt-4 text-slate-600 font-medium">Loading inspection data...</p>
-        </div>
-      </div>
-    );
-  }
+  return (
+    <AppShell>
+      <div className="p-4 sm:p-6 lg:p-8">
+        <PageHeader
+          eyebrow="Report"
+          title="Inspection Results"
+          description={
+            <>
+              ID <span className="font-mono text-foreground">{inspectionId}</span>
+            </>
+          }
+        >
+          {inspection && (
+            <Button variant="outline" onClick={downloadReport} className="gap-2">
+              <Download className="h-4 w-4" />
+              Download JSON
+            </Button>
+          )}
+        </PageHeader>
 
-  if (error || !inspection) {
-    return (
-      <div className="min-h-screen bg-[#f8fafc] flex items-center justify-center">
-        <div className="text-center">
-          <p className="text-red-600 mb-4 font-medium">{error || "Inspection not found"}</p>
-          <Link
-            href="/"
-            className="text-blue-600 hover:text-blue-700 font-medium transition-colors"
-          >
-            Go back home
-          </Link>
-        </div>
-      </div>
-    );
-  }
+            {loading && (
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" /> Loading inspection…
+              </div>
+            )}
 
-  // Parse JSON fields if they're strings
+            {error && !loading && (
+              <Card>
+                <CardContent className="py-10 text-center">
+                  <p className="mb-4 text-destructive">{error}</p>
+                  <Link href="/" className="text-primary underline">
+                    Back to dashboard
+                  </Link>
+                </CardContent>
+              </Card>
+            )}
+
+            {!loading && !error && !inspection && (
+              <Card>
+                <CardContent className="py-10 text-center">
+                  <p className="mb-4 text-muted-foreground">Inspection not found</p>
+                  <Link href="/" className="text-primary underline">
+                    Go back home
+                  </Link>
+                </CardContent>
+              </Card>
+            )}
+
+            {!loading && !error && inspection && (
+              <InspectionContent inspection={inspection} />
+            )}
+      </div>
+    </AppShell>
+  );
+}
+
+function InspectionContent({ inspection }: { inspection: any }) {
+  const parseMaybe = <T,>(v: string | T | null | undefined, fallback: T) =>
+    safeParseJsonOrValue<T>(v, fallback);
+
   const vehicleInfo =
-    typeof inspection.vehicle_info === "string"
-      ? JSON.parse(inspection.vehicle_info)
-      : inspection.vehicle_info || {
-          type: inspection.vehicle_type,
-          brand: inspection.vehicle_brand,
-          model: inspection.vehicle_model,
-          confidence: inspection.vehicle_confidence,
-        };
+    parseMaybe(inspection.vehicle_info, null) || {
+      type: inspection.vehicle_type,
+      brand: inspection.vehicle_brand,
+      model: inspection.vehicle_model,
+      confidence: inspection.vehicle_confidence,
+    };
 
   const odometer = {
     value: inspection.odometer_value,
@@ -102,14 +129,12 @@ export default function InspectionPage() {
   };
 
   const damage =
-    typeof inspection.damage_summary === "string"
-      ? JSON.parse(inspection.damage_summary)
-      : inspection.damage_summary || {
-          scratches: { count: inspection.scratches_detected || 0 },
-          dents: { count: inspection.dents_detected || 0 },
-          rust: { count: inspection.rust_detected || 0 },
-          severity: inspection.damage_severity || "low",
-        };
+    parseMaybe(inspection.damage_summary, null) || {
+      scratches: { count: inspection.scratches_detected || 0 },
+      dents: { count: inspection.dents_detected || 0 },
+      rust: { count: inspection.rust_detected || 0 },
+      severity: inspection.damage_severity || "low",
+    };
 
   const exhaust = {
     type: inspection.exhaust_type,
@@ -117,92 +142,190 @@ export default function InspectionPage() {
     exhaust_image_path: inspection.exhaust_image_path,
   };
 
-  const report =
-    typeof inspection.inspection_report === "string"
-      ? JSON.parse(inspection.inspection_report)
-      : inspection.inspection_report;
-
-  const frames =
-    typeof inspection.extracted_frames === "string"
-      ? JSON.parse(inspection.extracted_frames)
-      : inspection.extracted_frames || [];
+  const report = parseMaybe<Record<string, any> | null>(inspection.inspection_report, null);
+  const frames = parseMaybe<string[]>(inspection.extracted_frames, []);
+  const gemini = report?.gemini_analysis;
+  const referenceImage = report?.reference_image || gemini?.reference_image;
 
   return (
-    <div className="min-h-screen bg-[#f8fafc]">
-      <nav className="border-b border-slate-200 bg-white/80 backdrop-blur-xl">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16">
-            <div className="flex items-center gap-2">
-              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-600">
-                <Car className="h-5 w-5 text-white" />
+    <div className="space-y-6">
+      {report && (report.summary || report.recommendations?.length) && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Summary</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {report.summary && (
+              <p className="text-sm leading-relaxed text-foreground">{report.summary}</p>
+            )}
+            {report.recommendations?.length > 0 && (
+              <div>
+                <h4 className="mb-2 text-sm font-semibold">Recommendations</h4>
+                <ul className="list-inside list-disc space-y-1 text-sm text-muted-foreground">
+                  {report.recommendations.map((rec: string, i: number) => (
+                    <li key={i}>{rec}</li>
+                  ))}
+                </ul>
               </div>
-              <Link href="/" className="text-xl font-semibold text-slate-900">
-                Vehicle Intelligence Platform
-              </Link>
-            </div>
-            <div className="flex items-center space-x-4">
-              <button
-                onClick={downloadReport}
-                className="bg-blue-600 text-white hover:bg-blue-700 px-4 py-2 rounded-lg text-sm font-medium shadow-sm transition-colors"
-              >
-                Download JSON
-              </button>
-              <Link
-                href="/"
-                className="text-sm font-medium text-slate-700 hover:text-blue-600 transition-colors px-3 py-2 rounded-md"
-              >
-                Home
-              </Link>
-            </div>
-          </div>
-        </div>
-      </nav>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
-      <main className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        <div className="px-4 py-6">
-          <h1 className="text-3xl font-bold mb-6 text-slate-900">Inspection Results</h1>
-
-          {/* Summary Report */}
-          {report && (
-            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 mb-6">
-              <h2 className="text-xl font-semibold mb-4 text-slate-900">Summary</h2>
-              <p className="text-slate-700 leading-relaxed">{report.summary}</p>
-              {report.recommendations && report.recommendations.length > 0 && (
-                <div className="mt-4">
-                  <h3 className="font-semibold mb-2 text-slate-800">Recommendations:</h3>
-                  <ul className="list-disc list-inside space-y-1 text-slate-700">
-                    {report.recommendations.map((rec: string, idx: number) => (
-                      <li key={idx}>{rec}</li>
-                    ))}
-                  </ul>
+      {gemini?.available && (
+        <Card className="overflow-hidden">
+          <CardHeader className="border-b border-border bg-secondary/30">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <CardTitle className="flex items-center gap-2">
+                <BrainCircuit className="h-5 w-5 text-primary" />
+                AI Visual Analysis
+              </CardTitle>
+              <Badge variant="outline" className="w-fit rounded-md bg-background font-mono text-[11px] uppercase tracking-normal">
+                Gemini Vision
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {gemini.summary && (
+              <p className="text-sm leading-relaxed text-foreground">{gemini.summary}</p>
+            )}
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 text-sm">
+              {gemini.vehicle?.brand && (
+                <div>
+                  <span className="font-semibold">Identified vehicle: </span>
+                  {[gemini.vehicle.brand, gemini.vehicle.model, gemini.vehicle.year]
+                    .filter(Boolean)
+                    .join(" ")}
+                  {gemini.vehicle.variant ? ` (${gemini.vehicle.variant})` : ""}
+                </div>
+              )}
+              {gemini.vehicle?.color && (
+                <div>
+                  <span className="font-semibold">Color: </span>
+                  {gemini.vehicle.color}
+                </div>
+              )}
+              {gemini.overall_condition && (
+                <div>
+                  <span className="font-semibold">Overall condition: </span>
+                  {gemini.overall_condition}
+                </div>
+              )}
+              {typeof gemini.vehicle?.confidence === "number" && (
+                <div>
+                  <span className="font-semibold">Visual ID confidence: </span>
+                  {(gemini.vehicle.confidence * 100).toFixed(0)}%
                 </div>
               )}
             </div>
-          )}
+            {gemini.damage_findings && (
+              <div>
+                <h4 className="mb-1 text-sm font-semibold">Damage findings</h4>
+                <p className="text-sm text-muted-foreground">{gemini.damage_findings}</p>
+              </div>
+            )}
+            {Array.isArray(gemini.per_frame) && gemini.per_frame.length > 0 && (
+              <div>
+                <h4 className="mb-2 text-sm font-semibold">Per-frame observations</h4>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {gemini.per_frame.map((f: any, i: number) => {
+                    const path = typeof f.frame === "string"
+                      ? (f.frame.startsWith("uploads/") ? f.frame : `uploads/${f.frame.replace(/^.*uploads\//, "")}`)
+                      : null;
+                    return (
+                      <div key={i} className="rounded-lg border border-border bg-background/50 p-3">
+                        {path && (
+                          <div className="relative mb-2 aspect-video overflow-hidden rounded">
+                            <Image
+                              src={`${BACKEND_BASE_URL}/${path}`}
+                              alt={`Frame ${f.index ?? i + 1}`}
+                              fill
+                              className="object-cover"
+                              unoptimized
+                            />
+                          </div>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          <div>
+                            <span className="font-semibold text-foreground">
+                              Frame {f.index ?? i + 1}
+                            </span>
+                            {f.view ? ` · ${f.view}` : ""}
+                            {f.condition ? ` · ${f.condition}` : ""}
+                          </div>
+                          {f.observations && <p className="mt-1">{f.observations}</p>}
+                          {f.damage_notes && (
+                            <p className="mt-1">
+                              <span className="font-semibold">Damage: </span>
+                              {f.damage_notes}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
-          {/* Grid layout for components */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-            <VehicleInfo vehicleInfo={vehicleInfo} />
-            <OdometerInfo odometer={odometer} />
-            <DamageInfo damage={damage} />
-            <ExhaustInfo exhaust={exhaust} />
-          </div>
+      {referenceImage?.search_url && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Brand-new reference (same model)</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            {referenceImage.description && (
+              <p className="text-muted-foreground">{referenceImage.description}</p>
+            )}
+            <a
+              href={referenceImage.search_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center text-primary underline"
+            >
+              View official press images on Google
+            </a>
+            {referenceImage.search_query && (
+              <p className="text-xs text-muted-foreground">
+                Search query: <code>{referenceImage.search_query}</code>
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
-          {/* Frame Gallery */}
-          {frames && frames.length > 0 && (
-            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
-              <h2 className="text-xl font-semibold mb-4 text-slate-900">Extracted Frames</h2>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                {frames.slice(0, 12).map((frame: string, idx: number) => {
-                  // Handle both relative and absolute paths
-                  const framePath = frame.startsWith("uploads/")
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+        <VehicleInfo vehicleInfo={vehicleInfo} />
+        <OdometerInfo odometer={odometer} />
+        <DamageInfo damage={damage} />
+        <ExhaustInfo exhaust={exhaust} />
+      </div>
+
+      {frames.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Extracted Frames</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              {frames
+                .filter((f) => typeof f === "string" && f && !f.startsWith("frames/sample/"))
+                .slice(0, 12)
+                .map((frame, i) => {
+                  const path = frame.startsWith("uploads/")
                     ? frame
                     : `uploads/${frame.replace(/^.*uploads\//, "")}`;
                   return (
-                    <div key={idx} className="relative aspect-video rounded-lg border border-slate-200 overflow-hidden shadow-sm hover:shadow-md transition-shadow">
+                    <div
+                      key={i}
+                      className="relative aspect-video overflow-hidden rounded-lg border border-border"
+                    >
                       <Image
-                        src={`${BACKEND_BASE_URL}/${framePath}`}
-                        alt={`Frame ${idx + 1}`}
+                        src={`${BACKEND_BASE_URL}/${path}`}
+                        alt={`Frame ${i + 1}`}
                         fill
                         className="object-cover"
                         unoptimized
@@ -210,11 +333,10 @@ export default function InspectionPage() {
                     </div>
                   );
                 })}
-              </div>
             </div>
-          )}
-        </div>
-      </main>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

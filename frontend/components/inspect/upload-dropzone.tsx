@@ -120,7 +120,11 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
   )
 
   const removeFile = (id: string) => {
-    setFiles((prev) => prev.filter((f) => f.id !== id))
+    setFiles((prev) => {
+      const next = prev.filter((f) => f.id !== id)
+      onFilesUploaded(next)
+      return next
+    })
   }
 
   const formatFileSize = (bytes: number) => {
@@ -137,7 +141,7 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         className={cn(
-          "relative flex min-h-[300px] cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed transition-all",
+          "relative flex min-h-[320px] cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed transition-all",
           isDragging
             ? "border-primary bg-primary/5"
             : "border-border bg-secondary/30 hover:border-primary/50 hover:bg-secondary/50"
@@ -145,14 +149,14 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
       >
         <input
           type="file"
-          accept="video/*"
+          accept="video/*,image/*"
           multiple
           onChange={handleFileInput}
           className="absolute inset-0 cursor-pointer opacity-0"
         />
 
         <div className="flex flex-col items-center gap-4 p-8 text-center">
-          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
+          <div className="flex h-16 w-16 items-center justify-center rounded-lg bg-primary/10">
             <Upload className="h-8 w-8 text-primary" />
           </div>
 
@@ -171,7 +175,7 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
               MP4, MOV, AVI
             </span>
             <span>Max 2GB</span>
-            <span>4K supported</span>
+            <span>Odometer image optional</span>
           </div>
 
           <Button variant="outline" className="mt-2 bg-transparent">

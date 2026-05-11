@@ -2,15 +2,15 @@
 
 import { useEffect, useState, useCallback } from "react"
 import { subDays, startOfDay, endOfDay, format } from "date-fns"
-import { Header } from "@/components/header"
-import { Sidebar } from "@/components/sidebar"
+import { AppShell } from "@/components/app-shell"
+import { PageHeader } from "@/components/page-header"
 import { StatsCards } from "@/components/dashboard/stats-cards"
 import { RecentInspections } from "@/components/dashboard/recent-inspections"
 import { QuickActions } from "@/components/dashboard/quick-actions"
 import { DateFilter } from "@/components/dashboard/date-filter"
 import { AnalyticsSection } from "@/components/dashboard/analytics-section"
 import { getMetrics, MetricsResponse } from "@/lib/api"
-import { RefreshCw } from "lucide-react"
+import { Activity, RefreshCw } from "lucide-react"
 
 const AUTO_REFRESH_INTERVAL = 30000 // 30 seconds
 
@@ -92,53 +92,72 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="min-h-screen bg-background">
-      <Header />
-      <div className="flex">
-        <Sidebar />
-        <main className="flex-1 overflow-auto">
-          <div className="p-6">
-            <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+    <AppShell>
+      <div className="p-4 sm:p-6 lg:p-8">
+        <PageHeader
+          eyebrow="Operations"
+          title="Inspection Dashboard"
+          description="Monitor vehicle uploads, model confidence, damage trends, and recent inspection outcomes from one console."
+        >
+          <div className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+            {isRefreshing ? (
+              <RefreshCw className="h-4 w-4 animate-spin text-primary" />
+            ) : (
+              <Activity className="h-4 w-4 text-emerald-500" />
+            )}
+            <span className="hidden sm:inline">
+              {lastUpdated ? `Updated ${format(lastUpdated, "h:mm a")}` : "Syncing metrics"}
+            </span>
+          </div>
+        </PageHeader>
+
+        <div className="mb-6 grid gap-4 xl:grid-cols-[1fr_auto] xl:items-center">
+          <div className="rounded-lg border border-border bg-card p-4">
+            <div className="grid gap-4 text-sm sm:grid-cols-3">
               <div>
-                <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
-                <p className="text-muted-foreground">
-                  AI-powered vehicle inspection overview
+                <p className="font-mono text-[11px] uppercase tracking-normal text-muted-foreground">
+                  Analysis Window
+                </p>
+                <p className="mt-1 font-medium">
+                  {format(dateRange.start, "MMM d")} - {format(dateRange.end, "MMM d, yyyy")}
                 </p>
               </div>
-              <div className="flex items-center gap-2">
-                {isRefreshing && (
-                  <RefreshCw className="h-4 w-4 animate-spin text-muted-foreground" />
-                )}
-                {lastUpdated && (
-                  <span className="text-xs text-muted-foreground hidden sm:inline">
-                    Updated {format(lastUpdated, "h:mm a")}
-                  </span>
-                )}
+              <div>
+                <p className="font-mono text-[11px] uppercase tracking-normal text-muted-foreground">
+                  Refresh Cadence
+                </p>
+                <p className="mt-1 font-medium">Every 30 seconds</p>
               </div>
-            </div>
-
-            <div className="mb-6">
-              <DateFilter
-                startDate={dateRange.start}
-                endDate={dateRange.end}
-                onRangeChange={handleRangeChange}
-              />
-            </div>
-
-            <div className="space-y-6">
-              <StatsCards metrics={metrics} isLoading={isLoading} />
-
-              <div className="grid gap-6 lg:grid-cols-3">
-                <RecentInspections />
-                <div className="space-y-6">
-                  <QuickActions />
-                  <AnalyticsSection metrics={metrics} isLoading={isLoading} />
-                </div>
+              <div>
+                <p className="font-mono text-[11px] uppercase tracking-normal text-muted-foreground">
+                  Review Queue
+                </p>
+                <p className="mt-1 font-medium">
+                  {metrics?.summary.totalInspections ?? 0} inspections
+                </p>
               </div>
             </div>
           </div>
-        </main>
+
+          <DateFilter
+            startDate={dateRange.start}
+            endDate={dateRange.end}
+            onRangeChange={handleRangeChange}
+          />
+        </div>
+
+        <div className="space-y-6">
+          <StatsCards metrics={metrics} isLoading={isLoading} />
+
+          <div className="grid gap-6 lg:grid-cols-3">
+            <RecentInspections />
+            <div className="space-y-6">
+              <QuickActions />
+              <AnalyticsSection metrics={metrics} isLoading={isLoading} />
+            </div>
+          </div>
+        </div>
       </div>
-    </div>
+    </AppShell>
   )
 }

@@ -244,7 +244,12 @@ export function updateInspection(
  */
 export function getAllInspections(): InspectionRecord[] {
   const db = getDatabase();
-  const stmt = db.prepare("SELECT * FROM inspections ORDER BY created_at DESC");
+  const stmt = db.prepare(
+    `SELECT i.*, j.status AS job_status
+       FROM inspections i
+       LEFT JOIN jobs j ON j.id = i.job_id
+      ORDER BY i.created_at DESC`,
+  );
   return stmt.all() as InspectionRecord[];
 }
 
