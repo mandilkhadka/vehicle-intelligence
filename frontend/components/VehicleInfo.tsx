@@ -8,6 +8,8 @@ interface VehicleInfoProps {
     type?: string;
     brand?: string;
     model?: string;
+    year?: string;
+    variant?: string;
     color?: string;
     confidence?: number;
   };
@@ -27,6 +29,8 @@ export default function VehicleInfo({ vehicleInfo }: VehicleInfoProps) {
             <Row label="Type" value={vehicleInfo.type} capitalize />
             <Row label="Brand" value={vehicleInfo.brand} />
             <Row label="Model" value={vehicleInfo.model} />
+            {vehicleInfo.year && <Row label="Year" value={vehicleInfo.year} />}
+            {vehicleInfo.variant && <Row label="Variant" value={vehicleInfo.variant} />}
             {vehicleInfo.color && <Row label="Color" value={vehicleInfo.color} capitalize />}
             <ConfidenceRow value={vehicleInfo.confidence} />
           </dl>

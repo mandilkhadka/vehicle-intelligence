@@ -1,12 +1,12 @@
 "use client"
 
-import { useState } from "react"
+import { useState, type ComponentType } from "react"
 import { useRouter } from "next/navigation"
-import { Header } from "@/components/header"
-import { Sidebar } from "@/components/sidebar"
+import { AppShell } from "@/components/app-shell"
+import { PageHeader } from "@/components/page-header"
 import { UploadDropzone } from "@/components/inspect/upload-dropzone"
 import { Button } from "@/components/ui/button"
-import { ArrowRight, Loader2 } from "lucide-react"
+import { ArrowRight, CheckCircle2, Film, Gauge, Loader2 } from "lucide-react"
 
 interface UploadedFile {
   id: string
@@ -32,19 +32,16 @@ export default function InspectPage() {
   }
 
   return (
-    <div className="min-h-screen bg-background">
-      <Header />
-      <div className="flex">
-        <Sidebar />
-        <main className="flex-1 overflow-auto">
-          <div className="mx-auto max-w-3xl p-6">
-            <div className="mb-6">
-              <h1 className="text-2xl font-bold tracking-tight">New Inspection</h1>
-              <p className="text-muted-foreground">
-                Upload a 360° vehicle video. Optionally include a clear odometer photo.
-              </p>
-            </div>
+    <AppShell>
+      <div className="mx-auto max-w-5xl p-4 sm:p-6 lg:p-8">
+        <PageHeader
+          eyebrow="Capture"
+          title="New Inspection"
+          description="Upload a 360 degree walkaround video and, when available, a clear odometer photo for a stronger report."
+        />
 
+        <div className="grid gap-6 lg:grid-cols-[1fr_280px]">
+          <div>
             <UploadDropzone onFilesUploaded={setUploadedFiles} />
 
             <div className="mt-6 flex justify-end">
@@ -63,7 +60,39 @@ export default function InspectPage() {
               </Button>
             </div>
           </div>
-        </main>
+
+          <aside className="space-y-3">
+            <ChecklistItem icon={Film} title="Video" text="MP4, MOV, or AVI walkaround." active />
+            <ChecklistItem icon={Gauge} title="Odometer" text="Optional image improves reading confidence." />
+            <ChecklistItem icon={CheckCircle2} title="Report" text="Results open automatically from the job page." />
+          </aside>
+        </div>
+      </div>
+    </AppShell>
+  )
+}
+
+function ChecklistItem({
+  icon: Icon,
+  title,
+  text,
+  active = false,
+}: {
+  icon: ComponentType<{ className?: string }>
+  title: string
+  text: string
+  active?: boolean
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-card p-4">
+      <div className="flex items-start gap-3">
+        <div className={active ? "rounded-md bg-primary/10 p-2 text-primary" : "rounded-md bg-secondary p-2 text-muted-foreground"}>
+          <Icon className="h-4 w-4" />
+        </div>
+        <div>
+          <p className="font-medium">{title}</p>
+          <p className="mt-1 text-sm leading-5 text-muted-foreground">{text}</p>
+        </div>
       </div>
     </div>
   )

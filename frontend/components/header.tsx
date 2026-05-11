@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { History as HistoryIcon, LayoutDashboard, Menu, Upload as UploadIcon } from "lucide-react"
+import { Activity, History as HistoryIcon, LayoutDashboard, Menu, Upload as UploadIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -13,7 +13,7 @@ import { ThemeToggle } from "@/components/theme-toggle"
 
 export function Header() {
   return (
-    <header className="sticky top-0 z-50 flex h-14 items-center justify-between border-b border-border bg-background/80 px-4 backdrop-blur-sm sm:px-6">
+    <header className="sticky top-0 z-50 flex h-14 items-center justify-between border-b border-border bg-background/90 px-4 backdrop-blur-md sm:px-6">
       <div className="flex items-center gap-2">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -42,17 +42,23 @@ export function Header() {
         </DropdownMenu>
 
         <Link href="/" className="flex items-center gap-2">
-          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary">
+          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary shadow-sm">
             <span className="font-mono text-xs font-bold text-primary-foreground">V</span>
           </div>
-          <span className="text-base font-semibold tracking-tight">VIP</span>
-          <span className="hidden text-sm text-muted-foreground sm:inline">
+          <span className="text-base font-semibold tracking-tight">Vehicle IQ</span>
+          <span className="hidden text-sm text-muted-foreground lg:inline">
             Vehicle Intelligence Platform
           </span>
         </Link>
       </div>
 
-      <ThemeToggle />
+      <div className="flex items-center gap-2">
+        <div className="hidden items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1 text-xs text-muted-foreground sm:flex">
+          <Activity className="h-3.5 w-3.5 text-emerald-500" />
+          Live console
+        </div>
+        <ThemeToggle />
+      </div>
     </header>
   )
 }

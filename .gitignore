@@ -24,6 +24,9 @@ dist/
 build/
 .next/
 out/
+.output/
+.parcel-cache/
+.vite/
 *.tsbuildinfo
 *.tsbuildinfo.*
 .vercel/
@@ -52,6 +55,8 @@ user_uploads/
 # Environment variables and secrets
 .env
 .env.*
+.env.local
+.env.*.local
 .ENV
 .ENV.*
 !.env.example
@@ -84,6 +89,8 @@ credentials/
 *.refresh_token
 secrets.json
 credentials.json
+.env.json
+*.env.json
 
 # Cloud credentials
 .aws/
@@ -129,6 +136,8 @@ known_hosts
 
 # Playwright MCP scratch dir
 .playwright-mcp/
+playwright-report/
+test-results/
 
 # Screenshots and reference images (kept locally only)
 /pic/*
@@ -163,9 +172,15 @@ pnpm-debug.log*
 lerna-debug.log*
 logs/
 *.log.*
+*.har
+*.pcap
+*.pcapng
 
 # ML Models (large files)
 ml-service/models/
+.huggingface/
+hf_cache/
+model_cache/
 *.pt
 *.pth
 *.onnx
@@ -197,6 +212,7 @@ htmlcov/
 .tox/
 .jest/
 .jest-cache/
+.eslintcache
 
 # Python
 *.egg
@@ -243,5 +259,4 @@ docker-compose.override.yml
 
 # Root-level lock files (keep service-specific ones)
 /package-lock.json
-
 

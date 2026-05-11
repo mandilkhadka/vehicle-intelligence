@@ -4,16 +4,18 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
-import { Download, Loader2 } from "lucide-react";
-import { Header } from "@/components/header";
-import { Sidebar } from "@/components/sidebar";
+import { BrainCircuit, Download, Loader2 } from "lucide-react";
+import { AppShell } from "@/components/app-shell";
+import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import VehicleInfo from "@/components/VehicleInfo";
 import OdometerInfo from "@/components/OdometerInfo";
 import DamageInfo from "@/components/DamageInfo";
 import ExhaustInfo from "@/components/ExhaustInfo";
 import { getInspection, BACKEND_BASE_URL } from "@/lib/api";
+import { safeParseJsonOrValue } from "@/lib/utils/safe-json";
 
 export default function InspectionPage() {
   const params = useParams();
@@ -53,26 +55,24 @@ export default function InspectionPage() {
   };
 
   return (
-    <div className="min-h-screen bg-background">
-      <Header />
-      <div className="flex">
-        <Sidebar />
-        <main className="flex-1 overflow-auto">
-          <div className="p-6">
-            <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h1 className="text-2xl font-bold tracking-tight">Inspection Results</h1>
-                <p className="text-muted-foreground">
-                  ID <span className="font-mono text-foreground">{inspectionId}</span>
-                </p>
-              </div>
-              {inspection && (
-                <Button variant="outline" onClick={downloadReport} className="gap-2">
-                  <Download className="h-4 w-4" />
-                  Download JSON
-                </Button>
-              )}
-            </div>
+    <AppShell>
+      <div className="p-4 sm:p-6 lg:p-8">
+        <PageHeader
+          eyebrow="Report"
+          title="Inspection Results"
+          description={
+            <>
+              ID <span className="font-mono text-foreground">{inspectionId}</span>
+            </>
+          }
+        >
+          {inspection && (
+            <Button variant="outline" onClick={downloadReport} className="gap-2">
+              <Download className="h-4 w-4" />
+              Download JSON
+            </Button>
+          )}
+        </PageHeader>
 
             {loading && (
               <div className="flex items-center gap-2 text-muted-foreground">
@@ -105,19 +105,17 @@ export default function InspectionPage() {
             {!loading && !error && inspection && (
               <InspectionContent inspection={inspection} />
             )}
-          </div>
-        </main>
       </div>
-    </div>
+    </AppShell>
   );
 }
 
 function InspectionContent({ inspection }: { inspection: any }) {
-  const parseMaybe = (v: unknown) =>
-    typeof v === "string" ? safeJSON(v) : v;
+  const parseMaybe = <T,>(v: string | T | null | undefined, fallback: T) =>
+    safeParseJsonOrValue<T>(v, fallback);
 
   const vehicleInfo =
-    parseMaybe(inspection.vehicle_info) || {
+    parseMaybe(inspection.vehicle_info, null) || {
       type: inspection.vehicle_type,
       brand: inspection.vehicle_brand,
       model: inspection.vehicle_model,
@@ -131,7 +129,7 @@ function InspectionContent({ inspection }: { inspection: any }) {
   };
 
   const damage =
-    parseMaybe(inspection.damage_summary) || {
+    parseMaybe(inspection.damage_summary, null) || {
       scratches: { count: inspection.scratches_detected || 0 },
       dents: { count: inspection.dents_detected || 0 },
       rust: { count: inspection.rust_detected || 0 },
@@ -144,8 +142,8 @@ function InspectionContent({ inspection }: { inspection: any }) {
     exhaust_image_path: inspection.exhaust_image_path,
   };
 
-  const report = parseMaybe(inspection.inspection_report);
-  const frames: string[] = parseMaybe(inspection.extracted_frames) || [];
+  const report = parseMaybe<Record<string, any> | null>(inspection.inspection_report, null);
+  const frames = parseMaybe<string[]>(inspection.extracted_frames, []);
   const gemini = report?.gemini_analysis;
   const referenceImage = report?.reference_image || gemini?.reference_image;
 
@@ -175,9 +173,17 @@ function InspectionContent({ inspection }: { inspection: any }) {
       )}
 
       {gemini?.available && (
-        <Card>
-          <CardHeader>
-            <CardTitle>AI Visual Analysis (Gemini)</CardTitle>
+        <Card className="overflow-hidden">
+          <CardHeader className="border-b border-border bg-secondary/30">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <CardTitle className="flex items-center gap-2">
+                <BrainCircuit className="h-5 w-5 text-primary" />
+                AI Visual Analysis
+              </CardTitle>
+              <Badge variant="outline" className="w-fit rounded-md bg-background font-mono text-[11px] uppercase tracking-normal">
+                Gemini Vision
+              </Badge>
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
             {gemini.summary && (
@@ -227,7 +233,7 @@ function InspectionContent({ inspection }: { inspection: any }) {
                       ? (f.frame.startsWith("uploads/") ? f.frame : `uploads/${f.frame.replace(/^.*uploads\//, "")}`)
                       : null;
                     return (
-                      <div key={i} className="rounded-lg border border-border p-3">
+                      <div key={i} className="rounded-lg border border-border bg-background/50 p-3">
                         {path && (
                           <div className="relative mb-2 aspect-video overflow-hidden rounded">
                             <Image
@@ -333,12 +339,4 @@ function InspectionContent({ inspection }: { inspection: any }) {
       )}
     </div>
   );
-}
-
-function safeJSON(s: string) {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return null;
-  }
 }

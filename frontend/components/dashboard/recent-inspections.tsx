@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { ArrowRight, ChevronRight, Loader2 } from "lucide-react";
 import { getInspections, BACKEND_BASE_URL } from "@/lib/api";
 import { showError } from "@/lib/toast";
+import { safeParseJsonOrValue } from "@/lib/utils/safe-json";
 
 function formatTimeAgo(date: Date): string {
   const now = new Date();
@@ -70,25 +71,25 @@ export function RecentInspections() {
         // Transform and sort by date, get most recent 5
         const transformed = data
           .map((insp: any) => {
-            const vehicleInfo =
-              typeof insp.vehicle_info === "string"
-                ? JSON.parse(insp.vehicle_info)
-                : insp.vehicle_info || {};
+            const vehicleInfo = safeParseJsonOrValue<Record<string, any>>(
+              insp.vehicle_info as any,
+              {},
+            );
 
-            const damage =
-              typeof insp.damage_summary === "string"
-                ? JSON.parse(insp.damage_summary)
-                : insp.damage_summary || {};
+            const damage = safeParseJsonOrValue<Record<string, any>>(
+              insp.damage_summary as any,
+              {},
+            );
 
             const issues =
               (damage.scratches?.count || 0) +
               (damage.dents?.count || 0) +
               (damage.rust?.count || 0);
 
-            const frames =
-              typeof insp.extracted_frames === "string"
-                ? JSON.parse(insp.extracted_frames)
-                : insp.extracted_frames || [];
+            const frames = safeParseJsonOrValue<string[]>(
+              insp.extracted_frames as any,
+              [],
+            );
 
             const isReal = (v: unknown): v is string =>
               typeof v === "string" && v.trim() !== "" && v !== "Unknown";
@@ -131,7 +132,7 @@ export function RecentInspections() {
   }, []);
 
   return (
-    <Card className="col-span-2">
+    <Card className="col-span-2 overflow-hidden">
       <CardHeader className="flex flex-row items-center justify-between">
         <div>
           <CardTitle>Recent Inspections</CardTitle>
@@ -159,7 +160,7 @@ export function RecentInspections() {
               <Link
                 key={inspection.id}
                 href={`/inspection/${inspection.id}`}
-                className="group flex items-center justify-between rounded-lg p-3 transition-colors hover:bg-secondary/50 cursor-pointer"
+              className="group flex items-center justify-between rounded-lg p-3 transition-colors hover:bg-secondary/50 cursor-pointer"
               >
                 <div className="flex items-center gap-4">
                   {inspection.image ? (

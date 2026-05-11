@@ -3,8 +3,8 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { Header } from "@/components/header";
-import { Sidebar } from "@/components/sidebar";
+import { AppShell } from "@/components/app-shell";
+import { PageHeader } from "@/components/page-header";
 import {
   Card,
   CardContent,
@@ -35,6 +35,7 @@ import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import Loading from "./loading";
 import { getInspections, BACKEND_BASE_URL } from "@/lib/api";
+import { safeParseJsonOrValue } from "@/lib/utils/safe-json";
 
 function getStatusBadge(status: string) {
   switch (status) {
@@ -73,32 +74,32 @@ function HistoryPageContent() {
   const [inspections, setInspections] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterStatus, setFilterStatus] = useState("all");
-  const searchParams = useSearchParams();
+  useSearchParams();
 
   useEffect(() => {
     const fetchInspections = async () => {
       try {
         const data = await getInspections();
         const transformed = data.map((insp: any) => {
-          const vehicleInfo =
-            typeof insp.vehicle_info === "string"
-              ? JSON.parse(insp.vehicle_info)
-              : insp.vehicle_info || {};
+          const vehicleInfo = safeParseJsonOrValue<Record<string, any>>(
+            insp.vehicle_info as any,
+            {},
+          );
 
-          const damage =
-            typeof insp.damage_summary === "string"
-              ? JSON.parse(insp.damage_summary)
-              : insp.damage_summary || {};
+          const damage = safeParseJsonOrValue<Record<string, any>>(
+            insp.damage_summary as any,
+            {},
+          );
 
           const issues =
             (damage.scratches?.count || 0) +
             (damage.dents?.count || 0) +
             (damage.rust?.count || 0);
 
-          const frames =
-            typeof insp.extracted_frames === "string"
-              ? JSON.parse(insp.extracted_frames)
-              : insp.extracted_frames || [];
+          const frames = safeParseJsonOrValue<string[]>(
+            insp.extracted_frames as any,
+            [],
+          );
 
           const isReal = (v: unknown): v is string =>
             typeof v === "string" && v.trim() !== "" && v !== "Unknown";
@@ -150,16 +151,13 @@ function HistoryPageContent() {
   });
 
   return (
-    <div className="min-h-screen bg-background">
-      <Header />
-      <div className="flex">
-        <Sidebar />
-        <main className="flex-1 overflow-auto">
-          <div className="p-6">
-            <div className="mb-6">
-              <h1 className="text-2xl font-bold tracking-tight">History</h1>
-              <p className="text-muted-foreground">All past inspections</p>
-            </div>
+    <AppShell>
+      <div className="p-4 sm:p-6 lg:p-8">
+        <PageHeader
+          eyebrow="Records"
+          title="History"
+          description="Search, filter, and reopen completed vehicle inspections without leaving the operations console."
+        />
 
             <Card>
               <CardHeader>
@@ -303,10 +301,8 @@ function HistoryPageContent() {
 
               </CardContent>
             </Card>
-          </div>
-        </main>
       </div>
-    </div>
+    </AppShell>
   );
 }
 
