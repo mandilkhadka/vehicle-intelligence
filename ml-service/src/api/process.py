@@ -21,6 +21,7 @@ from src.services.odometer_reader import OdometerReader
 from src.services.damage_detector import DamageDetector
 from src.services.exhaust_classifier import ExhaustClassifier
 from src.services.report_generator import ReportGenerator
+from src.services.gemini_analyzer import GeminiAnalyzer
 from src.services.model_registry import ModelRegistry
 from src.utils.path_validator import path_validator
 
@@ -40,7 +41,8 @@ def convert_to_relative_path(abs_path: str, backend_root: str) -> str:
 
 
 def initialize_ml_services(model_registry: Optional[ModelRegistry] = None) -> Tuple[FrameExtractor, VehicleIdentifier, DashboardDetector,
-                                       OdometerReader, DamageDetector, ExhaustClassifier, ReportGenerator]:
+                                       OdometerReader, DamageDetector, ExhaustClassifier, ReportGenerator,
+                                       GeminiAnalyzer]:
     """
     Initialize all ML services and return them as a tuple.
 
@@ -55,12 +57,16 @@ def initialize_ml_services(model_registry: Optional[ModelRegistry] = None) -> Tu
     yolo_model = None
     clip_model = None
     clip_processor = None
+    brand_text_embeddings = None
+    brand_names = None
 
     if model_registry is not None and model_registry.is_initialized:
         logger.info("Using pre-loaded models from ModelRegistry")
         yolo_model = model_registry.get_yolo_model()
         clip_model = model_registry.get_clip_model()
         clip_processor = model_registry.get_clip_processor()
+        brand_text_embeddings = model_registry.get_brand_text_embeddings()
+        brand_names = model_registry.get_brand_names()
     else:
         logger.warning("ModelRegistry not available - services will load models internally")
 
@@ -80,7 +86,9 @@ def initialize_ml_services(model_registry: Optional[ModelRegistry] = None) -> Tu
     vehicle_identifier = VehicleIdentifier(
         yolo_model=yolo_model,
         clip_model=clip_model,
-        clip_processor=clip_processor
+        clip_processor=clip_processor,
+        brand_text_embeddings=brand_text_embeddings,
+        brand_names=brand_names,
     )
     logger.info(f"VehicleIdentifier initialized ({time.time() - init_start_time:.2f}s)")
 
@@ -96,11 +104,16 @@ def initialize_ml_services(model_registry: Optional[ModelRegistry] = None) -> Tu
     exhaust_classifier = ExhaustClassifier(yolo_model=yolo_model)
     logger.info(f"ExhaustClassifier initialized ({time.time() - init_start_time:.2f}s)")
 
+    logger.info("Initializing GeminiAnalyzer...")
+    gemini_analyzer = GeminiAnalyzer()
+    logger.info(f"GeminiAnalyzer initialized ({time.time() - init_start_time:.2f}s)")
+
     total_init_time = time.time() - init_start_time
     logger.info(f"All ML services initialized successfully in {total_init_time:.2f} seconds")
 
     return (frame_extractor, vehicle_identifier, dashboard_detector,
-            odometer_reader, damage_detector, exhaust_classifier, report_generator)
+            odometer_reader, damage_detector, exhaust_classifier, report_generator,
+            gemini_analyzer)
 
 
 async def extract_video_frames(frame_extractor: FrameExtractor, video_path: str,
@@ -224,6 +237,8 @@ class ProcessResponse(BaseModel):
     damage: Dict[str, Any]
     exhaust: Dict[str, Any]
     report: Dict[str, Any]
+    gemini_analysis: Dict[str, Any]
+    reference_image: Dict[str, Any]
 
 
 @router.post("/process", response_model=ProcessResponse, status_code=status.HTTP_200_OK)
@@ -261,7 +276,8 @@ async def process_video(request: ProcessRequest, http_request: Request):
         ml_services = getattr(http_request.app.state, 'ml_services', None)
         if ml_services is not None:
             (frame_extractor, vehicle_identifier, dashboard_detector,
-             odometer_reader, damage_detector, exhaust_classifier, report_generator) = ml_services
+             odometer_reader, damage_detector, exhaust_classifier, report_generator,
+             gemini_analyzer) = ml_services
             logger.debug("Using cached ML services from app.state")
         else:
             # Fallback: initialize per-request (should not happen in normal operation)
@@ -269,7 +285,8 @@ async def process_video(request: ProcessRequest, http_request: Request):
             model_registry = getattr(http_request.app.state, 'model_registry', None)
             try:
                 (frame_extractor, vehicle_identifier, dashboard_detector,
-                 odometer_reader, damage_detector, exhaust_classifier, report_generator) = initialize_ml_services(model_registry)
+                 odometer_reader, damage_detector, exhaust_classifier, report_generator,
+                 gemini_analyzer) = initialize_ml_services(model_registry)
             except Exception as e:
                 logger.error(f"Failed to initialize ML services: {str(e)}", exc_info=True)
                 raise HTTPException(
@@ -326,14 +343,32 @@ async def process_video(request: ProcessRequest, http_request: Request):
             logger.info(f"  [Parallel] Exhaust classification completed. Type: {result.get('type', 'unknown')}")
             return result
 
-        # Execute all four tasks in parallel
-        # asyncio.gather runs all coroutines concurrently and waits for all to complete
+        async def analyze_with_gemini():
+            logger.info("  [Parallel] Starting Gemini multimodal frame analysis...")
+            result = await gemini_analyzer.analyze(frames_absolute)
+            if result.get("available"):
+                vehicle = result.get("vehicle") or {}
+                logger.info(
+                    f"  [Parallel] Gemini analysis complete. "
+                    f"Vehicle={vehicle.get('brand')} {vehicle.get('model')} ({vehicle.get('year')}) — "
+                    f"per_frame={len(result.get('per_frame') or [])}"
+                )
+            else:
+                logger.warning(f"  [Parallel] Gemini analysis unavailable: {result.get('reason')}")
+            # Convert per-frame paths to relative paths so the frontend can render them.
+            for entry in result.get("per_frame") or []:
+                if entry.get("frame"):
+                    entry["frame"] = convert_to_relative_path(entry["frame"], backend_root)
+            return result
+
+        # Execute all parallel ML tasks (including Gemini multimodal analysis).
         try:
-            vehicle_info, odometer_data, damage_data, exhaust_data = await asyncio.gather(
+            vehicle_info, odometer_data, damage_data, exhaust_data, gemini_data = await asyncio.gather(
                 identify_vehicle(),
                 process_odometer(),
                 detect_damage(),
                 classify_exhaust(),
+                analyze_with_gemini(),
                 return_exceptions=False  # Raise first exception immediately
             )
         except Exception as e:
@@ -343,14 +378,26 @@ async def process_video(request: ProcessRequest, http_request: Request):
         parallel_duration = time.time() - parallel_start
         logger.info(f"Parallel ML processing completed in {parallel_duration:.2f} seconds")
 
-        # Step 3: Generate report (depends on all previous results)
+        # Merge Gemini's fine-grained vehicle ID into vehicle_info when available.
+        # Gemini can name a specific model and year; CLIP zero-shot cannot.
+        vehicle_info = _merge_vehicle_info(vehicle_info, gemini_data)
+
+        reference_image = (gemini_data.get("reference_image") or {}) if gemini_data else {}
+
+        # Step 3: Generate report (depends on all previous results, including Gemini)
         logger.info("Step 3/3: Generating inspection report...")
         report = await report_generator.generate({
             "vehicle_info": vehicle_info,
             "odometer": odometer_data,
             "damage": damage_data,
             "exhaust": exhaust_data,
+            "gemini_analysis": gemini_data,
         })
+
+        # Pack Gemini context into the persisted report so the frontend can show it.
+        if isinstance(report, dict):
+            report["gemini_analysis"] = gemini_data
+            report["reference_image"] = reference_image
 
         processing_time = time.time() - start_time
         logger.info(f"Video processing completed for inspection {request.inspection_id} "
@@ -364,6 +411,8 @@ async def process_video(request: ProcessRequest, http_request: Request):
             damage=damage_data,
             exhaust=exhaust_data,
             report=report,
+            gemini_analysis=gemini_data,
+            reference_image=reference_image,
         )
 
     except HTTPException:
@@ -438,3 +487,39 @@ async def _process_odometer(request: ProcessRequest, odometer_reader: OdometerRe
     else:
         frames_absolute = [os.path.join(backend_root, "backend", "uploads", f) for f in frames]
         return await read_odometer_from_frames(dashboard_detector, odometer_reader, frames_absolute, backend_root)
+
+
+def _merge_vehicle_info(base_info: Dict[str, Any], gemini_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Override CLIP/YOLO results with Gemini's identification when available.
+    Gemini reads badges + body shape and is far better at naming a specific model
+    and year. We keep the original confidence as a fallback signal.
+    """
+    if not gemini_data or not gemini_data.get("available"):
+        return base_info
+
+    g_vehicle = gemini_data.get("vehicle") or {}
+    merged = dict(base_info or {})
+
+    # Prefer Gemini for these fields whenever it returned a non-empty value.
+    for key in ("type", "brand", "model", "color"):
+        g_val = g_vehicle.get(key)
+        if g_val and str(g_val).strip().lower() not in ("", "unknown", "null", "none"):
+            merged[key] = g_val
+
+    # New fields Gemini provides that CLIP cannot.
+    if g_vehicle.get("year"):
+        merged["year"] = g_vehicle.get("year")
+    if g_vehicle.get("variant"):
+        merged["variant"] = g_vehicle.get("variant")
+
+    # Take the higher of the two confidences so a confident Gemini lifts the score.
+    g_conf = g_vehicle.get("confidence")
+    try:
+        g_conf_f = float(g_conf) if g_conf is not None else 0.0
+    except (TypeError, ValueError):
+        g_conf_f = 0.0
+    base_conf = float(merged.get("confidence") or 0.0)
+    merged["confidence"] = max(base_conf, g_conf_f)
+
+    return merged

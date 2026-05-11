@@ -152,12 +152,15 @@ class ReportGenerator:
         odometer = inspection_data.get("odometer", {})
         damage = inspection_data.get("damage", {})
         exhaust = inspection_data.get("exhaust", {})
+        gemini_analysis = inspection_data.get("gemini_analysis") or {}
 
         # Build detailed vehicle information
         vehicle_type = vehicle_info.get('type', 'Unknown')
         vehicle_brand = vehicle_info.get('brand', 'Unknown')
         vehicle_model = vehicle_info.get('model', 'Unknown')
         vehicle_color = vehicle_info.get('color', 'Unknown')
+        vehicle_year = vehicle_info.get('year', 'Unknown')
+        vehicle_variant = vehicle_info.get('variant', 'Unknown')
         vehicle_confidence = vehicle_info.get('confidence', 0)
         
         # Build detailed odometer information
@@ -175,7 +178,12 @@ class ReportGenerator:
         exhaust_type = exhaust.get('type', 'Unknown')
         exhaust_confidence = exhaust.get('confidence', 0)
 
+        # Gemini multimodal analysis (per-frame observations + identification)
+        gemini_section = self._format_gemini_section(gemini_analysis)
+
         prompt = f"""You are an expert vehicle inspection analyst. Generate a comprehensive, accurate, and professional vehicle inspection report based on the following AI-detected findings.
+
+The "Gemini Visual Analysis" section below contains direct observations from a multimodal vision model that examined the actual frames of the inspection video. Treat those observations as the most authoritative source — defer to them when they conflict with the other detector outputs (which use simpler computer-vision techniques).
 
 ## INSPECTION DATA:
 
@@ -183,8 +191,12 @@ class ReportGenerator:
 - Vehicle Type: {vehicle_type}
 - Brand: {vehicle_brand}
 - Model: {vehicle_model}
+- Year/Generation: {vehicle_year}
+- Variant: {vehicle_variant}
 - Color: {vehicle_color}
 - Detection Confidence: {vehicle_confidence:.1%}
+
+{gemini_section}
 
 ### Odometer Reading:
 - Value: {odometer_value if odometer_value is not None else 'Not detected'} km
@@ -241,6 +253,8 @@ Return ONLY valid JSON in this exact structure (no markdown, no code blocks, jus
     "type": "{vehicle_type}",
     "brand": "{vehicle_brand}",
     "model": "{vehicle_model}",
+    "year": "{vehicle_year}",
+    "variant": "{vehicle_variant}",
     "color": "{vehicle_color}",
     "condition": "good|fair|poor",
     "notes": "Additional observations about vehicle condition"
@@ -276,6 +290,52 @@ IMPORTANT:
 """
 
         return prompt
+
+    def _format_gemini_section(self, gemini_analysis: Dict[str, Any]) -> str:
+        """Render Gemini's multimodal analysis as a markdown section for the prompt."""
+        if not gemini_analysis or not gemini_analysis.get("available"):
+            return "### Gemini Visual Analysis:\n- Not available (vision pass did not run or failed)."
+
+        g_vehicle = gemini_analysis.get("vehicle") or {}
+        per_frame = gemini_analysis.get("per_frame") or []
+        ref = gemini_analysis.get("reference_image") or {}
+
+        lines: list = []
+        lines.append("### Gemini Visual Analysis:")
+        lines.append(f"- Identified Vehicle: {g_vehicle.get('brand', 'Unknown')} "
+                     f"{g_vehicle.get('model', '')} ({g_vehicle.get('year', 'Unknown')})")
+        if g_vehicle.get("variant"):
+            lines.append(f"- Variant: {g_vehicle.get('variant')}")
+        lines.append(f"- Visual ID Confidence: {float(g_vehicle.get('confidence') or 0):.1%}")
+        if gemini_analysis.get("overall_condition"):
+            lines.append(f"- Overall Condition (visual): {gemini_analysis.get('overall_condition')}")
+        if gemini_analysis.get("damage_findings"):
+            lines.append(f"- Damage Findings (visual): {gemini_analysis.get('damage_findings')}")
+        if gemini_analysis.get("exhaust_observations"):
+            lines.append(f"- Exhaust Observations: {gemini_analysis.get('exhaust_observations')}")
+        if gemini_analysis.get("odometer_observations"):
+            lines.append(f"- Odometer Observations: {gemini_analysis.get('odometer_observations')}")
+
+        if per_frame:
+            lines.append("")
+            lines.append("#### Per-Frame Observations:")
+            for entry in per_frame[:8]:
+                idx = entry.get("index")
+                view = entry.get("view") or "unspecified-view"
+                obs = entry.get("observations") or "(no notes)"
+                dmg = entry.get("damage_notes") or "none observed"
+                cond = entry.get("condition") or "n/a"
+                lines.append(f"- Frame {idx} ({view}, condition={cond}): {obs} | damage: {dmg}")
+
+        if ref.get("description") or ref.get("search_query"):
+            lines.append("")
+            lines.append("#### Brand-New Reference (same model):")
+            if ref.get("description"):
+                lines.append(f"- Description: {ref.get('description')}")
+            if ref.get("search_query"):
+                lines.append(f"- Search Query: {ref.get('search_query')}")
+
+        return "\n".join(lines)
 
     def _parse_text_report(
         self, text: str, inspection_data: Dict[str, Any]
