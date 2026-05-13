@@ -301,6 +301,71 @@ def test_exterior_selection_does_not_fill_missing_views_with_dashboard_frames():
     assert selected["dashboard"]["frame_index"] >= 6
 
 
+def test_clip_selection_rejects_dashboard_frames_for_exterior_views():
+    organizer = VehicleFrameOrganizer(clip_model=object(), clip_processor=object())
+    candidates = []
+    for index, view in enumerate(("front", "front-left", "left", "rear-left", "rear")):
+        view_scores = {name: 0.01 for name in organizer._view_names}
+        view_scores[view] = 0.42
+        candidates.append(
+            FrameCandidate(
+                index=index,
+                path=f"frame_{index:04d}.jpg",
+                blur_score=300.0,
+                brightness=128.0,
+                contrast=60.0,
+                quality_score=0.9,
+                vehicle_box=(20, 20, 250, 130),
+                vehicle_ratio=0.35,
+                heuristic_dashboard_score=0.1,
+                view_scores=view_scores,
+            )
+        )
+
+    for index, view in enumerate(("rear-right", "right", "front-right"), start=5):
+        view_scores = {name: 0.01 for name in organizer._view_names}
+        view_scores[view] = 0.55
+        view_scores["dashboard"] = 0.60
+        view_scores["odometer"] = 0.52
+        candidates.append(
+            FrameCandidate(
+                index=index,
+                path=f"dashboard_{index:04d}.jpg",
+                blur_score=300.0,
+                brightness=128.0,
+                contrast=60.0,
+                quality_score=0.9,
+                vehicle_box=None,
+                vehicle_ratio=0.0,
+                heuristic_dashboard_score=0.78,
+                view_scores=view_scores,
+            )
+        )
+
+    selected = organizer._select_angle_shots(candidates)
+
+    assert "rear-right" not in selected
+    assert "right" not in selected
+    assert "front-right" not in selected
+    assert selected["dashboard"]["frame_index"] >= 5
+
+
+def test_organized_angle_copy_enhances_resolution(temp_dir):
+    src = temp_dir / "small.jpg"
+    dest = temp_dir / "organized.jpg"
+    image = np.full((240, 420, 3), 120, dtype=np.uint8)
+    cv2.rectangle(image, (60, 70), (360, 180), (80, 80, 80), -1)
+    cv2.imwrite(str(src), image)
+
+    copied = VehicleFrameOrganizer._copy_frame(str(src), dest)
+
+    assert copied == str(dest)
+    out = cv2.imread(str(dest))
+    assert out is not None
+    assert out.shape[0] >= 720
+    assert out.shape[1] >= 1280
+
+
 def test_low_temporal_fit_blocks_exterior_high_confidence():
     organizer = VehicleFrameOrganizer(clip_model=object(), clip_processor=object())
     candidate = FrameCandidate(

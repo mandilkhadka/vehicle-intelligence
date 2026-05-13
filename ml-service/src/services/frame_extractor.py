@@ -68,7 +68,13 @@ class FrameExtractor:
         """
         return enhance_image_for_analysis(frame, denoise=False)
 
-    def _is_duplicate(self, frame1: np.ndarray, frame2: np.ndarray, threshold: float = 0.95) -> bool:
+    def _is_duplicate(
+        self,
+        frame1: np.ndarray,
+        frame2: np.ndarray,
+        threshold: float = 0.985,
+        max_mean_difference: float = 0.018,
+    ) -> bool:
         """
         Check if two frames are too similar (duplicates)
         Args:
@@ -92,8 +98,9 @@ class FrameExtractor:
         hist2 = cv2.calcHist([gray2], [0], None, [256], [0, 256])
         
         correlation = cv2.compareHist(hist1, hist2, cv2.HISTCMP_CORREL)
-        
-        return correlation > threshold
+        mean_difference = float(np.mean(cv2.absdiff(gray1, gray2))) / 255.0
+
+        return correlation > threshold and mean_difference < max_mean_difference
 
     def _extract_frames_sync(
         self, video_path: str, output_dir: str

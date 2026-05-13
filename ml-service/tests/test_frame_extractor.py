@@ -49,3 +49,12 @@ def test_extract_frames_writes_source_timeline_metadata(temp_dir):
     assert metadata["frames"][0]["source_frame_index"] == 0
     assert metadata["frames"][1]["source_frame_index"] == 5
     assert metadata["frames"][1]["timestamp_seconds"] == 0.5
+
+
+def test_duplicate_filter_keeps_small_walkaround_changes():
+    extractor = FrameExtractor()
+    base = np.full((120, 180, 3), 140, dtype=np.uint8)
+    changed = base.copy()
+    cv2.rectangle(changed, (120, 30), (160, 90), (20, 20, 20), -1)
+
+    assert extractor._is_duplicate(base, changed) is False

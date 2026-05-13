@@ -103,8 +103,12 @@ _MIN_EXTERIOR_CLIP_EVIDENCE_SCORE = 0.08
 _HIGH_CONFIDENCE_DASHBOARD_SCORE = 0.50
 _HIGH_CONFIDENCE_TEMPORAL_SCORE = 0.80
 _HIGH_CONFIDENCE_VEHICLE_RATIO = 0.25
-_EXTERIOR_TEMPORAL_WEIGHT = 0.28
+_EXTERIOR_TEMPORAL_WEIGHT = 0.42
 _EXTERIOR_TEMPORAL_SIGMA = 0.14
+_MIN_EXTERIOR_TEMPORAL_FIT = 0.18
+_STRONG_EXTERIOR_CLIP_SCORE = 0.24
+_DASHBOARD_LIKE_REJECTION_SCORE = 0.58
+_INTERIOR_LIKE_REJECTION_SCORE = 0.32
 _MIN_DASHBOARD_CANDIDATE_SCORE = 0.45
 _DASHBOARD_EXTERIOR_REJECTION_VEHICLE_RATIO = 0.35
 _DASHBOARD_EXTERIOR_REJECTION_SCORE = 0.45
@@ -352,8 +356,17 @@ class VehicleFrameOrganizer:
     def _copy_frame(src: str, dest: Path) -> Optional[str]:
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dest)
-            return str(dest)
+            image = cv2.imread(src)
+            if image is None:
+                shutil.copy2(src, dest)
+                return str(dest)
+            enhanced = enhance_image_for_analysis(
+                image,
+                min_width=1280,
+                min_height=720,
+                denoise=False,
+            )
+            return str(dest) if write_jpeg(dest, enhanced, 98) else None
         except Exception as e:
             logger.warning("FrameOrganizer: failed to copy %s to %s: %s", src, dest, e)
             return None
@@ -611,6 +624,8 @@ class VehicleFrameOrganizer:
         return (semantic * 0.60) + (candidate.quality_score * 0.25) + (vehicle * 0.15)
 
     def _has_exterior_evidence(self, candidate: FrameCandidate, total_candidates: int) -> bool:
+        if self._is_dashboard_or_interior_like(candidate):
+            return False
         if self.yolo_model is not None:
             return candidate.vehicle_ratio >= _MIN_EXTERIOR_VEHICLE_RATIO
         position = candidate.index / max(total_candidates - 1, 1)
@@ -624,12 +639,33 @@ class VehicleFrameOrganizer:
         view_offset: int,
         total_candidates: int,
     ) -> bool:
-        if self._clip_available() or self.yolo_model is not None:
-            return True
-
         semantic = candidate.view_scores.get(view, 0.0)
         temporal = self._temporal_prior(candidate.index, total_candidates, view_offset, len(EXTERIOR_VIEWS))
-        return semantic >= 0.50 and temporal >= 0.25
+        if semantic >= _STRONG_EXTERIOR_CLIP_SCORE and temporal >= 0.08:
+            return True
+        if temporal >= _MIN_EXTERIOR_TEMPORAL_FIT and semantic >= _MIN_EXTERIOR_CLIP_EVIDENCE_SCORE:
+            return True
+        return not self._clip_available() and semantic >= 0.50 and temporal >= 0.25
+
+    def _is_dashboard_or_interior_like(self, candidate: FrameCandidate) -> bool:
+        exterior_score = max(candidate.view_scores.get(view, 0.0) for view in EXTERIOR_VIEWS)
+        dashboard_score = max(
+            candidate.view_scores.get("dashboard", 0.0),
+            candidate.view_scores.get("odometer", 0.0),
+        )
+        interior_score = candidate.view_scores.get("interior", 0.0)
+
+        if candidate.heuristic_dashboard_score >= _DASHBOARD_LIKE_REJECTION_SCORE:
+            return dashboard_score >= exterior_score or interior_score >= exterior_score * 0.75
+        if interior_score >= _INTERIOR_LIKE_REJECTION_SCORE and interior_score > exterior_score:
+            return True
+        if (
+            dashboard_score >= _INTERIOR_LIKE_REJECTION_SCORE
+            and candidate.heuristic_dashboard_score >= _DASHBOARD_EXTERIOR_REJECTION_SCORE
+            and dashboard_score > exterior_score
+        ):
+            return True
+        return False
 
     def _has_dashboard_candidate_evidence(self, candidate: FrameCandidate) -> bool:
         if self.yolo_model is None:
