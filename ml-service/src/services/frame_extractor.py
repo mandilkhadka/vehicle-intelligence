@@ -3,12 +3,15 @@ Frame extraction service
 Extracts frames from video using OpenCV with quality filtering
 """
 
-import cv2
-import os
-import numpy as np
-from typing import List
 import asyncio
-from pathlib import Path
+import json
+import os
+from typing import Any, Dict, List
+
+import cv2
+import numpy as np
+
+from src.utils.image_quality import enhance_image_for_analysis, write_jpeg
 
 
 class FrameExtractor:
@@ -19,10 +22,10 @@ class FrameExtractor:
         Initialize frame extractor
         Args:
             fps: Frames per second to extract (default: 1 frame per second)
-            min_blur_threshold: Minimum Laplacian variance to consider frame sharp (default: 100.0)
+            min_blur_threshold: Minimum Laplacian variance to consider frame sharp (default: 15.0)
             jpeg_quality: JPEG quality (1-100, default: 98)
         """
-        self.fps = fps
+        self.fps = max(float(fps), 0.1)
         self.min_blur_threshold = min_blur_threshold
         self.jpeg_quality = jpeg_quality
 
@@ -57,34 +60,13 @@ class FrameExtractor:
 
     def _enhance_frame(self, frame: np.ndarray) -> np.ndarray:
         """
-        Enhance frame quality with sharpening and contrast adjustment
+        Enhance frame quality with contrast and detail adjustment
         Args:
             frame: Image frame as numpy array
         Returns:
             Enhanced frame
         """
-        # Convert to LAB color space for better processing
-        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
-        l, a, b = cv2.split(lab)
-        
-        # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to L channel
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        l = clahe.apply(l)
-        
-        # Merge channels and convert back to BGR
-        enhanced = cv2.merge([l, a, b])
-        enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
-        
-        # Apply slight sharpening
-        kernel = np.array([[-1, -1, -1],
-                          [-1,  9, -1],
-                          [-1, -1, -1]]) / 1.0
-        sharpened = cv2.filter2D(enhanced, -1, kernel)
-        
-        # Blend original and sharpened (70% sharpened, 30% original)
-        result = cv2.addWeighted(sharpened, 0.7, enhanced, 0.3, 0)
-        
-        return result
+        return enhance_image_for_analysis(frame, denoise=False)
 
     def _is_duplicate(self, frame1: np.ndarray, frame2: np.ndarray, threshold: float = 0.95) -> bool:
         """
@@ -131,13 +113,13 @@ class FrameExtractor:
         # Get video properties
         video_fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        duration = total_frames / video_fps if video_fps > 0 else 0
-
-        # Calculate frame interval
-        # Extract 1 frame per second
-        frame_interval = int(video_fps) if video_fps > 0 else 30
+        # Calculate frame interval from requested extraction FPS. A 60 FPS
+        # video with fps=2 processes every 30th frame; fps=1 preserves the
+        # previous default behavior.
+        frame_interval = self._frame_interval(video_fps)
 
         frame_paths = []
+        frame_metadata: List[Dict[str, Any]] = []
         frame_count = 0
         saved_count = 0
         last_saved_frame = None
@@ -145,7 +127,11 @@ class FrameExtractor:
         skipped_duplicate = 0
 
         print(f"Video FPS: {video_fps}, Total frames: {total_frames}")
-        print(f"Quality settings: blur_threshold={self.min_blur_threshold}, jpeg_quality={self.jpeg_quality}")
+        print(
+            "Extraction settings: "
+            f"target_fps={self.fps}, frame_interval={frame_interval}, "
+            f"blur_threshold={self.min_blur_threshold}, jpeg_quality={self.jpeg_quality}"
+        )
 
         # Extract frames with quality filtering
         while True:
@@ -178,14 +164,17 @@ class FrameExtractor:
                 frame_path = os.path.join(output_dir, frame_filename)
                 
                 # Save with high quality
-                cv2.imwrite(
-                    frame_path, 
-                    enhanced_frame,
-                    [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
-                )
+                write_jpeg(frame_path, enhanced_frame, self.jpeg_quality)
                 
                 # Store path relative to backend uploads directory
                 frame_paths.append(frame_path)
+                frame_metadata.append({
+                    "extracted_index": saved_count,
+                    "source_frame_index": frame_count,
+                    "timestamp_seconds": round(frame_count / video_fps, 3) if video_fps > 0 else None,
+                    "path": frame_path,
+                    "blur_score": round(float(blur_score), 3),
+                })
                 last_saved_frame = frame.copy()
                 saved_count += 1
 
@@ -200,4 +189,55 @@ class FrameExtractor:
         if skipped_duplicate > 0:
             print(f"Skipped {skipped_duplicate} duplicate frames")
 
+        self._write_metadata(
+            output_dir=output_dir,
+            video_path=video_path,
+            video_fps=video_fps,
+            total_frames=total_frames,
+            frame_interval=frame_interval,
+            frame_metadata=frame_metadata,
+            skipped_blurry=skipped_blurry,
+            skipped_duplicate=skipped_duplicate,
+            jpeg_quality=self.jpeg_quality,
+        )
         return frame_paths
+
+    @staticmethod
+    def _write_metadata(
+        output_dir: str,
+        video_path: str,
+        video_fps: float,
+        total_frames: int,
+        frame_interval: int,
+        frame_metadata: List[Dict[str, Any]],
+        skipped_blurry: int,
+        skipped_duplicate: int,
+        jpeg_quality: int,
+    ) -> None:
+        metadata_path = os.path.join(output_dir, "frame_metadata.json")
+        payload = {
+            "video_path": video_path,
+            "video_fps": video_fps,
+            "total_source_frames": total_frames,
+            "frame_interval": frame_interval,
+            "frames_extracted": len(frame_metadata),
+            "skipped_blurry": skipped_blurry,
+            "skipped_duplicate": skipped_duplicate,
+            "jpeg_quality": jpeg_quality,
+            "image_enhancement": "clahe_unsharp",
+            "frames": frame_metadata,
+        }
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+
+    def _frame_interval(self, video_fps: float) -> int:
+        """
+        Convert requested extraction FPS to a source-frame interval.
+
+        Returns at least 1 so callers can request dense sampling for fast
+        walkarounds without modulo-by-zero or skipped-frame surprises.
+        """
+        if video_fps <= 0:
+            fallback_source_fps = 30.0
+            return max(1, int(round(fallback_source_fps / self.fps)))
+        return max(1, int(round(video_fps / self.fps)))

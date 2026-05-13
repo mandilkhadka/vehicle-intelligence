@@ -68,6 +68,30 @@ export function initDatabase(): Database.Database {
         logger.info("Adding exhaust_image_path column to inspections table");
         db.exec("ALTER TABLE inspections ADD COLUMN exhaust_image_path TEXT");
       }
+      if (!columnNames.includes("vehicle_year")) {
+        logger.info("Adding vehicle_year column to inspections table");
+        db.exec("ALTER TABLE inspections ADD COLUMN vehicle_year TEXT");
+      }
+      if (!columnNames.includes("vehicle_variant")) {
+        logger.info("Adding vehicle_variant column to inspections table");
+        db.exec("ALTER TABLE inspections ADD COLUMN vehicle_variant TEXT");
+      }
+      if (!columnNames.includes("vehicle_info")) {
+        logger.info("Adding vehicle_info column to inspections table");
+        db.exec("ALTER TABLE inspections ADD COLUMN vehicle_info TEXT");
+      }
+      if (!columnNames.includes("odometer_info")) {
+        logger.info("Adding odometer_info column to inspections table");
+        db.exec("ALTER TABLE inspections ADD COLUMN odometer_info TEXT");
+      }
+      if (!columnNames.includes("cracks_detected")) {
+        logger.info("Adding cracks_detected column to inspections table");
+        db.exec("ALTER TABLE inspections ADD COLUMN cracks_detected INTEGER DEFAULT 0");
+      }
+      if (!columnNames.includes("paint_damage_detected")) {
+        logger.info("Adding paint_damage_detected column to inspections table");
+        db.exec("ALTER TABLE inspections ADD COLUMN paint_damage_detected INTEGER DEFAULT 0");
+      }
     } catch (error) {
       logger.warn({ error }, "Migration error (non-critical)");
     }

@@ -1,6 +1,6 @@
 """
 Damage detection service
-Detects scratches, dents, and rust using YOLOv8 and computer vision
+Detects scratches, dents, rust, cracks, and paint damage using YOLOv8 and computer vision
 """
 
 import asyncio
@@ -21,7 +21,7 @@ MAX_FRAMES = 15
 
 
 class DamageDetector:
-    """Detects vehicle damage (scratches, dents, rust)"""
+    """Detects vehicle damage (scratches, dents, rust, cracks, paint damage)"""
 
     def __init__(self, yolo_model: Optional[YOLO] = None):
         """
@@ -63,6 +63,8 @@ class DamageDetector:
         scratches_count = 0
         dents_count = 0
         rust_count = 0
+        cracks_count = 0
+        paint_damage_count = 0
         damage_locations = []
 
         # Apply frame limiting for performance (Phase 2 optimization)
@@ -79,10 +81,22 @@ class DamageDetector:
             os.makedirs(snapshots_dir, exist_ok=True)
 
         # Process frames to detect damage with improved filtering
-        snapshot_counter = {"scratch": 0, "dent": 0, "rust": 0}
+        snapshot_counter = {
+            "scratch": 0,
+            "dent": 0,
+            "rust": 0,
+            "crack": 0,
+            "paint_damage": 0,
+        }
 
         # Track detected regions to avoid duplicates
-        detected_regions = {"scratch": [], "dent": [], "rust": []}
+        detected_regions = {
+            "scratch": [],
+            "dent": [],
+            "rust": [],
+            "crack": [],
+            "paint_damage": [],
+        }
         MIN_CONFIDENCE_THRESHOLD = 0.3  # Filter out detections below 30% confidence
 
         for frame_idx, frame_path in enumerate(selected_frames):
@@ -160,9 +174,19 @@ class DamageDetector:
                         region_edges = cv2.Canny(region_gray, lower, upper)
                         edge_density = np.sum(region_edges > 0) / max(region_edges.size, 1)
                         
-                        # Calculate confidence (0-1 scale)
-                        # Higher contrast and edge density = higher confidence
-                        confidence = min(0.95, 0.4 + (contrast * 0.4) + (edge_density * 0.2))
+                        # Calculate confidence (0-1 scale). Higher contrast and
+                        # edge density = higher confidence. Very dark elongated
+                        # regions are classified as cracks rather than scratches.
+                        is_crack = (
+                            aspect_ratio >= 3.0
+                            and region_mean < surrounding_mean - 18
+                            and edge_density > 0.08
+                        )
+                        damage_type = "crack" if is_crack else "scratch"
+                        confidence = min(
+                            0.95,
+                            0.4 + (contrast * 0.4) + (edge_density * 0.2) + (0.08 if is_crack else 0.0),
+                        )
                         
                         # Filter low confidence detections
                         if confidence < MIN_CONFIDENCE_THRESHOLD:
@@ -172,7 +196,7 @@ class DamageDetector:
                         center_x = vx1 + x + w_contour // 2
                         center_y = vy1 + y + h_contour // 2
                         is_duplicate = False
-                        for prev_region in detected_regions["scratch"]:
+                        for prev_region in detected_regions[damage_type]:
                             prev_x, prev_y, prev_frame = prev_region
                             # If same location within 50 pixels and within 3 frames, consider duplicate
                             if abs(prev_x - center_x) < 50 and abs(prev_y - center_y) < 50 and abs(prev_frame - frame_idx) < 3:
@@ -192,14 +216,17 @@ class DamageDetector:
                         damage_crop = vehicle_image[y_expanded:y_expanded+h_expanded, x_expanded:x_expanded+w_expanded]
                         
                         if damage_crop.size > 0:
-                            scratches_count += 1
-                            snapshot_counter["scratch"] += 1
-                            detected_regions["scratch"].append((center_x, center_y, frame_idx))
+                            if damage_type == "crack":
+                                cracks_count += 1
+                            else:
+                                scratches_count += 1
+                            snapshot_counter[damage_type] += 1
+                            detected_regions[damage_type].append((center_x, center_y, frame_idx))
                             
                             # Save snapshot if directory is available
                             snapshot_path = None
                             if snapshots_dir:
-                                snapshot_filename = f"scratch_{snapshot_counter['scratch']:03d}_frame_{frame_idx:04d}.jpg"
+                                snapshot_filename = f"{damage_type}_{snapshot_counter[damage_type]:03d}_frame_{frame_idx:04d}.jpg"
                                 snapshot_path_full = os.path.join(snapshots_dir, snapshot_filename)
                                 cv2.imwrite(snapshot_path_full, damage_crop)
                                 
@@ -211,7 +238,7 @@ class DamageDetector:
                                     snapshot_path = snapshot_path_full
                             
                             damage_locations.append({
-                                "type": "scratch",
+                                "type": damage_type,
                                 "frame": frame_path,
                                 "snapshot": snapshot_path,
                                 "confidence": confidence,
@@ -305,6 +332,95 @@ class DamageDetector:
                                 "confidence": confidence,
                                 "bbox": [vx1 + x_expanded, vy1 + y_expanded, vx1 + x_expanded + w_expanded, vy1 + y_expanded + h_expanded],
                             })
+
+                # Paint damage / scuff detection: irregular non-rust regions
+                # with local contrast and edge texture. This is intentionally
+                # conservative and complements Gemini's VLM assessment.
+                paint_mask = cv2.bitwise_and(edges, cv2.bitwise_not(rust_mask))
+                paint_kernel = np.ones((5, 5), np.uint8)
+                paint_mask = cv2.morphologyEx(paint_mask, cv2.MORPH_CLOSE, paint_kernel)
+                paint_contours, _ = cv2.findContours(paint_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+                for contour in paint_contours:
+                    area = cv2.contourArea(contour)
+                    if not (800 < area < 30000):
+                        continue
+
+                    x, y, w_contour, h_contour = cv2.boundingRect(contour)
+                    aspect_ratio = max(w_contour, h_contour) / max(min(w_contour, h_contour), 1)
+                    if aspect_ratio > 4.5:
+                        continue
+
+                    region = vehicle_image[y:y+h_contour, x:x+w_contour]
+                    if region.size == 0:
+                        continue
+
+                    padding = 25
+                    x_pad = max(0, x - padding)
+                    y_pad = max(0, y - padding)
+                    w_pad = min(vehicle_image.shape[1] - x_pad, w_contour + 2 * padding)
+                    h_pad = min(vehicle_image.shape[0] - y_pad, h_contour + 2 * padding)
+                    surrounding = vehicle_image[y_pad:y_pad+h_pad, x_pad:x_pad+w_pad]
+                    if surrounding.size == 0:
+                        continue
+
+                    region_gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
+                    surrounding_gray = cv2.cvtColor(surrounding, cv2.COLOR_BGR2GRAY)
+                    local_contrast = abs(float(np.mean(region_gray)) - float(np.mean(surrounding_gray))) / 255.0
+                    region_edges = cv2.Canny(region_gray, lower, upper)
+                    edge_density = float(np.sum(region_edges > 0) / max(region_edges.size, 1))
+
+                    if local_contrast < 0.08 or edge_density < 0.035:
+                        continue
+
+                    center_x = vx1 + x + w_contour // 2
+                    center_y = vy1 + y + h_contour // 2
+                    is_duplicate = False
+                    for damage_type in ("paint_damage", "scratch", "crack", "rust"):
+                        for prev_x, prev_y, prev_frame in detected_regions[damage_type]:
+                            if abs(prev_x - center_x) < 60 and abs(prev_y - center_y) < 60 and abs(prev_frame - frame_idx) < 3:
+                                is_duplicate = True
+                                break
+                        if is_duplicate:
+                            break
+                    if is_duplicate:
+                        continue
+
+                    confidence = min(0.9, 0.35 + (local_contrast * 0.4) + (edge_density * 0.4))
+                    if confidence < MIN_CONFIDENCE_THRESHOLD:
+                        continue
+
+                    x_expanded = max(0, x - padding)
+                    y_expanded = max(0, y - padding)
+                    w_expanded = min(vehicle_image.shape[1] - x_expanded, w_contour + 2 * padding)
+                    h_expanded = min(vehicle_image.shape[0] - y_expanded, h_contour + 2 * padding)
+                    paint_crop = vehicle_image[y_expanded:y_expanded+h_expanded, x_expanded:x_expanded+w_expanded]
+                    if paint_crop.size == 0:
+                        continue
+
+                    paint_damage_count += 1
+                    snapshot_counter["paint_damage"] += 1
+                    detected_regions["paint_damage"].append((center_x, center_y, frame_idx))
+
+                    snapshot_path = None
+                    if snapshots_dir:
+                        snapshot_filename = f"paint_damage_{snapshot_counter['paint_damage']:03d}_frame_{frame_idx:04d}.jpg"
+                        snapshot_path_full = os.path.join(snapshots_dir, snapshot_filename)
+                        cv2.imwrite(snapshot_path_full, paint_crop)
+
+                        if backend_uploads_path:
+                            rel_path = os.path.relpath(snapshot_path_full, backend_uploads_path)
+                            snapshot_path = rel_path.replace("\\", "/")
+                        else:
+                            snapshot_path = snapshot_path_full
+
+                    damage_locations.append({
+                        "type": "paint_damage",
+                        "frame": frame_path,
+                        "snapshot": snapshot_path,
+                        "confidence": confidence,
+                        "bbox": [vx1 + x_expanded, vy1 + y_expanded, vx1 + x_expanded + w_expanded, vy1 + y_expanded + h_expanded],
+                    })
 
                 # Improved dent detection using depth/shadow analysis
                 gray_blur = cv2.GaussianBlur(gray, (15, 15), 0)
@@ -417,7 +533,7 @@ class DamageDetector:
         damage_locations.sort(key=lambda x: x.get("confidence", 0), reverse=True)
         
         # Determine severity based on damage count and quality
-        total_damage = scratches_count + dents_count + rust_count
+        total_damage = scratches_count + dents_count + rust_count + cracks_count + paint_damage_count
         avg_confidence = np.mean([loc.get("confidence", 0) for loc in damage_locations]) if damage_locations else 0
         
         # Severity calculation: consider both count and confidence
@@ -442,6 +558,14 @@ class DamageDetector:
             "rust": {
                 "count": rust_count,
                 "detected": rust_count > 0,
+            },
+            "cracks": {
+                "count": cracks_count,
+                "detected": cracks_count > 0,
+            },
+            "paint_damage": {
+                "count": paint_damage_count,
+                "detected": paint_damage_count > 0,
             },
             "severity": severity,
             "locations": damage_locations[:20],  # Limit to top 20 locations by confidence

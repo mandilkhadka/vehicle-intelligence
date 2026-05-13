@@ -33,14 +33,20 @@ export interface InspectionRecord {
   vehicle_type?: string;
   vehicle_brand?: string;
   vehicle_model?: string;
+  vehicle_year?: string;
+  vehicle_variant?: string;
   vehicle_confidence?: number;
+  vehicle_info?: string;
   odometer_value?: number;
   odometer_confidence?: number;
   speedometer_image_path?: string;
+  odometer_info?: string;
   damage_summary?: string;
   scratches_detected?: number;
   dents_detected?: number;
   rust_detected?: number;
+  cracks_detected?: number;
+  paint_damage_detected?: number;
   damage_severity?: string;
   exhaust_type?: string;
   exhaust_confidence?: number;
@@ -131,7 +137,7 @@ export function updateJobStatus(
 ): JobRecord {
   const db = getDatabase();
   const updatesList: string[] = [];
-  const values: any[] = [];
+  const values: Array<string | number> = [];
 
   if (updates.status !== undefined) {
     updatesList.push("status = ?");
@@ -198,21 +204,27 @@ export function updateInspection(
 ): InspectionRecord {
   const db = getDatabase();
   const updatesList: string[] = [];
-  const values: any[] = [];
+  const values: Array<string | number | null> = [];
 
   // Build update statement dynamically
   const fields: (keyof InspectionRecord)[] = [
     "vehicle_type",
     "vehicle_brand",
     "vehicle_model",
+    "vehicle_year",
+    "vehicle_variant",
     "vehicle_confidence",
+    "vehicle_info",
     "odometer_value",
     "odometer_confidence",
     "speedometer_image_path",
+    "odometer_info",
     "damage_summary",
     "scratches_detected",
     "dents_detected",
     "rust_detected",
+    "cracks_detected",
+    "paint_damage_detected",
     "damage_severity",
     "exhaust_type",
     "exhaust_confidence",
@@ -271,6 +283,8 @@ export interface MetricsResponse {
     scratches: number;
     dents: number;
     rust: number;
+    cracks: number;
+    paint_damage: number;
   };
   vehicleBreakdown: Array<{
     brand: string;
@@ -292,7 +306,8 @@ export function getInspectionMetrics(
     SELECT
       COUNT(*) as totalInspections,
       COUNT(DISTINCT vehicle_brand || '-' || COALESCE(vehicle_model, '')) as uniqueVehicles,
-      COALESCE(SUM(scratches_detected), 0) + COALESCE(SUM(dents_detected), 0) + COALESCE(SUM(rust_detected), 0) as totalIssues
+      COALESCE(SUM(scratches_detected), 0) + COALESCE(SUM(dents_detected), 0) + COALESCE(SUM(rust_detected), 0) +
+      COALESCE(SUM(cracks_detected), 0) + COALESCE(SUM(paint_damage_detected), 0) as totalIssues
     FROM inspections
     WHERE created_at >= ? AND created_at < datetime(?, '+1 day')
   `);
@@ -306,7 +321,8 @@ export function getInspectionMetrics(
   const trendStmt = db.prepare(`
     SELECT
       DATE(created_at) as date,
-      COALESCE(SUM(scratches_detected), 0) + COALESCE(SUM(dents_detected), 0) + COALESCE(SUM(rust_detected), 0) as issues
+      COALESCE(SUM(scratches_detected), 0) + COALESCE(SUM(dents_detected), 0) + COALESCE(SUM(rust_detected), 0) +
+      COALESCE(SUM(cracks_detected), 0) + COALESCE(SUM(paint_damage_detected), 0) as issues
     FROM inspections
     WHERE created_at >= ? AND created_at < datetime(?, '+1 day')
     GROUP BY DATE(created_at)
@@ -325,7 +341,9 @@ export function getInspectionMetrics(
     SELECT
       COALESCE(SUM(scratches_detected), 0) as scratches,
       COALESCE(SUM(dents_detected), 0) as dents,
-      COALESCE(SUM(rust_detected), 0) as rust
+      COALESCE(SUM(rust_detected), 0) as rust,
+      COALESCE(SUM(cracks_detected), 0) as cracks,
+      COALESCE(SUM(paint_damage_detected), 0) as paint_damage
     FROM inspections
     WHERE created_at >= ? AND created_at < datetime(?, '+1 day')
   `);
@@ -333,6 +351,8 @@ export function getInspectionMetrics(
     scratches: number;
     dents: number;
     rust: number;
+    cracks: number;
+    paint_damage: number;
   };
 
   // Vehicle breakdown (top 5 + Other)
@@ -388,6 +408,8 @@ export function getInspectionMetrics(
       scratches: damageRow.scratches || 0,
       dents: damageRow.dents || 0,
       rust: damageRow.rust || 0,
+      cracks: damageRow.cracks || 0,
+      paint_damage: damageRow.paint_damage || 0,
     },
     vehicleBreakdown,
   };

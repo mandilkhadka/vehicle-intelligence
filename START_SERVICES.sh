@@ -14,6 +14,8 @@ echo ""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+MIN_PYTHON_VERSION="3.10"
+
 # PIDs for cleanup
 BACKEND_PID=""
 ML_PID=""
@@ -63,6 +65,38 @@ wait_for_service() {
     return 1
 }
 
+python_version() {
+    "$1" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))'
+}
+
+python_meets_min_version() {
+    "$1" - "$MIN_PYTHON_VERSION" <<'PY'
+import sys
+
+required = tuple(int(part) for part in sys.argv[1].split("."))
+raise SystemExit(0 if sys.version_info[:2] >= required else 1)
+PY
+}
+
+find_python() {
+    local candidates=()
+
+    if [ -n "${PYTHON:-}" ]; then
+        candidates+=("$PYTHON")
+    fi
+
+    candidates+=(python3.12 python3.11 python3.10 python3.13 python3)
+
+    for candidate in "${candidates[@]}"; do
+        if command -v "$candidate" >/dev/null 2>&1 && python_meets_min_version "$candidate"; then
+            command -v "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 # Kill any existing processes on our ports
 echo "[1/6] Clearing ports..."
 kill_port 3000
@@ -95,20 +129,39 @@ fi
 echo "[4/6] Setting up ML Service..."
 cd "$SCRIPT_DIR/ml-service"
 
+PYTHON_BIN="$(find_python || true)"
+if [ -z "$PYTHON_BIN" ]; then
+    echo "  ✗ Python $MIN_PYTHON_VERSION+ is required for the ML service dependencies."
+    echo "    Install Python $MIN_PYTHON_VERSION or newer, or set PYTHON=/path/to/python before running this script."
+    exit 1
+fi
+
+if [ -x "venv/bin/python" ] && ! python_meets_min_version "venv/bin/python"; then
+    echo "  Existing ML venv uses Python $(python_version "venv/bin/python"), but dependencies require $MIN_PYTHON_VERSION+."
+    echo "  Recreating ML virtual environment with $("$PYTHON_BIN" --version 2>&1)..."
+    rm -rf venv
+fi
+
+if [ -d "venv" ] && [ ! -x "venv/bin/python" ]; then
+    echo "  Existing ML venv is incomplete. Recreating it..."
+    rm -rf venv
+fi
+
 # Auto-create virtual environment if missing
 if [ ! -d "venv" ]; then
     echo "  Creating Python virtual environment..."
-    python3 -m venv venv
+    "$PYTHON_BIN" -m venv venv
 fi
 
 # Activate venv
 source venv/bin/activate
+VENV_PYTHON="$SCRIPT_DIR/ml-service/venv/bin/python"
 
 # Auto-install/update dependencies
 if [ ! -f "venv/.deps_installed" ] || [ "requirements.txt" -nt "venv/.deps_installed" ]; then
     echo "  Installing Python dependencies (this may take a while on first run)..."
-    pip install --upgrade pip > /dev/null 2>&1
-    pip install -r requirements.txt
+    "$VENV_PYTHON" -m pip install --upgrade pip > /dev/null 2>&1
+    "$VENV_PYTHON" -m pip install -r requirements.txt
     touch venv/.deps_installed
 fi
 
@@ -128,7 +181,7 @@ echo "  Starting ML Service (port 8000)..."
 cd "$SCRIPT_DIR/ml-service"
 source venv/bin/activate
 export PYTHONPATH="$SCRIPT_DIR/ml-service:$PYTHONPATH"
-python src/main.py > /tmp/vi-ml-service.log 2>&1 &
+"$SCRIPT_DIR/ml-service/venv/bin/python" src/main.py > /tmp/vi-ml-service.log 2>&1 &
 ML_PID=$!
 
 # Start Frontend
@@ -175,7 +228,7 @@ fi
 
 # Wait for HTTP endpoints
 wait_for_service "http://localhost:3001/api/jobs/health-check" "Backend" 15 || true
-wait_for_service "http://localhost:8000/health" "ML Service" 15 || true
+wait_for_service "http://localhost:8000/health" "ML Service" 90 || true
 wait_for_service "http://localhost:3000" "Frontend" 30 || true
 
 echo ""

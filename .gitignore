@@ -146,6 +146,8 @@ test-results/
 /*.jpeg
 /*.gif
 /*.webp
+/*.mov
+/*.mp4
 /*.PNG
 /*.JPG
 /*.JPEG
@@ -259,4 +261,3 @@ docker-compose.override.yml
 
 # Root-level lock files (keep service-specific ones)
 /package-lock.json
-

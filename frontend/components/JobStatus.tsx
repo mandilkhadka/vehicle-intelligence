@@ -31,14 +31,18 @@ export default function JobStatus({ jobId }: JobStatusProps) {
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
   const stoppedRef = useRef(false);
+  const fetchErrorShownRef = useRef(false);
 
   useEffect(() => {
     stoppedRef.current = false;
+    fetchErrorShownRef.current = false;
 
     const poll = async () => {
       if (stoppedRef.current) return;
       try {
         const data = await getJobStatus(jobId);
+        fetchErrorShownRef.current = false;
+        setError(null);
         setStatus(data.status);
         setProgress(data.progress ?? 0);
 
@@ -53,8 +57,11 @@ export default function JobStatus({ jobId }: JobStatusProps) {
           setError(data.error_message || data.error || "Processing failed");
         }
       } catch (err) {
-        setError("Failed to fetch job status");
-        showError("Failed to fetch job status", err);
+        setError("Unable to refresh job status. Retrying...");
+        if (!fetchErrorShownRef.current) {
+          showError("Failed to fetch job status", err);
+          fetchErrorShownRef.current = true;
+        }
       }
     };
 
@@ -113,6 +120,10 @@ export default function JobStatus({ jobId }: JobStatusProps) {
           <p className="text-xs text-muted-foreground">
             Initializing AI models — this may take 30–60s on the first run.
           </p>
+        )}
+
+        {error && !isFailed && !isDone && (
+          <p className="text-xs text-amber-600">{error}</p>
         )}
 
         {isDone && (

@@ -4,20 +4,21 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 # Copy package files
-COPY package*.json ./
-COPY tsconfig.json ./
-COPY next.config.js ./
-COPY tailwind.config.ts ./
-COPY postcss.config.mjs ./
-COPY components.json ./
+COPY frontend/package*.json ./
+COPY frontend/tsconfig.json ./
+COPY frontend/next.config.js ./
+COPY frontend/tailwind.config.ts ./
+COPY frontend/postcss.config.mjs ./
+COPY frontend/components.json ./
 
 # Install dependencies
 RUN npm ci
 
 # Copy source files
-COPY app ./app
-COPY components ./components
-COPY lib ./lib
+COPY frontend/app ./app
+COPY frontend/components ./components
+COPY frontend/lib ./lib
+COPY frontend/public ./public
 COPY shared ../shared
 
 # Build Next.js application
@@ -29,8 +30,8 @@ FROM node:20-alpine
 WORKDIR /app
 
 # Install production dependencies only
-COPY package*.json ./
-RUN npm ci --only=production && npm cache clean --force
+COPY frontend/package*.json ./
+RUN npm ci --omit=dev && npm cache clean --force
 
 # Copy built files from builder
 COPY --from=builder /app/.next ./.next

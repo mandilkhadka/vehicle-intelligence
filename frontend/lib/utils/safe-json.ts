@@ -69,4 +69,5 @@ export const DEFAULT_ODOMETER_INFO = {
   value: null,
   confidence: 0,
   speedometer_image_path: null,
+  readout_crop_path: null,
 };

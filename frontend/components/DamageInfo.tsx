@@ -19,6 +19,8 @@ interface DamageInfoProps {
     scratches?: { count?: number; detected?: boolean };
     dents?: { count?: number; detected?: boolean };
     rust?: { count?: number; detected?: boolean };
+    cracks?: { count?: number; detected?: boolean };
+    paint_damage?: { count?: number; detected?: boolean };
     severity?: string;
     locations?: DamageLocation[];
   };
@@ -47,7 +49,9 @@ export default function DamageInfo({ damage }: DamageInfoProps) {
   const scratches = damage.scratches?.count || 0;
   const dents = damage.dents?.count || 0;
   const rust = damage.rust?.count || 0;
-  const total = scratches + dents + rust;
+  const cracks = damage.cracks?.count || 0;
+  const paintDamage = damage.paint_damage?.count || 0;
+  const total = scratches + dents + rust + cracks + paintDamage;
   const severity = (damage.severity || "low").toLowerCase();
   const visibleSnapshots =
     damage.locations?.filter((l) => l.snapshot && (l.confidence || 0) >= 0.3).slice(0, 9) || [];
@@ -61,10 +65,12 @@ export default function DamageInfo({ damage }: DamageInfoProps) {
         </Badge>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
           <Stat label="Scratches" value={scratches} />
           <Stat label="Dents" value={dents} />
           <Stat label="Rust" value={rust} />
+          <Stat label="Cracks" value={cracks} />
+          <Stat label="Paint" value={paintDamage} />
         </div>
 
         <p className="text-sm text-muted-foreground">

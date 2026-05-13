@@ -8,6 +8,10 @@ from typing import Dict, Any
 import google.generativeai as genai
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+import time
+
+from src.config.env import load_ml_environment
 
 
 class ReportGenerator:
@@ -15,13 +19,8 @@ class ReportGenerator:
 
     def __init__(self):
         """Initialize report generator"""
-        # Get API key from environment variable
-        # Try loading from .env file if not set
-        try:
-            from dotenv import load_dotenv
-            load_dotenv()
-        except ImportError:
-            pass
+        # Get API keys from service-local or repo-level environment.
+        load_ml_environment()
         api_key = os.getenv("GEMINI_API_KEY", "").strip()
         
         # Validate API key format (basic check - Gemini keys typically start with AIza)
@@ -41,6 +40,25 @@ class ReportGenerator:
                 self.api_key = None
                 self.model = None
 
+        self.openai_client = None
+        self.openai_api_key = None
+        self.openai_base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+        self.openai_model = os.getenv("OPENAI_TEXT_MODEL", os.getenv("OPENAI_VISION_MODEL", "gpt-4.1-mini")).strip() or "gpt-4.1-mini"
+        openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+        if (openai_key and len(openai_key) >= 20) or self.openai_base_url:
+            try:
+                from openai import OpenAI
+                client_kwargs = {"api_key": openai_key or "local-openai-compatible"}
+                if self.openai_base_url:
+                    client_kwargs["base_url"] = self.openai_base_url
+                self.openai_client = OpenAI(**client_kwargs)
+                self.openai_api_key = client_kwargs["api_key"]
+                print(f"OpenAI fallback initialized with {self.openai_model} for report generation")
+            except Exception as e:
+                print(f"Failed to configure OpenAI fallback: {e}")
+                self.openai_client = None
+                self.openai_api_key = None
+
     async def generate(self, inspection_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Generate inspection report
@@ -55,96 +73,167 @@ class ReportGenerator:
         """
         Synchronous report generation
         """
-        # If no API key or model, return a structured mock report
-        if not self.api_key or not self.model:
-            return self._generate_mock_report(inspection_data)
+        prompt = self._create_prompt(inspection_data)
 
+        if self.api_key and self.model:
+            report = self._generate_with_gemini(prompt, inspection_data)
+            if report is not None:
+                return report
+
+        if self.openai_client and self.openai_api_key:
+            report = self._generate_with_openai(prompt, inspection_data)
+            if report is not None:
+                return report
+
+        return self._generate_mock_report(inspection_data)
+
+    def _generate_with_gemini(self, prompt: str, inspection_data: Dict[str, Any]) -> Dict[str, Any] | None:
         try:
-            # Prepare prompt for Gemini
-            prompt = self._create_prompt(inspection_data)
-
-            # Generate report using Gemini with timeout and retry logic (60 seconds timeout, 2 retries)
-            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-            import time
-            
-            max_retries = 2
-            timeout_seconds = 60
-            
-            response = None
-            for attempt in range(max_retries + 1):
-                try:
-                    with ThreadPoolExecutor(max_workers=1) as executor:
-                        future = executor.submit(self.model.generate_content, prompt)
-                        response = future.result(timeout=timeout_seconds)
-                    
-                    if response is None:
-                        print(f"Gemini API call returned no response (attempt {attempt + 1}/{max_retries + 1})")
-                        if attempt < max_retries:
-                            time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s
-                            continue
-                        # Fallback to mock report instead of raising
-                        print("Falling back to mock report after all retries failed")
-                        return self._generate_mock_report(inspection_data)
-                    
-                    # Success - break out of retry loop
-                    break
-                    
-                except FutureTimeoutError:
-                    print(f"Gemini API call timed out after {timeout_seconds} seconds (attempt {attempt + 1}/{max_retries + 1})")
-                    if attempt < max_retries:
-                        time.sleep(2 ** attempt)  # Exponential backoff
-                        continue
-                    # Fallback to mock report instead of raising
-                    print("Falling back to mock report after timeout")
-                    return self._generate_mock_report(inspection_data)
-                    
-                except Exception as e:
-                    error_msg = str(e)
-                    print(f"Gemini API call failed (attempt {attempt + 1}/{max_retries + 1}): {error_msg}")
-                    
-                    # Check for specific error types that shouldn't be retried
-                    if "429" in error_msg or "quota" in error_msg.lower() or "rate limit" in error_msg.lower():
-                        print("Rate limit exceeded, falling back to mock report")
-                        return self._generate_mock_report(inspection_data)
-                    if "403" in error_msg or "permission" in error_msg.lower() or "invalid" in error_msg.lower():
-                        print("Authentication/permission error, falling back to mock report")
-                        return self._generate_mock_report(inspection_data)
-                    
-                    if attempt < max_retries:
-                        time.sleep(2 ** attempt)  # Exponential backoff
-                        continue
-                    # Fallback to mock report instead of raising
-                    print("Falling back to mock report after all retries failed")
-                    return self._generate_mock_report(inspection_data)
-            
+            response = self._call_gemini_with_retries(prompt)
             if response is None:
-                print("Gemini API call returned no response after all retries")
-                return self._generate_mock_report(inspection_data)
-
-            # Parse response
-            report_text = response.text
-
-            # Try to extract JSON from response
-            try:
-                # Look for JSON in the response
-                json_start = report_text.find("{")
-                json_end = report_text.rfind("}") + 1
-                if json_start >= 0 and json_end > json_start:
-                    json_str = report_text[json_start:json_end]
-                    report = json.loads(json_str)
-                else:
-                    # If no JSON found, create structured report from text
-                    report = self._parse_text_report(report_text, inspection_data)
-            except json.JSONDecodeError:
-                # If JSON parsing fails, create structured report from text
-                report = self._parse_text_report(report_text, inspection_data)
-
-            return report
-
+                return None
+            return self._report_from_text(response.text, inspection_data)
         except Exception as e:
-            print(f"Report generation error: {e}")
-            # Fallback to mock report
-            return self._generate_mock_report(inspection_data)
+            print(f"Gemini report generation error: {e}")
+            return None
+
+    def _generate_with_openai(self, prompt: str, inspection_data: Dict[str, Any]) -> Dict[str, Any] | None:
+        try:
+            response = self._call_openai_with_retries(prompt)
+            if response is None:
+                return None
+            report_text = getattr(response, "output_text", None) or self._extract_openai_output_text(response)
+            if not report_text:
+                return None
+            return self._report_from_text(report_text, inspection_data)
+        except Exception as e:
+            print(f"OpenAI report generation error: {e}")
+            return None
+
+    def _call_gemini_with_retries(self, prompt: str):
+        max_retries = 2
+        timeout_seconds = 60
+
+        for attempt in range(max_retries + 1):
+            try:
+                executor = ThreadPoolExecutor(max_workers=1)
+                try:
+                    future = executor.submit(self.model.generate_content, prompt)
+                    response = future.result(timeout=timeout_seconds)
+                finally:
+                    executor.shutdown(wait=False, cancel_futures=True)
+
+                if response is None:
+                    print(f"Gemini API call returned no response (attempt {attempt + 1}/{max_retries + 1})")
+                    if attempt < max_retries:
+                        time.sleep(2 ** attempt)
+                        continue
+                    return None
+                return response
+
+            except FutureTimeoutError:
+                print(f"Gemini API call timed out after {timeout_seconds} seconds (attempt {attempt + 1}/{max_retries + 1})")
+            except Exception as e:
+                error_msg = str(e)
+                print(f"Gemini API call failed (attempt {attempt + 1}/{max_retries + 1}): {error_msg}")
+                lower = error_msg.lower()
+                if any(token in lower for token in ("429", "quota", "rate limit", "billing")):
+                    return None
+                if any(token in lower for token in ("403", "permission", "invalid", "api key")):
+                    return None
+
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+        return None
+
+    def _call_openai_with_retries(self, prompt: str):
+        max_retries = 1
+        timeout_seconds = 60
+
+        for attempt in range(max_retries + 1):
+            try:
+                response = self._call_openai_responses_api(prompt, timeout_seconds)
+                if response is None:
+                    return None
+                return response
+            except FutureTimeoutError:
+                print(f"OpenAI API call timed out after {timeout_seconds} seconds (attempt {attempt + 1}/{max_retries + 1})")
+            except Exception as e:
+                error_msg = str(e)
+                print(f"OpenAI API call failed (attempt {attempt + 1}/{max_retries + 1}): {error_msg}")
+                lower = error_msg.lower()
+                if any(token in lower for token in ("429", "quota", "rate limit", "billing")):
+                    return None
+                if any(token in lower for token in ("401", "403", "permission", "invalid", "api key")):
+                    return None
+                chat_response = self._call_openai_chat_completions(prompt, timeout_seconds)
+                if chat_response is not None:
+                    return chat_response
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+        return None
+
+    def _call_openai_responses_api(self, prompt: str, timeout_seconds: int):
+        executor = ThreadPoolExecutor(max_workers=1)
+        try:
+            future = executor.submit(
+                self.openai_client.responses.create,
+                model=self.openai_model,
+                input=[{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+            )
+            return future.result(timeout=timeout_seconds)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    def _call_openai_chat_completions(self, prompt: str, timeout_seconds: int):
+        try:
+            executor = ThreadPoolExecutor(max_workers=1)
+            try:
+                future = executor.submit(
+                    self.openai_client.chat.completions.create,
+                    model=self.openai_model,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                return future.result(timeout=timeout_seconds)
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
+        except Exception as e:
+            print(f"OpenAI chat completions fallback failed: {e}")
+            return None
+
+    def _report_from_text(self, report_text: str, inspection_data: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            json_start = report_text.find("{")
+            json_end = report_text.rfind("}") + 1
+            if json_start >= 0 and json_end > json_start:
+                json_str = report_text[json_start:json_end]
+                return json.loads(json_str)
+            return self._parse_text_report(report_text, inspection_data)
+        except json.JSONDecodeError:
+            return self._parse_text_report(report_text, inspection_data)
+
+    @staticmethod
+    def _extract_openai_output_text(response: Any) -> str | None:
+        choices = getattr(response, "choices", None)
+        if isinstance(choices, list) and choices:
+            message = getattr(choices[0], "message", None)
+            content = getattr(message, "content", None)
+            if isinstance(content, str) and content.strip():
+                return content
+
+        output = getattr(response, "output", None)
+        if not isinstance(output, list):
+            return None
+        chunks = []
+        for item in output:
+            content = item.get("content") if isinstance(item, dict) else getattr(item, "content", None)
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                text = block.get("text") if isinstance(block, dict) else getattr(block, "text", None)
+                if text:
+                    chunks.append(str(text))
+        return "\n".join(chunks) if chunks else None
 
     def _create_prompt(self, inspection_data: Dict[str, Any]) -> str:
         """Create prompt for Gemini LLM"""
@@ -152,7 +241,9 @@ class ReportGenerator:
         odometer = inspection_data.get("odometer", {})
         damage = inspection_data.get("damage", {})
         exhaust = inspection_data.get("exhaust", {})
+        local_modification = inspection_data.get("modification") or {}
         gemini_analysis = inspection_data.get("gemini_analysis") or {}
+        frame_analysis = inspection_data.get("frame_analysis") or {}
 
         # Build detailed vehicle information
         vehicle_type = vehicle_info.get('type', 'Unknown')
@@ -162,16 +253,37 @@ class ReportGenerator:
         vehicle_year = vehicle_info.get('year', 'Unknown')
         vehicle_variant = vehicle_info.get('variant', 'Unknown')
         vehicle_confidence = vehicle_info.get('confidence', 0)
+        vehicle_category = vehicle_info.get("vehicle_category", vehicle_info.get("category", "Unknown"))
+        vehicle_year_range = vehicle_info.get("year_range", "Unknown")
+        vehicle_generation = vehicle_info.get("generation", "Unknown")
+        vehicle_variant_candidates = json.dumps(vehicle_info.get("variant_candidates") or [])
+        vehicle_variant_candidate = vehicle_info.get("variant_candidate", "Unknown")
+        vehicle_variant_confidence = vehicle_info.get("variant_confidence") or 0
+        vehicle_variant_candidates_ranked = json.dumps(vehicle_info.get("variant_candidates_ranked") or [])
+        vehicle_model_confidence = vehicle_info.get("model_confidence") or 0
+        vehicle_model_candidates = json.dumps(vehicle_info.get("model_candidates") or [])
+        vehicle_identity_notes = vehicle_info.get("identity_notes")
+        vehicle_identity_source = vehicle_info.get("identity_source", "video_analysis")
+        vehicle_identity_override_fields = json.dumps(vehicle_info.get("identity_override_fields") or [])
+        vehicle_vin = vehicle_info.get("vin")
+        vehicle_registration = vehicle_info.get("registration")
         
         # Build detailed odometer information
         odometer_value = odometer.get('value')
         odometer_confidence = odometer.get('confidence', 0)
-        odometer_status = "detected" if odometer_value is not None else "not detected"
+        odometer_status = self._odometer_status(odometer)
+        odometer_source_frame_index = odometer.get("source_frame_index")
+        odometer_timestamp_seconds = odometer.get("timestamp_seconds")
+        odometer_image_path = odometer.get("speedometer_image_path") or odometer.get("crop_path")
+        odometer_alternatives = json.dumps(odometer.get("alternatives") or [])
+        odometer_notes = odometer.get("reasoning") or odometer.get("reason") or odometer.get("notes")
         
         # Build detailed damage information
         scratches_count = damage.get('scratches', {}).get('count', 0)
         dents_count = damage.get('dents', {}).get('count', 0)
         rust_count = damage.get('rust', {}).get('count', 0)
+        cracks_count = damage.get('cracks', {}).get('count', 0)
+        paint_damage_count = damage.get('paint_damage', {}).get('count', 0)
         damage_severity = damage.get('severity', 'low')
         
         # Build exhaust information
@@ -180,10 +292,20 @@ class ReportGenerator:
 
         # Gemini multimodal analysis (per-frame observations + identification)
         gemini_section = self._format_gemini_section(gemini_analysis)
+        frame_section = self._format_frame_analysis_section(frame_analysis)
+        modification_summary = (
+            gemini_analysis.get("modification_findings")
+            or local_modification.get("summary")
+            or "Not assessed"
+        )
+        modification_items = self._combined_modification_items(
+            gemini_analysis.get("modification_items") or [],
+            local_modification.get("items") or [],
+        )
 
         prompt = f"""You are an expert vehicle inspection analyst. Generate a comprehensive, accurate, and professional vehicle inspection report based on the following AI-detected findings.
 
-The "Gemini Visual Analysis" section below contains direct observations from a multimodal vision model that examined the actual frames of the inspection video. Treat those observations as the most authoritative source — defer to them when they conflict with the other detector outputs (which use simpler computer-vision techniques).
+The "Gemini Visual Analysis" section below contains direct observations from a multimodal vision model that examined the actual frames of the inspection video. Treat those observations as the most authoritative source — defer to them when they conflict with the other detector outputs (which use simpler computer-vision techniques). If Gemini Visual Analysis is unavailable, explicitly mark visual-only conclusions as unverified or requiring manual review.
 
 ## INSPECTION DATA:
 
@@ -193,25 +315,52 @@ The "Gemini Visual Analysis" section below contains direct observations from a m
 - Model: {vehicle_model}
 - Year/Generation: {vehicle_year}
 - Variant: {vehicle_variant}
+- Category Candidate: {vehicle_category}
+- Year Range Candidate: {vehicle_year_range}
+- Generation Candidate: {vehicle_generation}
+- Variant Candidates: {vehicle_variant_candidates}
+- Top Variant Candidate: {vehicle_variant_candidate}
+- Variant Candidate Confidence: {vehicle_variant_confidence:.1%}
+- Ranked Variant Candidates: {vehicle_variant_candidates_ranked}
+- Model Candidate Confidence: {vehicle_model_confidence:.1%}
+- Model Candidates: {vehicle_model_candidates}
+- Identity Notes: {vehicle_identity_notes or 'None'}
+- Identity Source: {vehicle_identity_source}
+- Identity Override Fields: {vehicle_identity_override_fields}
+- VIN / Chassis: {vehicle_vin or 'None'}
+- Registration: {vehicle_registration or 'None'}
 - Color: {vehicle_color}
 - Detection Confidence: {vehicle_confidence:.1%}
 
 {gemini_section}
 
+{frame_section}
+
 ### Odometer Reading:
 - Value: {odometer_value if odometer_value is not None else 'Not detected'} km
 - Detection Confidence: {odometer_confidence:.1%}
 - Status: {odometer_status}
+- Source Frame Index: {odometer_source_frame_index if odometer_source_frame_index is not None else 'Unknown'}
+- Timestamp Seconds: {odometer_timestamp_seconds if odometer_timestamp_seconds is not None else 'Unknown'}
+- Evidence Image: {odometer_image_path or 'Unknown'}
+- Alternative OCR Candidates: {odometer_alternatives}
+- Reliability Notes: {odometer_notes or 'None'}
 
 ### Damage Assessment:
 - Scratches Detected: {scratches_count}
 - Dents Detected: {dents_count}
 - Rust Areas Detected: {rust_count}
+- Cracks Detected: {cracks_count}
+- Paint Damage Areas Detected: {paint_damage_count}
 - Overall Severity: {damage_severity}
 
 ### Exhaust System:
 - Type: {exhaust_type}
 - Detection Confidence: {exhaust_confidence:.1%}
+
+### Modification Assessment:
+- Summary: {modification_summary}
+- Structured Items: {json.dumps(modification_items[:10])}
 
 ## INSTRUCTIONS:
 
@@ -237,7 +386,12 @@ The "Gemini Visual Analysis" section below contains direct observations from a m
    - Add relevant notes about compliance, condition, or concerns
    - If confidence is low, note uncertainty
 
-6. **Recommendations**:
+6. **Modification Assessment**:
+   - Summarize stock-vs-modified findings across visible parts
+   - Preserve structured modification items from the Gemini Visual Analysis and local CLIP modification scan when available
+   - Only mark a part as "modified" when there is visible evidence; otherwise use "stock" or "unknown"
+
+7. **Recommendations**:
    - Provide 3-5 actionable, specific recommendations
    - Prioritize safety and legal compliance
    - Include verification steps for uncertain readings
@@ -255,13 +409,31 @@ Return ONLY valid JSON in this exact structure (no markdown, no code blocks, jus
     "model": "{vehicle_model}",
     "year": "{vehicle_year}",
     "variant": "{vehicle_variant}",
+    "vehicle_category": "{vehicle_category}",
+    "year_range": "{vehicle_year_range}",
+    "generation": "{vehicle_generation}",
+    "variant_candidates": {vehicle_variant_candidates},
+    "variant_candidate": "{vehicle_variant_candidate}",
+    "variant_confidence": {vehicle_variant_confidence},
+    "variant_candidates_ranked": {vehicle_variant_candidates_ranked},
+    "model_confidence": {vehicle_model_confidence},
+    "model_candidates": {vehicle_model_candidates},
+    "identity_source": "{vehicle_identity_source}",
+    "identity_override_fields": {vehicle_identity_override_fields},
+    "vin": {json.dumps(vehicle_vin)},
+    "registration": {json.dumps(vehicle_registration)},
     "color": "{vehicle_color}",
     "condition": "good|fair|poor",
     "notes": "Additional observations about vehicle condition"
   }},
   "odometer_reading": {{
     "value": {odometer_value if odometer_value is not None else 'null'},
-    "status": "verified|unverified",
+    "status": "verified|candidate|unverified",
+    "confidence": {odometer_confidence},
+    "source_frame_index": {odometer_source_frame_index if odometer_source_frame_index is not None else 'null'},
+    "timestamp_seconds": {odometer_timestamp_seconds if odometer_timestamp_seconds is not None else 'null'},
+    "speedometer_image_path": {json.dumps(odometer_image_path)},
+    "alternatives": {odometer_alternatives},
     "notes": "Specific notes about odometer reading reliability"
   }},
   "damage_assessment": {{
@@ -269,11 +441,24 @@ Return ONLY valid JSON in this exact structure (no markdown, no code blocks, jus
     "scratches": {scratches_count},
     "dents": {dents_count},
     "rust": {rust_count},
+    "cracks": {cracks_count},
+    "paint_damage": {paint_damage_count},
     "details": "Detailed description of all damage found, including locations and severity"
   }},
   "exhaust_status": {{
     "type": "{exhaust_type}",
     "notes": "Detailed observations about exhaust system condition and compliance"
+  }},
+  "modification_assessment": {{
+    "summary": "Stock-vs-modified assessment across visible vehicle parts",
+    "items": [
+      {{
+        "part": "wheels|exhaust|lights|body|suspension|paint_or_wrap|interior|other",
+        "status": "stock|modified|unknown",
+        "confidence": 0.0,
+        "notes": "Evidence-based note"
+      }}
+    ]
   }},
   "recommendations": [
     "Specific recommendation 1",
@@ -294,7 +479,9 @@ IMPORTANT:
     def _format_gemini_section(self, gemini_analysis: Dict[str, Any]) -> str:
         """Render Gemini's multimodal analysis as a markdown section for the prompt."""
         if not gemini_analysis or not gemini_analysis.get("available"):
-            return "### Gemini Visual Analysis:\n- Not available (vision pass did not run or failed)."
+            reason = (gemini_analysis or {}).get("reason")
+            suffix = f" Reason: {reason}" if reason else ""
+            return f"### Gemini Visual Analysis:\n- Not available (vision pass did not run or failed).{suffix}"
 
         g_vehicle = gemini_analysis.get("vehicle") or {}
         per_frame = gemini_analysis.get("per_frame") or []
@@ -311,6 +498,24 @@ IMPORTANT:
             lines.append(f"- Overall Condition (visual): {gemini_analysis.get('overall_condition')}")
         if gemini_analysis.get("damage_findings"):
             lines.append(f"- Damage Findings (visual): {gemini_analysis.get('damage_findings')}")
+        if gemini_analysis.get("damage_items"):
+            lines.append("- Structured Visual Damage Items:")
+            for item in (gemini_analysis.get("damage_items") or [])[:10]:
+                lines.append(
+                    f"  - {item.get('type')} at {item.get('location')} "
+                    f"(severity={item.get('severity')}, confidence={float(item.get('confidence') or 0):.1%}, "
+                    f"frame={item.get('frame_index')}): {item.get('notes') or 'no notes'}"
+                )
+        if gemini_analysis.get("modification_findings"):
+            lines.append(f"- Modification Findings: {gemini_analysis.get('modification_findings')}")
+        if gemini_analysis.get("modification_items"):
+            lines.append("- Structured Modification Items:")
+            for item in (gemini_analysis.get("modification_items") or [])[:10]:
+                lines.append(
+                    f"  - {item.get('part')}: {item.get('status')} "
+                    f"(confidence={float(item.get('confidence') or 0):.1%}, frame={item.get('frame_index')}): "
+                    f"{item.get('notes') or 'no notes'}"
+                )
         if gemini_analysis.get("exhaust_observations"):
             lines.append(f"- Exhaust Observations: {gemini_analysis.get('exhaust_observations')}")
         if gemini_analysis.get("odometer_observations"):
@@ -337,6 +542,44 @@ IMPORTANT:
 
         return "\n".join(lines)
 
+    def _format_frame_analysis_section(self, frame_analysis: Dict[str, Any]) -> str:
+        """Render organized angle/dashboard-frame metadata for report generation."""
+        if not frame_analysis:
+            return "### Organized Frame Analysis:\n- Not available."
+
+        coverage = frame_analysis.get("coverage") or {}
+        angle_shots = frame_analysis.get("angle_shots") or {}
+        dashboard_candidates = frame_analysis.get("dashboard_candidates") or []
+
+        lines: list = []
+        lines.append("### Organized Frame Analysis:")
+        lines.append(
+            f"- Frames analyzed: {frame_analysis.get('frames_analyzed', 0)} "
+            f"of {frame_analysis.get('frames_total', 0)}"
+        )
+        lines.append(f"- View coverage: {coverage.get('ratio', 0)}")
+        if coverage.get("missing_views"):
+            lines.append(f"- Missing views: {', '.join(coverage.get('missing_views') or [])}")
+        else:
+            lines.append("- Missing views: none")
+
+        if angle_shots:
+            lines.append("- Selected angle shots:")
+            for view, payload in angle_shots.items():
+                lines.append(
+                    f"  - {view}: frame_index={payload.get('frame_index')}, "
+                    f"score={payload.get('score')}, quality={payload.get('quality_score')}"
+                )
+
+        if dashboard_candidates:
+            best = dashboard_candidates[0]
+            lines.append(
+                f"- Best dashboard/odometer candidate: frame_index={best.get('frame_index')}, "
+                f"score={best.get('score')}, quality={best.get('quality_score')}"
+            )
+
+        return "\n".join(lines)
+
     def _parse_text_report(
         self, text: str, inspection_data: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -344,9 +587,15 @@ IMPORTANT:
         return {
             "summary": text[:500] if text else "Inspection completed",
             "vehicle_details": inspection_data.get("vehicle_info", {}),
-            "odometer_reading": inspection_data.get("odometer", {}),
+            "odometer_reading": self._odometer_report_payload(inspection_data.get("odometer", {})),
             "damage_assessment": inspection_data.get("damage", {}),
             "exhaust_status": inspection_data.get("exhaust", {}),
+            "visual_analysis": self._visual_analysis_status(inspection_data.get("gemini_analysis") or {}),
+            "modification_assessment": self._fallback_modification_assessment(
+                inspection_data.get("gemini_analysis") or {},
+                inspection_data.get("exhaust") or {},
+                inspection_data.get("modification") or {},
+            ),
             "recommendations": [
                 "Review vehicle condition with qualified inspector",
                 "Verify odometer reading matches documentation",
@@ -361,10 +610,11 @@ IMPORTANT:
         odometer = inspection_data.get("odometer", {})
         damage = inspection_data.get("damage", {})
         exhaust = inspection_data.get("exhaust", {})
+        local_modification = inspection_data.get("modification", {})
+        gemini_analysis = inspection_data.get("gemini_analysis", {})
+        frame_analysis = inspection_data.get("frame_analysis", {})
 
-        # Determine overall condition
-        damage_severity = damage.get("severity", "low")
-        condition = "good" if damage_severity == "low" else "fair"
+        condition = self._fallback_condition(gemini_analysis, damage)
 
         return {
             "summary": f"Vehicle inspection completed for {vehicle_info.get('brand', 'Unknown')} {vehicle_info.get('model', 'vehicle')}. Overall condition: {condition}.",
@@ -372,24 +622,165 @@ IMPORTANT:
                 "type": vehicle_info.get("type", "Unknown"),
                 "brand": vehicle_info.get("brand", "Unknown"),
                 "model": vehicle_info.get("model", "Unknown"),
+                "year": vehicle_info.get("year", "Unknown"),
+                "variant": vehicle_info.get("variant", "Unknown"),
+                "vehicle_category": vehicle_info.get("vehicle_category", vehicle_info.get("category", "Unknown")),
+                "year_range": vehicle_info.get("year_range", "Unknown"),
+                "generation": vehicle_info.get("generation", "Unknown"),
+                "variant_candidates": vehicle_info.get("variant_candidates") or [],
+                "variant_candidate": vehicle_info.get("variant_candidate"),
+                "variant_confidence": vehicle_info.get("variant_confidence"),
+                "variant_candidates_ranked": vehicle_info.get("variant_candidates_ranked") or [],
+                "model_confidence": vehicle_info.get("model_confidence"),
+                "model_candidates": vehicle_info.get("model_candidates") or [],
+                "identity_source": vehicle_info.get("identity_source"),
+                "identity_override_fields": vehicle_info.get("identity_override_fields") or [],
+                "vin": vehicle_info.get("vin"),
+                "registration": vehicle_info.get("registration"),
+                "identity_notes": vehicle_info.get("identity_notes"),
                 "color": vehicle_info.get("color", "Unknown"),
+                "confidence": vehicle_info.get("confidence", 0),
                 "condition": condition,
             },
-            "odometer_reading": {
-                "value": odometer.get("value"),
-                "status": "verified" if odometer.get("value") else "unverified",
-            },
+            "odometer_reading": self._odometer_report_payload(odometer),
             "damage_assessment": {
                 "overall_severity": damage.get("severity", "low"),
-                "details": f"Found {damage.get('scratches', {}).get('count', 0)} scratches, {damage.get('dents', {}).get('count', 0)} dents, and {damage.get('rust', {}).get('count', 0)} rust areas.",
+                "details": (
+                    f"Found {damage.get('scratches', {}).get('count', 0)} scratches, "
+                    f"{damage.get('dents', {}).get('count', 0)} dents, "
+                    f"{damage.get('rust', {}).get('count', 0)} rust areas, "
+                    f"{damage.get('cracks', {}).get('count', 0)} cracks, and "
+                    f"{damage.get('paint_damage', {}).get('count', 0)} paint damage areas."
+                ),
             },
             "exhaust_status": {
                 "type": exhaust.get("type", "stock"),
                 "notes": "Exhaust system appears to be in standard condition.",
             },
+            "visual_analysis": self._visual_analysis_status(gemini_analysis),
+            "modification_assessment": self._fallback_modification_assessment(
+                gemini_analysis,
+                exhaust,
+                local_modification,
+            ),
             "recommendations": [
                 "Review vehicle condition with qualified inspector",
                 "Verify odometer reading matches documentation",
                 "Check exhaust system compliance if modified",
             ],
+            "frame_analysis": frame_analysis,
+        }
+
+    @staticmethod
+    def _fallback_condition(gemini_analysis: Dict[str, Any], damage: Dict[str, Any]) -> str:
+        visual_condition = gemini_analysis.get("overall_condition")
+        if isinstance(visual_condition, str) and visual_condition.strip():
+            return visual_condition.strip().lower()
+
+        damage_severity = str(damage.get("severity", "low")).strip().lower()
+        if damage_severity in {"high", "severe", "poor"}:
+            return "poor"
+        if damage_severity in {"moderate", "medium", "fair"}:
+            return "fair"
+        return "good"
+
+    @staticmethod
+    def _odometer_report_payload(odometer: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "value": odometer.get("value"),
+            "status": ReportGenerator._odometer_status(odometer),
+            "confidence": odometer.get("confidence"),
+            "source_frame_index": odometer.get("source_frame_index"),
+            "timestamp_seconds": odometer.get("timestamp_seconds"),
+            "speedometer_image_path": odometer.get("speedometer_image_path"),
+            "source_frame_path": odometer.get("source_frame_path"),
+            "organized_frame_path": odometer.get("organized_frame_path"),
+            "crop_path": odometer.get("crop_path"),
+            "notes": odometer.get("reasoning") or odometer.get("reason"),
+            "alternatives": odometer.get("alternatives") or [],
+        }
+
+    @staticmethod
+    def _odometer_status(odometer: Dict[str, Any]) -> str:
+        if odometer.get("value") is None:
+            return "unverified"
+        confidence = float(odometer.get("confidence") or 0.0)
+        return "verified" if confidence >= 0.70 else "candidate"
+
+    @staticmethod
+    def _visual_analysis_status(gemini_analysis: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "available": bool(gemini_analysis.get("available")),
+            "reason": gemini_analysis.get("reason"),
+        }
+
+    def _fallback_modification_assessment(
+        self,
+        gemini_analysis: Dict[str, Any],
+        exhaust: Dict[str, Any] | None = None,
+        local_modification: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        """Return structured modification findings when report LLM is unavailable."""
+        local_modification = local_modification or {}
+        items = self._combined_modification_items(
+            gemini_analysis.get("modification_items") or [],
+            local_modification.get("items") or [],
+        )
+        if not items:
+            exhaust_item = self._exhaust_modification_item(exhaust or {})
+            if exhaust_item:
+                items = [exhaust_item]
+        summary = gemini_analysis.get("modification_findings") or local_modification.get("summary")
+        if not summary:
+            modified_parts = [
+                item.get("part")
+                for item in items
+                if isinstance(item, dict) and item.get("status") == "modified"
+            ]
+            summary = (
+                f"Potential modifications detected: {', '.join(modified_parts)}."
+                if modified_parts
+                else (
+                    "No exhaust modification detected by the exhaust classifier; "
+                    "other visual modifications require VLM/manual review."
+                    if items
+                    else "No visible modifications confirmed by visual analysis."
+                )
+            )
+        return {
+            "summary": summary,
+            "items": items,
+        }
+
+    @staticmethod
+    def _combined_modification_items(*collections) -> list:
+        """Merge modification evidence without duplicating the same part/status source."""
+        merged = []
+        seen = set()
+        for collection in collections:
+            for item in collection or []:
+                if not isinstance(item, dict):
+                    continue
+                part = str(item.get("part") or "").strip().lower()
+                status = str(item.get("status") or "").strip().lower()
+                source = str(item.get("source") or "").strip().lower()
+                if not part:
+                    continue
+                key = (part, status, source)
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(dict(item))
+        return merged
+
+    @staticmethod
+    def _exhaust_modification_item(exhaust: Dict[str, Any]) -> Dict[str, Any] | None:
+        exhaust_type = str(exhaust.get("type") or "").strip().lower()
+        if exhaust_type not in {"stock", "modified"}:
+            return None
+        return {
+            "part": "exhaust",
+            "status": exhaust_type,
+            "confidence": exhaust.get("confidence"),
+            "notes": "Derived from exhaust classifier; other modifications require VLM/manual review.",
         }

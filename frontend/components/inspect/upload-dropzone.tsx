@@ -5,6 +5,8 @@ import React from "react"
 import { useState, useCallback } from "react"
 import { Upload, Film, X, FileVideo, CheckCircle2, AlertCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
 import { cn } from "@/lib/utils"
 import { uploadVideo } from "@/lib/api"
@@ -23,9 +25,30 @@ interface UploadDropzoneProps {
   onFilesUploaded: (files: UploadedFile[]) => void
 }
 
+interface IdentityMetadata {
+  vehicle_brand: string
+  vehicle_model: string
+  vin: string
+  registration: string
+  vehicle_year: string
+  vehicle_variant: string
+  vehicle_type: string
+  vehicle_category: string
+}
+
 export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
   const [isDragging, setIsDragging] = useState(false)
   const [files, setFiles] = useState<UploadedFile[]>([])
+  const [identityMetadata, setIdentityMetadata] = useState<IdentityMetadata>({
+    vehicle_brand: "",
+    vehicle_model: "",
+    vin: "",
+    registration: "",
+    vehicle_year: "",
+    vehicle_variant: "",
+    vehicle_type: "",
+    vehicle_category: "",
+  })
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -49,11 +72,16 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
     setFiles((prev) => [...prev, newFile])
 
     try {
-      const result = await uploadVideo(file, odometerImage, (progress) => {
-        setFiles((prev) =>
-          prev.map((f) => (f.id === newFile.id ? { ...f, progress } : f))
-        )
-      })
+      const result = await uploadVideo(
+        file,
+        odometerImage,
+        (progress) => {
+          setFiles((prev) =>
+            prev.map((f) => (f.id === newFile.id ? { ...f, progress } : f))
+          )
+        },
+        identityPayload(identityMetadata),
+      )
 
       // Upload complete, now processing
       setFiles((prev) =>
@@ -86,7 +114,7 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
         )
       )
     }
-  }, [onFilesUploaded])
+  }, [identityMetadata, onFilesUploaded])
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -132,6 +160,10 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
       return `${(bytes / 1024).toFixed(1)} KB`
     }
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  }
+
+  const updateIdentityMetadata = (field: keyof IdentityMetadata, value: string) => {
+    setIdentityMetadata((prev) => ({ ...prev, [field]: value }))
   }
 
   return (
@@ -181,6 +213,59 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
           <Button variant="outline" className="mt-2 bg-transparent">
             Browse Files
           </Button>
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-border bg-card p-4">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field
+            id="vehicle_brand"
+            label="Make"
+            value={identityMetadata.vehicle_brand}
+            onChange={(value) => updateIdentityMetadata("vehicle_brand", value)}
+          />
+          <Field
+            id="vehicle_model"
+            label="Model"
+            value={identityMetadata.vehicle_model}
+            onChange={(value) => updateIdentityMetadata("vehicle_model", value)}
+          />
+          <Field
+            id="vin"
+            label="VIN / chassis"
+            value={identityMetadata.vin}
+            onChange={(value) => updateIdentityMetadata("vin", value)}
+          />
+          <Field
+            id="registration"
+            label="Registration"
+            value={identityMetadata.registration}
+            onChange={(value) => updateIdentityMetadata("registration", value)}
+          />
+          <Field
+            id="vehicle_year"
+            label="Year"
+            value={identityMetadata.vehicle_year}
+            onChange={(value) => updateIdentityMetadata("vehicle_year", value)}
+          />
+          <Field
+            id="vehicle_variant"
+            label="Trim / variant"
+            value={identityMetadata.vehicle_variant}
+            onChange={(value) => updateIdentityMetadata("vehicle_variant", value)}
+          />
+          <Field
+            id="vehicle_type"
+            label="Vehicle type"
+            value={identityMetadata.vehicle_type}
+            onChange={(value) => updateIdentityMetadata("vehicle_type", value)}
+          />
+          <Field
+            id="vehicle_category"
+            label="Category"
+            value={identityMetadata.vehicle_category}
+            onChange={(value) => updateIdentityMetadata("vehicle_category", value)}
+          />
         </div>
       </div>
 
@@ -261,6 +346,54 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+function identityPayload(metadata: IdentityMetadata) {
+  const payload = {
+    vehicle_identity_source: "upload_form",
+    vehicle_brand: metadata.vehicle_brand.trim(),
+    vehicle_model: metadata.vehicle_model.trim(),
+    vin: metadata.vin.trim(),
+    registration: metadata.registration.trim(),
+    vehicle_year: metadata.vehicle_year.trim(),
+    vehicle_variant: metadata.vehicle_variant.trim(),
+    vehicle_type: metadata.vehicle_type.trim(),
+    vehicle_category: metadata.vehicle_category.trim(),
+  }
+  const hasEvidence = Boolean(
+    payload.vehicle_brand ||
+      payload.vehicle_model ||
+      payload.vin ||
+      payload.registration ||
+      payload.vehicle_year ||
+      payload.vehicle_variant ||
+      payload.vehicle_type ||
+      payload.vehicle_category,
+  )
+  return hasEvidence ? payload : undefined
+}
+
+function Field({
+  id,
+  label,
+  value,
+  onChange,
+}: {
+  id: keyof IdentityMetadata
+  label: string
+  value: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={id}>{label}</Label>
+      <Input
+        id={id}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
     </div>
   )
 }

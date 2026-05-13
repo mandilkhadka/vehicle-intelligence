@@ -38,12 +38,16 @@ CREATE TABLE IF NOT EXISTS inspections (
     -- vehicle_type: 'car', 'bike'
     vehicle_brand TEXT,
     vehicle_model TEXT,
+    vehicle_year TEXT,
+    vehicle_variant TEXT,
     vehicle_confidence REAL,
+    vehicle_info TEXT,
     
     -- Odometer information
     odometer_value INTEGER,
     odometer_confidence REAL,
     speedometer_image_path TEXT,
+    odometer_info TEXT,
     
     -- Damage detection
     damage_summary TEXT,
@@ -51,6 +55,8 @@ CREATE TABLE IF NOT EXISTS inspections (
     scratches_detected INTEGER DEFAULT 0,
     dents_detected INTEGER DEFAULT 0,
     rust_detected INTEGER DEFAULT 0,
+    cracks_detected INTEGER DEFAULT 0,
+    paint_damage_detected INTEGER DEFAULT 0,
     damage_severity TEXT,
     -- damage_severity: 'low', 'high'
     

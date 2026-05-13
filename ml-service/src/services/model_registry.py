@@ -33,6 +33,15 @@ BRAND_PROMPT_TEMPLATES: List[str] = [
 ]
 
 
+def clip_features_to_tensor(features):
+    """Return the projected CLIP embedding tensor across Transformers versions."""
+    if hasattr(features, "pooler_output"):
+        return features.pooler_output
+    if isinstance(features, (tuple, list)):
+        return features[0]
+    return features
+
+
 class ModelRegistry:
     """
     Singleton registry for ML models.
@@ -110,7 +119,6 @@ class ModelRegistry:
             self._clip_model = CLIPModel.from_pretrained(
                 model_name,
                 local_files_only=False,
-                resume_download=True
             )
             logger.info(f"CLIP model loaded in {time.time() - start_time:.2f}s")
 
@@ -119,7 +127,6 @@ class ModelRegistry:
             self._clip_processor = CLIPProcessor.from_pretrained(
                 model_name,
                 local_files_only=False,
-                resume_download=True
             )
             logger.info(f"CLIP processor loaded in {time.time() - processor_start:.2f}s")
             logger.info(f"Total CLIP initialization: {time.time() - start_time:.2f}s")
@@ -153,7 +160,7 @@ class ModelRegistry:
                 inputs = self._clip_processor(
                     text=prompts, return_tensors="pt", padding=True, truncation=True
                 )
-                text_features = self._clip_model.get_text_features(**inputs)
+                text_features = clip_features_to_tensor(self._clip_model.get_text_features(**inputs))
                 # L2-normalize each prompt embedding, then average across templates,
                 # then L2-normalize again — this is the standard prompt-ensemble recipe.
                 text_features = text_features / text_features.norm(dim=-1, keepdim=True)

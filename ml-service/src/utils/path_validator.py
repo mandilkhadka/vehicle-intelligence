@@ -38,6 +38,9 @@ class PathValidator:
         if allowed_base_paths is None:
             env_paths = os.environ.get("ALLOWED_UPLOAD_PATHS", "")
             allowed_base_paths = [p.strip() for p in env_paths.split(",") if p.strip()]
+            uploads_root = os.environ.get("UPLOADS_ROOT", "").strip()
+            if uploads_root:
+                allowed_base_paths.append(uploads_root)
 
             # Default to ../backend/uploads if not configured
             if not allowed_base_paths:

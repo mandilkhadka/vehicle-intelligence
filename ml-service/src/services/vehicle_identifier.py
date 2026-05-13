@@ -26,7 +26,11 @@ import cv2
 import numpy as np
 from collections import Counter
 
-from src.services.model_registry import VEHICLE_BRANDS, BRAND_PROMPT_TEMPLATES
+from src.services.model_registry import (
+    VEHICLE_BRANDS,
+    BRAND_PROMPT_TEMPLATES,
+    clip_features_to_tensor,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +41,7 @@ _VEHICLE_COCO_CLASSES = {2, 3, 5, 7}
 
 # How many frames (with the largest vehicle bboxes) we feed into CLIP.
 _TOP_N_FRAMES_FOR_CLIP = 8
+_MAX_SAMPLE_FRAMES = 12
 
 # Padding ratio applied around the YOLO bbox before cropping for CLIP, so we
 # keep a bit of context (grille, headlights) without picking up the whole scene.
@@ -45,6 +50,54 @@ _CROP_PADDING_RATIO = 0.10
 # If the top brand's softmax probability is below this, we return "Unknown"
 # instead of guessing among the 20 brands.
 _BRAND_CONFIDENCE_FLOOR = 0.25
+_CONTEXT_BRAND_CONFIDENCE_FLOOR = 0.35
+_CONTEXT_BRAND_SWITCH_MARGIN = 0.015
+_MODEL_CONFIDENCE_FLOOR = 0.55
+
+BRAND_CONTEXT_PROMPT_TEMPLATES: List[str] = [
+    "a clear photo of a {brand} logo on a steering wheel",
+    "a {brand} badge on a vehicle",
+    "a {brand} emblem on the front grille",
+    "a {brand} logo inside a car interior",
+]
+
+VEHICLE_MODEL_CATALOG: Dict[str, List[str]] = {
+    "Toyota": [
+        "Sienta", "Aqua", "Prius", "Yaris", "Noah", "Voxy",
+        "Alphard", "Harrier", "Corolla", "C-HR", "Raize", "Roomy",
+    ],
+    "Nissan": [
+        "Note", "Serena", "Leaf", "Juke", "X-Trail", "Kicks",
+        "Ariya", "March", "Dayz", "Roox", "Elgrand", "NV200",
+    ],
+    "Honda": [
+        "Fit", "Freed", "Vezel", "N-Box", "Stepwgn", "Odyssey",
+        "Civic", "Accord", "Shuttle", "N-WGN",
+    ],
+}
+
+MODEL_PROMPT_TEMPLATES: List[str] = [
+    "a photo of a {brand} {model}",
+    "{brand} {model} exterior vehicle",
+    "{brand} {model} side profile",
+    "{brand} {model} dashboard interior",
+]
+
+VARIANT_PROMPT_TEMPLATES: List[str] = [
+    "a photo of a {brand} {model} {variant}",
+    "{brand} {model} {variant} exterior vehicle",
+    "{brand} {model} {variant} front grille",
+    "{brand} {model} {variant} dashboard interior",
+]
+
+VEHICLE_MODEL_METADATA: Dict[Tuple[str, str], Dict[str, Any]] = {
+    ("Toyota", "Sienta"): {
+        "vehicle_category": "compact minivan",
+        "year_range": "2022-present",
+        "generation": "third generation",
+        "variant_candidates": ["Hybrid", "Z", "G", "X"],
+    },
+}
 
 
 class VehicleIdentifier:
@@ -88,15 +141,16 @@ class VehicleIdentifier:
             from transformers import CLIPProcessor, CLIPModel
             os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
             self.clip_model = CLIPModel.from_pretrained(
-                "openai/clip-vit-base-patch32", local_files_only=False, resume_download=True
+                "openai/clip-vit-base-patch32", local_files_only=False
             )
             self.clip_processor = CLIPProcessor.from_pretrained(
-                "openai/clip-vit-base-patch32", local_files_only=False, resume_download=True
+                "openai/clip-vit-base-patch32", local_files_only=False
             )
 
         # Brand prompts / cached text embeddings
         self.brand_names = list(brand_names) if brand_names else list(VEHICLE_BRANDS)
         self.brand_text_embeddings = brand_text_embeddings  # may be None — fallback path handles it
+        self._context_brand_text_embeddings: Optional[torch.Tensor] = None
 
         self.vehicle_types = ["car", "bike", "motorcycle", "truck", "suv"]
 
@@ -114,7 +168,7 @@ class VehicleIdentifier:
 
     def _identify_sync(self, frame_paths: List[str]) -> Dict[str, Any]:
         """Sync identification: cache YOLO once, then derive type/brand/color."""
-        sample_frames = frame_paths[:5] if len(frame_paths) > 5 else frame_paths
+        sample_frames = frame_paths[:_MAX_SAMPLE_FRAMES] if len(frame_paths) > _MAX_SAMPLE_FRAMES else frame_paths
 
         # Cache YOLO results once per frame; reused by type/color/brand-cropping.
         logger.info(f"VehicleIdentifier: Caching YOLO results for {len(sample_frames)} frames")
@@ -128,15 +182,45 @@ class VehicleIdentifier:
 
         vehicle_type = self._detect_vehicle_type_cached(sample_frames[0], yolo_cache)
         brand, model, confidence = self._identify_brand(sample_frames, yolo_cache)
+        model_result = self._identify_model_candidate(brand, sample_frames)
+        if model_result:
+            if not model and model_result.get("confidence", 0.0) >= _MODEL_CONFIDENCE_FLOOR:
+                model = model_result["model"]
+            model_candidates = model_result.get("candidates", [])
+            model_confidence = model_result.get("confidence", 0.0)
+        else:
+            model_candidates = []
+            model_confidence = 0.0
         color = self._detect_vehicle_color_cached(sample_frames, yolo_cache)
 
-        return {
+        result = {
             "type": vehicle_type,
             "brand": brand,
             "model": model,
             "color": color,
             "confidence": confidence,
         }
+        if model_candidates:
+            result["model_confidence"] = model_confidence
+            result["model_candidates"] = model_candidates
+            metadata = self._model_identity_metadata(brand, model)
+            result.update(metadata)
+            variant_result = self._identify_variant_candidate(
+                brand=brand,
+                model=model,
+                variant_options=metadata.get("variant_candidates") or [],
+                frame_paths=sample_frames,
+            )
+            if variant_result:
+                result["variant_candidate"] = variant_result["variant"]
+                result["variant_confidence"] = variant_result["confidence"]
+                result["variant_candidates_ranked"] = variant_result["candidates"]
+            if not result.get("year") and not result.get("variant"):
+                result["identity_notes"] = (
+                    "Model, generation, and trim metadata are local candidates; exact year and "
+                    "trim require VLM, VIN, registration, or manual verification."
+                )
+        return result
 
     # ------------------------------------------------------------------ #
     # Type detection (YOLO)                                              #
@@ -356,7 +440,7 @@ class VehicleIdentifier:
                 inputs = self.clip_processor(
                     text=prompts, return_tensors="pt", padding=True, truncation=True
                 )
-                text_features = self.clip_model.get_text_features(**inputs)
+                text_features = clip_features_to_tensor(self.clip_model.get_text_features(**inputs))
                 text_features = text_features / text_features.norm(dim=-1, keepdim=True)
                 emb = text_features.mean(dim=0)
                 emb = emb / emb.norm()
@@ -396,7 +480,7 @@ class VehicleIdentifier:
 
             with torch.no_grad():
                 image_inputs = self.clip_processor(images=crops, return_tensors="pt")
-                image_features = self.clip_model.get_image_features(**image_inputs)
+                image_features = clip_features_to_tensor(self.clip_model.get_image_features(**image_inputs))
                 # L2-normalize each frame, then mean-pool, then re-normalize.
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True)
                 pooled = image_features.mean(dim=0)
@@ -413,21 +497,259 @@ class VehicleIdentifier:
                 confidence = float(top_prob.item())
                 brand_idx = int(top_idx.item())
 
+            crop_brand = self.brand_names[brand_idx]
             if confidence < _BRAND_CONFIDENCE_FLOOR:
                 logger.info(
                     f"Brand ID: top brand '{self.brand_names[brand_idx]}' below confidence "
                     f"floor ({confidence:.3f} < {_BRAND_CONFIDENCE_FLOOR}) — returning Unknown"
                 )
-                return "Unknown", "", confidence
+                crop_brand = "Unknown"
 
-            best_brand = self.brand_names[brand_idx]
+            context_brand, context_confidence = self._identify_context_brand(frame_paths)
+            best_brand, best_confidence = self._choose_brand_result(
+                crop_brand=crop_brand,
+                crop_confidence=confidence,
+                context_brand=context_brand,
+                context_confidence=context_confidence,
+            )
             logger.info(
-                f"Brand ID: {best_brand} (confidence={confidence:.3f}, "
+                f"Brand ID: {best_brand} (confidence={best_confidence:.3f}, "
+                f"crop_brand={crop_brand}/{confidence:.3f}, "
+                f"context_brand={context_brand}/{context_confidence:.3f}, "
                 f"frames_used={len(crops)})"
             )
             # CLIP zero-shot can't reliably name a specific model — leave blank.
-            return best_brand, "", confidence
+            return best_brand, "", best_confidence
 
         except Exception as e:
             logger.warning(f"Brand identification error: {e}", exc_info=True)
             return "Unknown", "", 0.0
+
+    def _ensure_context_brand_text_embeddings(self) -> torch.Tensor:
+        """Return CLIP embeddings for logo/interior brand prompts."""
+        if self._context_brand_text_embeddings is not None:
+            return self._context_brand_text_embeddings
+
+        per_brand = []
+        with torch.no_grad():
+            for brand in self.brand_names:
+                prompts = [tpl.format(brand=brand) for tpl in BRAND_CONTEXT_PROMPT_TEMPLATES]
+                inputs = self.clip_processor(
+                    text=prompts, return_tensors="pt", padding=True, truncation=True
+                )
+                text_features = clip_features_to_tensor(self.clip_model.get_text_features(**inputs))
+                text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+                per_brand.append(text_features)
+        self._context_brand_text_embeddings = torch.stack(per_brand, dim=0)
+        return self._context_brand_text_embeddings
+
+    def _identify_context_brand(self, frame_paths: List[str]) -> Tuple[str, float]:
+        """
+        Look for brand evidence in full organized frames.
+
+        YOLO crops are useful for exterior body shape, but they can crop away
+        grille badges and they cannot use steering-wheel logos in interior
+        frames. This pass scores full representative frames against logo-focused
+        prompts and can override a weak crop-only brand guess.
+        """
+        try:
+            images: List[Image.Image] = []
+            context_paths = self._context_brand_frame_paths(frame_paths)
+            for path in context_paths[:_MAX_SAMPLE_FRAMES]:
+                try:
+                    if not os.path.exists(path):
+                        continue
+                    images.append(Image.open(path).convert("RGB"))
+                except Exception:
+                    continue
+            if not images:
+                return "Unknown", 0.0
+
+            text_embeddings = self._ensure_context_brand_text_embeddings()
+            with torch.no_grad():
+                image_inputs = self.clip_processor(images=images, return_tensors="pt")
+                image_features = clip_features_to_tensor(self.clip_model.get_image_features(**image_inputs))
+                image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                best_confidence = 0.0
+                best_brand_idx = 0
+                for prompt_idx in range(text_embeddings.shape[1]):
+                    prompt_embeddings = text_embeddings[:, prompt_idx, :]
+                    logits = (image_features @ prompt_embeddings.T) * 100.0
+                    probs = torch.softmax(logits, dim=-1)
+                    prompt_confidences, prompt_brand_indices = torch.max(probs, dim=-1)
+                    frame_confidence, frame_idx = torch.max(prompt_confidences, dim=-1)
+                    confidence = float(frame_confidence.item())
+                    if confidence > best_confidence:
+                        best_confidence = confidence
+                        best_brand_idx = int(prompt_brand_indices[int(frame_idx.item())].item())
+
+            confidence = best_confidence
+            brand_idx = best_brand_idx
+
+            if confidence < _CONTEXT_BRAND_CONFIDENCE_FLOOR:
+                return "Unknown", confidence
+            return self.brand_names[brand_idx], confidence
+        except Exception as e:
+            logger.warning("Context brand identification error: %s", e, exc_info=True)
+            return "Unknown", 0.0
+
+    @staticmethod
+    def _context_brand_frame_paths(frame_paths: List[str]) -> List[str]:
+        preferred_tokens = ("front", "dashboard", "odometer", "interior")
+        preferred = [
+            path for path in frame_paths
+            if any(token in os.path.basename(path).lower() for token in preferred_tokens)
+        ]
+        return preferred or frame_paths
+
+    @staticmethod
+    def _choose_brand_result(
+        *,
+        crop_brand: str,
+        crop_confidence: float,
+        context_brand: str,
+        context_confidence: float,
+    ) -> Tuple[str, float]:
+        if (
+            context_brand
+            and context_brand != "Unknown"
+            and context_confidence >= _CONTEXT_BRAND_CONFIDENCE_FLOOR
+            and (
+                crop_brand == "Unknown"
+                or context_confidence >= crop_confidence + _CONTEXT_BRAND_SWITCH_MARGIN
+            )
+        ):
+            return context_brand, context_confidence
+        return crop_brand, crop_confidence
+
+    def _identify_model_candidate(self, brand: str, frame_paths: List[str]) -> Optional[Dict[str, Any]]:
+        models = VEHICLE_MODEL_CATALOG.get(brand or "")
+        if not models:
+            return None
+
+        candidate_paths = self._model_frame_paths(frame_paths)
+        images: List[Image.Image] = []
+        for path in candidate_paths[:_MAX_SAMPLE_FRAMES]:
+            try:
+                if os.path.exists(path):
+                    images.append(Image.open(path).convert("RGB"))
+            except Exception:
+                continue
+        if not images:
+            return None
+
+        try:
+            prompts = [
+                template.format(brand=brand, model=model_name)
+                for model_name in models
+                for template in MODEL_PROMPT_TEMPLATES
+            ]
+            with torch.no_grad():
+                text_inputs = self.clip_processor(
+                    text=prompts, return_tensors="pt", padding=True, truncation=True
+                )
+                text_features = clip_features_to_tensor(self.clip_model.get_text_features(**text_inputs))
+                text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+
+                image_inputs = self.clip_processor(images=images, return_tensors="pt")
+                image_features = clip_features_to_tensor(self.clip_model.get_image_features(**image_inputs))
+                image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                logits = (image_features @ text_features.T) * 100.0
+                grouped = logits.reshape(len(images), len(models), len(MODEL_PROMPT_TEMPLATES)).max(dim=2).values
+                per_frame_probs = torch.softmax(grouped, dim=-1)
+                model_scores = per_frame_probs.max(dim=0).values
+
+            ranked = sorted(
+                [
+                    {"model": model_name, "confidence": round(float(model_scores[idx].item()), 4)}
+                    for idx, model_name in enumerate(models)
+                ],
+                key=lambda item: item["confidence"],
+                reverse=True,
+            )
+            return {
+                "model": ranked[0]["model"],
+                "confidence": ranked[0]["confidence"],
+                "candidates": ranked[:5],
+            }
+        except Exception as e:
+            logger.warning("Model candidate identification error: %s", e, exc_info=True)
+            return None
+
+    def _identify_variant_candidate(
+        self,
+        *,
+        brand: str,
+        model: str,
+        variant_options: List[str],
+        frame_paths: List[str],
+    ) -> Optional[Dict[str, Any]]:
+        if not brand or not model or not variant_options:
+            return None
+
+        candidate_paths = self._model_frame_paths(frame_paths)
+        images: List[Image.Image] = []
+        for path in candidate_paths[:_MAX_SAMPLE_FRAMES]:
+            try:
+                if os.path.exists(path):
+                    images.append(Image.open(path).convert("RGB"))
+            except Exception:
+                continue
+        if not images:
+            return None
+
+        try:
+            prompts = [
+                template.format(brand=brand, model=model, variant=variant)
+                for variant in variant_options
+                for template in VARIANT_PROMPT_TEMPLATES
+            ]
+            with torch.no_grad():
+                text_inputs = self.clip_processor(
+                    text=prompts, return_tensors="pt", padding=True, truncation=True
+                )
+                text_features = clip_features_to_tensor(self.clip_model.get_text_features(**text_inputs))
+                text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+
+                image_inputs = self.clip_processor(images=images, return_tensors="pt")
+                image_features = clip_features_to_tensor(self.clip_model.get_image_features(**image_inputs))
+                image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                logits = (image_features @ text_features.T) * 100.0
+                grouped = logits.reshape(
+                    len(images), len(variant_options), len(VARIANT_PROMPT_TEMPLATES)
+                ).max(dim=2).values
+                per_frame_probs = torch.softmax(grouped, dim=-1)
+                variant_scores = per_frame_probs.max(dim=0).values
+
+            ranked = sorted(
+                [
+                    {"variant": variant, "confidence": round(float(variant_scores[idx].item()), 4)}
+                    for idx, variant in enumerate(variant_options)
+                ],
+                key=lambda item: item["confidence"],
+                reverse=True,
+            )
+            return {
+                "variant": ranked[0]["variant"],
+                "confidence": ranked[0]["confidence"],
+                "candidates": ranked[:5],
+            }
+        except Exception as e:
+            logger.warning("Variant candidate identification error: %s", e, exc_info=True)
+            return None
+
+    @staticmethod
+    def _model_frame_paths(frame_paths: List[str]) -> List[str]:
+        preferred_tokens = (
+            "front", "left", "right", "rear", "side",
+            "dashboard", "odometer", "interior",
+        )
+        preferred = [
+            path for path in frame_paths
+            if any(token in os.path.basename(path).lower() for token in preferred_tokens)
+        ]
+        return preferred or frame_paths
+
+    @staticmethod
+    def _model_identity_metadata(brand: str, model: str) -> Dict[str, Any]:
+        return dict(VEHICLE_MODEL_METADATA.get((brand or "", model or ""), {}))
