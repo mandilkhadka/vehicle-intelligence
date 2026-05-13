@@ -20,10 +20,9 @@ export function ensureDirectoryExists(dirPath: string): void {
  * Generate a unique filename
  */
 export function generateUniqueFilename(originalFilename: string): string {
-  const ext = path.extname(originalFilename);
-  const baseName = path.basename(originalFilename, ext);
+  const ext = path.extname(originalFilename).toLowerCase();
   const uniqueId = uuidv4();
-  return `${baseName}_${uniqueId}${ext}`;
+  return `${uniqueId}${ext}`;
 }
 
 /**

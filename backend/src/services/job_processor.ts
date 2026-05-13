@@ -16,6 +16,18 @@ import { config } from "../config/env";
 import { PROGRESS_SIMULATION } from "../config/constants";
 import logger from "../utils/logger";
 
+type ErrorDetails = Record<string, unknown>;
+
+function mlServiceHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (config.mlService.apiKey) {
+    headers["X-Internal-API-Key"] = config.mlService.apiKey;
+  }
+  return headers;
+}
+
 // Retry configuration
 const RETRY_CONFIG = {
   maxRetries: 3,
@@ -75,6 +87,7 @@ export async function processVideoJob(
   fileId: string,
   videoPath: string,
   odometerImagePath?: string,
+  vehicleIdentityOverride?: Record<string, unknown>,
 ): Promise<void> {
   const startTime = Date.now();
 
@@ -261,12 +274,11 @@ export async function processVideoJob(
               video_path: absoluteVideoPath,
               inspection_id: inspectionId,
               odometer_image_path: absoluteOdometerPath,
+              vehicle_identity_override: vehicleIdentityOverride,
             },
             {
               timeout: config.mlService.timeout,
-              headers: {
-                "Content-Type": "application/json",
-              },
+              headers: mlServiceHeaders(),
               // Add request timeout handler
               validateStatus: (status) => status < 500, // Don't throw on 4xx errors
               maxContentLength: 50 * 1024 * 1024, // 50MB
@@ -359,14 +371,20 @@ export async function processVideoJob(
       vehicle_type: results.vehicle_info?.type,
       vehicle_brand: results.vehicle_info?.brand,
       vehicle_model: results.vehicle_info?.model,
+      vehicle_year: results.vehicle_info?.year,
+      vehicle_variant: results.vehicle_info?.variant,
       vehicle_confidence: results.vehicle_info?.confidence,
+      vehicle_info: JSON.stringify(results.vehicle_info || {}),
       odometer_value: results.odometer?.value,
       odometer_confidence: results.odometer?.confidence,
       speedometer_image_path: results.odometer?.speedometer_image_path,
+      odometer_info: JSON.stringify(results.odometer || {}),
       damage_summary: JSON.stringify(results.damage || {}),
       scratches_detected: results.damage?.scratches?.count || 0,
       dents_detected: results.damage?.dents?.count || 0,
       rust_detected: results.damage?.rust?.count || 0,
+      cracks_detected: results.damage?.cracks?.count || 0,
+      paint_damage_detected: results.damage?.paint_damage?.count || 0,
       damage_severity: results.damage?.severity,
       exhaust_type: results.exhaust?.type,
       exhaust_confidence: results.exhaust?.confidence,
@@ -392,7 +410,7 @@ export async function processVideoJob(
 
     // Extract meaningful error message
     let errorMessage = "Unknown error during processing";
-    let errorDetails: any = {};
+    let errorDetails: ErrorDetails = {};
 
     // Check if it's an AxiosError
     if (axios.isAxiosError(error)) {
@@ -408,15 +426,17 @@ export async function processVideoJob(
 
       // Extract error message from response data
       if (axiosError.response?.data) {
-        const data = axiosError.response.data as any;
+        const data = axiosError.response.data;
         if (typeof data === "string") {
           errorMessage = data;
-        } else if (data.detail) {
-          errorMessage = data.detail;
-        } else if (data.message) {
-          errorMessage = data.message;
-        } else if (data.error) {
-          errorMessage = data.error;
+        } else if (isRecord(data)) {
+          if (typeof data.detail === "string") {
+            errorMessage = data.detail;
+          } else if (typeof data.message === "string") {
+            errorMessage = data.message;
+          } else if (typeof data.error === "string") {
+            errorMessage = data.error;
+          }
         }
       }
 
@@ -477,4 +497,8 @@ export async function processVideoJob(
 
     throw error;
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

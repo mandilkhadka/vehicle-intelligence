@@ -3,7 +3,7 @@
  * Production-ready Express server with security, logging, and error handling
  */
 
-import express, { Express } from "express";
+import express, { Express, Request } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import compression from "compression";
@@ -32,8 +32,8 @@ try {
 // Create Express app
 const app: Express = express();
 
-// Trust proxy for accurate IP addresses behind reverse proxy
-app.set("trust proxy", 1);
+// Enable only when a trusted reverse proxy terminates client traffic.
+app.set("trust proxy", config.trustProxy ? 1 : false);
 
 // Security middleware
 app.use(
@@ -61,15 +61,15 @@ app.use(requestIdMiddleware);
 app.use(
   pinoHttp({
     logger,
-    customLogLevel: (req, res, err) => {
+    customLogLevel: (_req, res, _err) => {
       if (res.statusCode >= 500) return "error";
       if (res.statusCode >= 400) return "warn";
       return "info";
     },
-    customSuccessMessage: (req, res) => {
+    customSuccessMessage: (req, _res) => {
       return `${req.method} ${req.url} completed`;
     },
-    customErrorMessage: (req, res, err) => {
+    customErrorMessage: (req, _res, _err) => {
       return `${req.method} ${req.url} failed`;
     },
   }),
@@ -91,14 +91,23 @@ app.use(
   }),
 );
 
-// Body parsing middleware
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+// Body parsing middleware. File uploads are handled by multer on /api/upload.
+app.use(express.json({ limit: config.body.jsonLimit }));
+app.use(express.urlencoded({ extended: true, limit: config.body.jsonLimit }));
+
+const JOB_STATUS_OR_HEALTH_PATH =
+  /^\/api\/jobs\/(?:health-check|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+
+function isJobStatusPollingRequest(req: Request): boolean {
+  const pathWithoutQuery = req.originalUrl.split("?")[0];
+  return req.method === "GET" && JOB_STATUS_OR_HEALTH_PATH.test(pathWithoutQuery);
+}
 
 // Rate limiting
 const limiter = rateLimit({
   windowMs: config.rateLimit.windowMs,
   max: config.rateLimit.maxRequests,
+  skip: isJobStatusPollingRequest,
   message: {
     error: "TOO_MANY_REQUESTS",
     message: "Too many requests from this IP, please try again later",
@@ -206,7 +215,7 @@ process.on("uncaughtException", (error) => {
 });
 
 // Start server
-const server = app.listen(config.port, () => {
+const _server = app.listen(config.port, () => {
   logger.info(
     {
       port: config.port,
