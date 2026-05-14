@@ -82,11 +82,14 @@ def test_organize_selects_angle_and_dashboard_frames(temp_dir):
 
     first_dashboard = result["dashboard_candidates"][0]
     assert first_dashboard["organized_path"]
+    assert first_dashboard["inspection_path"] == first_dashboard["organized_path"]
+    assert first_dashboard["preview_path"]
     assert first_dashboard["crop_path"]
     assert first_dashboard["source_frame_index"] == first_dashboard["extracted_index"] * 30
     assert first_dashboard["timestamp_seconds"] == first_dashboard["extracted_index"] * 0.5
     assert "high_confidence" in first_dashboard
     assert os.path.exists(first_dashboard["organized_path"])
+    assert os.path.exists(first_dashboard["preview_path"])
     assert os.path.exists(first_dashboard["crop_path"])
     assert Path(first_dashboard["organized_path"]).parent.name == "organized"
     assert all(
@@ -240,6 +243,79 @@ def test_dashboard_candidates_preserve_odometer_semantic_label():
     assert selected[0]["candidate_role"] == "dashboard_candidate"
 
 
+def test_detail_views_are_not_filled_from_weak_fallback_frames():
+    organizer = VehicleFrameOrganizer()
+    candidates = []
+    for index in range(8):
+        view_scores = {view: 0.01 for view in organizer._view_names}
+        view_scores["interior"] = 0.7 if index >= 6 else 0.01
+        view_scores["dashboard"] = 0.65 if index >= 6 else 0.01
+        candidates.append(
+            FrameCandidate(
+                index=index,
+                path=f"frame_{index:04d}.jpg",
+                blur_score=300.0,
+                brightness=128.0,
+                contrast=60.0,
+                quality_score=0.8,
+                vehicle_box=None,
+                vehicle_ratio=0.0,
+                heuristic_dashboard_score=0.7 if index >= 6 else 0.1,
+                view_scores=view_scores,
+            )
+        )
+
+    selected = organizer._select_angle_shots(candidates)
+
+    assert "interior" in selected
+    assert "dashboard" in selected
+    assert "wheels" not in selected
+    assert "trunk" not in selected
+    assert "engine-bay" not in selected
+
+
+def test_detail_view_requires_clip_score_to_beat_interior_dashboard():
+    organizer = VehicleFrameOrganizer(clip_model=object(), clip_processor=object())
+    weak_wheels = FrameCandidate(
+        index=0,
+        path="interior.jpg",
+        blur_score=300.0,
+        brightness=128.0,
+        contrast=60.0,
+        quality_score=0.9,
+        vehicle_box=None,
+        vehicle_ratio=0.0,
+        heuristic_dashboard_score=0.65,
+        view_scores={
+            "wheels": 0.31,
+            "interior": 0.36,
+            "dashboard": 0.34,
+            "odometer": 0.20,
+        },
+    )
+    strong_wheels = FrameCandidate(
+        index=1,
+        path="wheels.jpg",
+        blur_score=300.0,
+        brightness=128.0,
+        contrast=60.0,
+        quality_score=0.9,
+        vehicle_box=None,
+        vehicle_ratio=0.0,
+        heuristic_dashboard_score=0.12,
+        view_scores={
+            "wheels": 0.48,
+            "interior": 0.08,
+            "dashboard": 0.06,
+            "odometer": 0.03,
+        },
+    )
+
+    selected = organizer._select_angle_shots([weak_wheels, strong_wheels])
+
+    assert selected["wheels"]["frame_index"] == 1
+
+
 def test_exterior_selection_prefers_walkaround_temporal_order():
     organizer = VehicleFrameOrganizer(clip_model=object(), clip_processor=object())
     candidates = []
@@ -350,7 +426,7 @@ def test_clip_selection_rejects_dashboard_frames_for_exterior_views():
     assert selected["dashboard"]["frame_index"] >= 5
 
 
-def test_organized_angle_copy_enhances_resolution(temp_dir):
+def test_organized_angle_copy_preserves_source_resolution(temp_dir):
     src = temp_dir / "small.jpg"
     dest = temp_dir / "organized.jpg"
     image = np.full((240, 420, 3), 120, dtype=np.uint8)
@@ -362,8 +438,7 @@ def test_organized_angle_copy_enhances_resolution(temp_dir):
     assert copied == str(dest)
     out = cv2.imread(str(dest))
     assert out is not None
-    assert out.shape[0] >= 720
-    assert out.shape[1] >= 1280
+    assert out.shape[:2] == image.shape[:2]
 
 
 def test_low_temporal_fit_blocks_exterior_high_confidence():

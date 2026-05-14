@@ -44,11 +44,14 @@ def test_extract_frames_writes_source_timeline_metadata(temp_dir):
     assert len(frames) == metadata["frames_extracted"]
     assert metadata["frame_interval"] == 5
     assert metadata["jpeg_quality"] == 98
-    assert metadata["image_enhancement"] == "clahe_unsharp"
+    assert metadata["image_enhancement"] == "none_source_preserved"
+    assert metadata["pipelines"]["inspection_frames"].startswith("source-preserved")
     assert metadata["frames"][0]["extracted_index"] == 0
     assert metadata["frames"][0]["source_frame_index"] == 0
-    assert metadata["frames"][1]["source_frame_index"] == 5
-    assert metadata["frames"][1]["timestamp_seconds"] == 0.5
+    assert metadata["frames"][0]["inspection_path"] == metadata["frames"][0]["path"]
+    assert metadata["frames"][0]["preview_path"]
+    assert metadata["frames"][0]["quality_score"] >= 0
+    assert metadata["frames"][0]["exposure_state"] == "ok"
 
 
 def test_duplicate_filter_keeps_small_walkaround_changes():
@@ -58,3 +61,12 @@ def test_duplicate_filter_keeps_small_walkaround_changes():
     cv2.rectangle(changed, (120, 30), (160, 90), (20, 20, 20), -1)
 
     assert extractor._is_duplicate(base, changed) is False
+
+
+def test_quality_rejection_detects_extreme_exposure():
+    extractor = FrameExtractor(min_blur_threshold=0)
+    overexposed = np.full((120, 180, 3), 255, dtype=np.uint8)
+    underexposed = np.zeros((120, 180, 3), dtype=np.uint8)
+
+    assert extractor._quality_rejection(extractor._assess_frame_quality(overexposed)) == "overexposed"
+    assert extractor._quality_rejection(extractor._assess_frame_quality(underexposed)) == "underexposed"

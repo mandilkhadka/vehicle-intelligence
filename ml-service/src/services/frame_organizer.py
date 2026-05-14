@@ -34,7 +34,22 @@ EXTERIOR_VIEWS: Tuple[str, ...] = (
     "front-right",
 )
 
-SPECIAL_VIEWS: Tuple[str, ...] = ("interior", "dashboard", "odometer")
+DETAIL_VIEWS: Tuple[str, ...] = ("wheels", "trunk", "engine-bay")
+SPECIAL_VIEWS: Tuple[str, ...] = ("interior", "dashboard", "odometer", *DETAIL_VIEWS)
+REVIEW_REQUIRED_VIEWS: Tuple[str, ...] = (
+    "front",
+    "front-left",
+    "left",
+    "rear-left",
+    "rear",
+    "rear-right",
+    "right",
+    "interior",
+    "dashboard",
+    "wheels",
+    "trunk",
+    "engine-bay",
+)
 
 VIEW_PROMPTS: Dict[str, List[str]] = {
     "front": [
@@ -92,6 +107,21 @@ VIEW_PROMPTS: Dict[str, List[str]] = {
         "digital odometer mileage display",
         "instrument cluster showing kilometers",
     ],
+    "wheels": [
+        "close view of vehicle wheels and tires",
+        "car wheel rim tire sidewall inspection",
+        "vehicle alloy wheel and tire condition",
+    ],
+    "trunk": [
+        "open vehicle trunk cargo area",
+        "rear hatch trunk storage compartment",
+        "car boot interior inspection",
+    ],
+    "engine-bay": [
+        "open hood engine bay inspection",
+        "vehicle engine compartment",
+        "car engine bay under bonnet",
+    ],
 }
 
 _VEHICLE_COCO_CLASSES = {2, 3, 5, 7}
@@ -112,6 +142,9 @@ _INTERIOR_LIKE_REJECTION_SCORE = 0.32
 _MIN_DASHBOARD_CANDIDATE_SCORE = 0.45
 _DASHBOARD_EXTERIOR_REJECTION_VEHICLE_RATIO = 0.35
 _DASHBOARD_EXTERIOR_REJECTION_SCORE = 0.45
+_MIN_DETAIL_VIEW_CLIP_SCORE = 0.28
+_MIN_DETAIL_VIEW_SCORE = 0.34
+_DETAIL_VIEW_DOMINANCE_MARGIN = 0.08
 
 
 @dataclass
@@ -277,11 +310,18 @@ class VehicleFrameOrganizer:
                 key=lambda c: self._special_view_score(c, view),
                 reverse=True,
             )
-            if ranked:
-                chosen = ranked[0]
-                angle_shots[view] = self._candidate_payload(
-                    chosen, view, self._special_view_score(chosen, view)
-                )
+            chosen = None
+            for candidate in ranked:
+                score = self._special_view_score(candidate, view)
+                if not self._has_special_view_evidence(candidate, view, score):
+                    continue
+                chosen = candidate
+                break
+            if chosen is None:
+                continue
+            angle_shots[view] = self._candidate_payload(
+                chosen, view, self._special_view_score(chosen, view)
+            )
 
         return angle_shots
 
@@ -325,9 +365,15 @@ class VehicleFrameOrganizer:
         organized_dir: Path,
     ) -> Dict[str, Dict[str, Any]]:
         for view, payload in angle_shots.items():
-            payload["organized_path"] = self._copy_frame(
+            full_path = self._copy_frame(
                 payload["frame"],
                 organized_dir / f"angle_{view}.jpg",
+            )
+            payload["organized_path"] = full_path
+            payload["inspection_path"] = full_path or payload.get("frame")
+            payload["preview_path"] = self._write_preview(
+                payload["inspection_path"],
+                organized_dir / "previews" / f"angle_{view}.jpg",
             )
         return angle_shots
 
@@ -337,9 +383,15 @@ class VehicleFrameOrganizer:
         organized_dir: Path,
     ) -> List[Dict[str, Any]]:
         for i, payload in enumerate(dashboard_candidates):
-            payload["organized_path"] = self._copy_frame(
+            full_path = self._copy_frame(
                 payload["frame"],
                 organized_dir / f"dashboard_candidate_{i + 1:02d}.jpg",
+            )
+            payload["organized_path"] = full_path
+            payload["inspection_path"] = full_path or payload.get("frame")
+            payload["preview_path"] = self._write_preview(
+                payload["inspection_path"],
+                organized_dir / "previews" / f"dashboard_candidate_{i + 1:02d}.jpg",
             )
             payload["crop_path"] = self._write_dashboard_crop(
                 payload["frame"],
@@ -356,19 +408,32 @@ class VehicleFrameOrganizer:
     def _copy_frame(src: str, dest: Path) -> Optional[str]:
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
-            image = cv2.imread(src)
-            if image is None:
-                shutil.copy2(src, dest)
-                return str(dest)
-            enhanced = enhance_image_for_analysis(
-                image,
-                min_width=1280,
-                min_height=720,
-                denoise=False,
-            )
-            return str(dest) if write_jpeg(dest, enhanced, 98) else None
+            shutil.copy2(src, dest)
+            return str(dest)
         except Exception as e:
             logger.warning("FrameOrganizer: failed to copy %s to %s: %s", src, dest, e)
+            return None
+
+    @staticmethod
+    def _write_preview(src: Optional[str], dest: Path, max_width: int = 720) -> Optional[str]:
+        if not src:
+            return None
+        try:
+            image = cv2.imread(src)
+            if image is None:
+                return None
+            h, w = image.shape[:2]
+            preview = image
+            if w > max_width:
+                scale = max_width / float(w)
+                preview = cv2.resize(
+                    image,
+                    (max_width, max(1, int(round(h * scale)))),
+                    interpolation=cv2.INTER_AREA,
+                )
+            return str(dest) if write_jpeg(dest, preview, 84) else None
+        except Exception as e:
+            logger.warning("FrameOrganizer: failed to write preview %s: %s", dest, e)
             return None
 
     @staticmethod
@@ -576,7 +641,13 @@ class VehicleFrameOrganizer:
 
     @staticmethod
     def _representative_payload(view: str, path: str, source: Dict[str, Any]) -> Dict[str, Any]:
-        payload = {"view": view, "frame": path, "score": source.get("score")}
+        payload = {
+            "view": view,
+            "frame": source.get("inspection_path") or path,
+            "inspection_path": source.get("inspection_path") or path,
+            "preview_path": source.get("preview_path"),
+            "score": source.get("score"),
+        }
         for key in (
             "frame_index",
             "extracted_index",
@@ -590,6 +661,7 @@ class VehicleFrameOrganizer:
             "high_confidence",
             "semantic_source",
             "candidate_role",
+            "organized_path",
             "crop_path",
             "readout_crop_path",
         ):
@@ -599,7 +671,7 @@ class VehicleFrameOrganizer:
 
     @staticmethod
     def _coverage(angle_shots: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-        required = list(EXTERIOR_VIEWS) + ["dashboard"]
+        required = list(REVIEW_REQUIRED_VIEWS)
         present = [view for view in required if angle_shots.get(view)]
         high_confidence = [
             view
@@ -673,6 +745,26 @@ class VehicleFrameOrganizer:
         exterior_dominates = candidate.vehicle_ratio >= _DASHBOARD_EXTERIOR_REJECTION_VEHICLE_RATIO
         weak_dashboard_evidence = candidate.heuristic_dashboard_score < _DASHBOARD_EXTERIOR_REJECTION_SCORE
         return not (exterior_dominates and weak_dashboard_evidence)
+
+    def _has_special_view_evidence(self, candidate: FrameCandidate, view: str, score: float) -> bool:
+        if view not in DETAIL_VIEWS:
+            return True
+        if not self._clip_available():
+            return False
+
+        detail_clip_score = candidate.view_scores.get(view, 0.0)
+        competing_cabin_score = max(
+            candidate.view_scores.get("interior", 0.0),
+            candidate.view_scores.get("dashboard", 0.0),
+            candidate.view_scores.get("odometer", 0.0),
+        )
+        if detail_clip_score < _MIN_DETAIL_VIEW_CLIP_SCORE:
+            return False
+        if score < _MIN_DETAIL_VIEW_SCORE:
+            return False
+        if competing_cabin_score >= detail_clip_score - _DETAIL_VIEW_DOMINANCE_MARGIN:
+            return False
+        return True
 
     def _walkaround_angle_score(
         self,

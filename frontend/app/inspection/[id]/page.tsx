@@ -4,7 +4,20 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
-import { BrainCircuit, Camera, Download, Gauge, Loader2 } from "lucide-react";
+import {
+  BrainCircuit,
+  Camera,
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  Gauge,
+  Loader2,
+  Maximize2,
+  Minimize2,
+  RotateCcw,
+  ZoomIn,
+  ZoomOut,
+} from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
@@ -132,6 +145,67 @@ function auditValue(value: unknown): string | null {
 
 function yesNo(value: unknown): string {
   return value ? "yes" : "no";
+}
+
+type ReviewShot = {
+  id: string;
+  view: string;
+  group: "angle" | "dashboard";
+  imagePath: string;
+  previewPath: string;
+  score?: number;
+  qualityScore?: number;
+  timestampSeconds?: number;
+};
+
+const REVIEW_VIEW_ORDER = [
+  "front",
+  "front-left",
+  "left",
+  "rear-left",
+  "rear",
+  "rear-right",
+  "right",
+  "front-right",
+  "interior",
+  "dashboard",
+  "wheels",
+  "trunk",
+  "engine-bay",
+];
+
+function displayViewName(view: string): string {
+  return String(view || "frame").replaceAll("-", " ");
+}
+
+function buildReviewShots(frameAnalysis: any): ReviewShot[] {
+  const shots: ReviewShot[] = [];
+  const seen = new Set<string>();
+  const addShot = (view: string, source: any, group: ReviewShot["group"], index = 0) => {
+    if (!source || typeof source !== "object") return;
+    const imagePath = source.inspection_path || source.organized_path || source.frame;
+    if (!imagePath || seen.has(`${group}:${view}:${imagePath}`)) return;
+    seen.add(`${group}:${view}:${imagePath}`);
+    shots.push({
+      id: `${group}-${view}-${index}`,
+      view,
+      group,
+      imagePath,
+      previewPath: source.preview_path || source.inspection_path || source.organized_path || source.frame,
+      score: typeof source.score === "number" ? source.score : undefined,
+      qualityScore: typeof source.quality_score === "number" ? source.quality_score : undefined,
+      timestampSeconds:
+        typeof source.timestamp_seconds === "number" ? source.timestamp_seconds : undefined,
+    });
+  };
+
+  const angleShots = frameAnalysis?.angle_shots || {};
+  REVIEW_VIEW_ORDER.forEach((view) => addShot(view, angleShots[view], "angle"));
+  (frameAnalysis?.dashboard_candidates || []).slice(0, 6).forEach((candidate: any, index: number) => {
+    addShot(candidate?.view || "dashboard", candidate, "dashboard", index);
+  });
+
+  return shots;
 }
 
 function hasVehicleIdentityEvidence(evidence: Record<string, any>): boolean {
@@ -352,27 +426,16 @@ function InspectionContent({
     (check: PipelineAuditCheck) => check?.id === "vehicle_identity",
   );
   const referenceImage = report?.reference_image || gemini?.reference_image;
-  const orderedViews = [
-    "front",
-    "front-left",
-    "left",
-    "rear-left",
-    "rear",
-    "rear-right",
-    "right",
-    "front-right",
-    "interior",
-    "dashboard",
-  ];
-  const organizedShots = orderedViews
+  const organizedShots = REVIEW_VIEW_ORDER
     .map((view) => {
       const shot = frameAnalysis?.angle_shots?.[view];
       return shot ? { view, ...shot } : null;
     })
     .filter(Boolean);
   const dashboardCandidates = Array.isArray(frameAnalysis?.dashboard_candidates)
-    ? frameAnalysis.dashboard_candidates.slice(0, 3)
+    ? frameAnalysis.dashboard_candidates.slice(0, 6)
     : [];
+  const reviewShots = buildReviewShots(frameAnalysis);
 
   const retryVlm = async () => {
     setRetryingVlm(true);
@@ -489,102 +552,14 @@ function InspectionContent({
         />
       )}
 
-      {(organizedShots.length > 0 || dashboardCandidates.length > 0) && (
-        <Card className="overflow-hidden">
-          <CardHeader className="border-b border-border bg-secondary/30">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <CardTitle className="flex items-center gap-2">
-                <Camera className="h-5 w-5 text-primary" />
-                Organized Vehicle Shots
-              </CardTitle>
-              {frameAnalysis?.coverage && (
-                <div className="flex flex-wrap gap-2">
-                  <Badge variant="outline" className="w-fit rounded-md bg-background font-mono text-[11px] uppercase tracking-normal">
-                    {Math.round((frameAnalysis.coverage.ratio || 0) * 100)}% selected
-                  </Badge>
-                  {typeof frameAnalysis.coverage.high_confidence_ratio === "number" && (
-                    <Badge variant="outline" className="w-fit rounded-md bg-background font-mono text-[11px] uppercase tracking-normal">
-                      {Math.round((frameAnalysis.coverage.high_confidence_ratio || 0) * 100)}% high confidence
-                    </Badge>
-                  )}
-                </div>
-              )}
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-5">
-            {organizedShots.length > 0 && (
-              <div>
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <h4 className="text-sm font-semibold">Angle shots</h4>
-                  {typeof frameAnalysis?.frames_analyzed === "number" && (
-                    <span className="text-xs text-muted-foreground">
-                      {frameAnalysis.frames_analyzed} frames analyzed
-                    </span>
-                  )}
-                </div>
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-                  {organizedShots.map((shot: any) => {
-                    const path = uploadPath(shot.organized_path || shot.frame);
-                    if (!path) return null;
-                    return (
-                      <div key={shot.view} className="overflow-hidden rounded-lg border border-border bg-background">
-                        <div className="relative aspect-video">
-                          <Image
-                            src={`${BACKEND_BASE_URL}/${path}`}
-                            alt={`${shot.view} angle`}
-                            fill
-                            className="object-cover"
-                            unoptimized
-                          />
-                        </div>
-                        <div className="flex items-center justify-between gap-2 px-2 py-1.5 text-xs">
-                          <span className="truncate font-medium capitalize">{String(shot.view).replace("-", " ")}</span>
-                          {typeof shot.score === "number" && (
-                            <span className="font-mono text-muted-foreground">{Math.round(shot.score * 100)}%</span>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {dashboardCandidates.length > 0 && (
-              <div>
-                <h4 className="mb-3 flex items-center gap-2 text-sm font-semibold">
-                  <Gauge className="h-4 w-4 text-primary" />
-                  Dashboard candidates
-                </h4>
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                  {dashboardCandidates.map((candidate: any, i: number) => {
-                    const path = uploadPath(candidate.crop_path || candidate.organized_path || candidate.frame);
-                    if (!path) return null;
-                    return (
-                      <div key={`${candidate.frame_index ?? i}-${path}`} className="overflow-hidden rounded-lg border border-border bg-background">
-                        <div className="relative aspect-video">
-                          <Image
-                            src={`${BACKEND_BASE_URL}/${path}`}
-                            alt={`Dashboard candidate ${i + 1}`}
-                            fill
-                            className="object-cover"
-                            unoptimized
-                          />
-                        </div>
-                        <div className="flex items-center justify-between gap-2 px-2 py-1.5 text-xs">
-                          <span className="font-medium">Candidate {i + 1}</span>
-                          {typeof candidate.score === "number" && (
-                            <span className="font-mono text-muted-foreground">{Math.round(candidate.score * 100)}%</span>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+      {reviewShots.length > 0 && (
+        <InspectionImageReview
+          shots={reviewShots}
+          coverage={frameAnalysis?.coverage}
+          framesAnalyzed={frameAnalysis?.frames_analyzed}
+          angleCount={organizedShots.length}
+          dashboardCount={dashboardCandidates.length}
+        />
       )}
 
       {gemini?.available && (
@@ -825,6 +800,227 @@ function InspectionContent({
         </Card>
       )}
     </div>
+  );
+}
+
+function InspectionImageReview({
+  shots,
+  coverage,
+  framesAnalyzed,
+  angleCount,
+  dashboardCount,
+}: {
+  shots: ReviewShot[];
+  coverage?: any;
+  framesAnalyzed?: number;
+  angleCount: number;
+  dashboardCount: number;
+}) {
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [zoom, setZoom] = useState(1);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const activeShot = shots[Math.min(activeIndex, shots.length - 1)] || shots[0];
+  const activePath = uploadPath(activeShot?.imagePath);
+  const activeSrc = activePath ? `${BACKEND_BASE_URL}/${activePath}` : "";
+
+  const selectIndex = (index: number) => {
+    const nextIndex = Math.max(0, Math.min(index, shots.length - 1));
+    setActiveIndex(nextIndex);
+    setZoom(1);
+  };
+
+  const step = (direction: -1 | 1) => {
+    selectIndex((activeIndex + direction + shots.length) % shots.length);
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (shots.length === 0) return;
+      if (event.key === "ArrowRight") {
+        setActiveIndex((current) => (current + 1 + shots.length) % shots.length);
+        setZoom(1);
+      }
+      if (event.key === "ArrowLeft") {
+        setActiveIndex((current) => (current - 1 + shots.length) % shots.length);
+        setZoom(1);
+      }
+      if (event.key === "Escape") setIsFullscreen(false);
+      if (event.key === "+" || event.key === "=") setZoom((value) => Math.min(3, value + 0.25));
+      if (event.key === "-") setZoom((value) => Math.max(1, value - 0.25));
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [shots.length]);
+
+  const viewer = (
+    <div
+      className={
+        isFullscreen
+          ? "fixed inset-0 z-50 flex flex-col bg-background"
+          : "grid gap-4 lg:grid-cols-[minmax(0,1fr)_260px]"
+      }
+    >
+      <div className="min-w-0">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h4 className="text-sm font-semibold capitalize">{displayViewName(activeShot.view)}</h4>
+            <p className="text-xs text-muted-foreground">
+              {activeShot.group === "dashboard" ? "Dashboard candidate" : "Inspection image"}
+              {typeof activeShot.qualityScore === "number"
+                ? ` · quality ${Math.round(activeShot.qualityScore * 100)}%`
+                : ""}
+              {typeof activeShot.timestampSeconds === "number"
+                ? ` · ${activeShot.timestampSeconds.toFixed(1)}s`
+                : ""}
+            </p>
+          </div>
+          <div className="flex items-center gap-1">
+            <Button type="button" variant="outline" size="icon" onClick={() => step(-1)} aria-label="Previous image">
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <Button type="button" variant="outline" size="icon" onClick={() => step(1)} aria-label="Next image">
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              onClick={() => setZoom((value) => Math.max(1, value - 0.25))}
+              aria-label="Zoom out"
+            >
+              <ZoomOut className="h-4 w-4" />
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              onClick={() => setZoom((value) => Math.min(3, value + 0.25))}
+              aria-label="Zoom in"
+            >
+              <ZoomIn className="h-4 w-4" />
+            </Button>
+            <Button type="button" variant="outline" size="icon" onClick={() => setZoom(1)} aria-label="Reset zoom">
+              <RotateCcw className="h-4 w-4" />
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              onClick={() => setIsFullscreen((value) => !value)}
+              aria-label={isFullscreen ? "Exit fullscreen" : "Open fullscreen"}
+            >
+              {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+            </Button>
+          </div>
+        </div>
+        <div
+          className={
+            isFullscreen
+              ? "min-h-0 flex-1 overflow-auto bg-black"
+              : "h-[54vh] min-h-[360px] overflow-auto rounded-lg border border-border bg-black"
+          }
+        >
+          {activeSrc && (
+            <img
+              src={activeSrc}
+              alt={`${displayViewName(activeShot.view)} inspection image`}
+              className="mx-auto block max-h-none max-w-none transition-transform duration-150"
+              style={{
+                width: `${zoom * 100}%`,
+                minWidth: "100%",
+                height: "auto",
+              }}
+            />
+          )}
+        </div>
+      </div>
+
+      <div className={isFullscreen ? "border-t border-border bg-background p-3" : "min-w-0"}>
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <h4 className="text-sm font-semibold">Angle shots</h4>
+          {typeof framesAnalyzed === "number" && (
+            <span className="text-xs text-muted-foreground">{framesAnalyzed} frames analyzed</span>
+          )}
+        </div>
+        <div
+          className={
+            isFullscreen
+              ? "flex gap-2 overflow-x-auto pb-1"
+              : "grid max-h-[54vh] grid-cols-2 gap-2 overflow-y-auto pr-1"
+          }
+        >
+          {shots.map((shot, index) => {
+            const previewPath = uploadPath(shot.previewPath || shot.imagePath);
+            if (!previewPath) return null;
+            const isActive = index === activeIndex;
+            return (
+              <button
+                type="button"
+                key={shot.id}
+                onClick={() => selectIndex(index)}
+                className={`min-w-0 overflow-hidden rounded-lg border bg-background text-left transition ${
+                  isActive ? "border-primary ring-2 ring-primary/25" : "border-border hover:border-primary/60"
+                } ${isFullscreen ? "w-36 shrink-0" : ""}`}
+              >
+                <div className="relative aspect-video bg-black">
+                  <img
+                    src={`${BACKEND_BASE_URL}/${previewPath}`}
+                    alt={`${displayViewName(shot.view)} preview`}
+                    className="h-full w-full object-cover"
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-2 px-2 py-1.5 text-xs">
+                  <span className="truncate font-medium capitalize">{displayViewName(shot.view)}</span>
+                  {typeof shot.score === "number" && (
+                    <span className="font-mono text-muted-foreground">{Math.round(shot.score * 100)}%</span>
+                  )}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        {dashboardCount > 0 && (
+          <div className="mt-3 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+            <span className="flex items-center gap-2">
+              <Gauge className="h-4 w-4" />
+              Dashboard candidates
+            </span>
+            <span className="font-mono">{dashboardCount}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  if (isFullscreen) return viewer;
+
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader className="border-b border-border bg-secondary/30">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <CardTitle className="flex items-center gap-2">
+            <Camera className="h-5 w-5 text-primary" />
+            Organized Vehicle Shots
+          </CardTitle>
+          {coverage && (
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="outline" className="w-fit rounded-md bg-background font-mono text-[11px] uppercase tracking-normal">
+                {Math.round((coverage.ratio || 0) * 100)}% selected
+              </Badge>
+              {typeof coverage.high_confidence_ratio === "number" && (
+                <Badge variant="outline" className="w-fit rounded-md bg-background font-mono text-[11px] uppercase tracking-normal">
+                  {Math.round((coverage.high_confidence_ratio || 0) * 100)}% high confidence
+                </Badge>
+              )}
+              <Badge variant="outline" className="w-fit rounded-md bg-background font-mono text-[11px] uppercase tracking-normal">
+                {angleCount} angle shots
+              </Badge>
+            </div>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent>{viewer}</CardContent>
+    </Card>
   );
 }
 

@@ -16,7 +16,7 @@ from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
 
 from src.services.frame_extractor import FrameExtractor
-from src.services.frame_organizer import EXTERIOR_VIEWS, VehicleFrameOrganizer
+from src.services.frame_organizer import EXTERIOR_VIEWS, REVIEW_REQUIRED_VIEWS, VehicleFrameOrganizer
 from src.services.vehicle_identifier import VehicleIdentifier
 from src.services.dashboard_detector import DashboardDetector
 from src.services.odometer_reader import OdometerReader
@@ -741,7 +741,14 @@ async def _process_odometer(request: ProcessRequest, odometer_reader: OdometerRe
         if odometer_data.get("speedometer_image_path"):
             odometer_data["speedometer_image_path"] = convert_to_relative_path(
                 odometer_data["speedometer_image_path"], backend_root)
-        for path_key in ("source_frame_path", "organized_frame_path", "crop_path", "readout_crop_path"):
+        for path_key in (
+            "source_frame_path",
+            "inspection_frame_path",
+            "organized_frame_path",
+            "preview_frame_path",
+            "crop_path",
+            "readout_crop_path",
+        ):
             if odometer_data.get(path_key):
                 odometer_data[path_key] = convert_to_relative_path(odometer_data[path_key], backend_root)
         return odometer_data
@@ -769,7 +776,7 @@ def _dashboard_paths_from_frame_analysis(frame_analysis_abs: Optional[Dict[str, 
     angle_shots = frame_analysis_abs.get("angle_shots") or {}
     for key in ("odometer", "dashboard", "interior"):
         candidate = angle_shots.get(key) or {}
-        path = candidate.get("organized_path") or candidate.get("frame")
+        path = candidate.get("inspection_path") or candidate.get("organized_path") or candidate.get("frame")
         if path and os.path.exists(path) and path not in paths:
             paths.append(path)
 
@@ -812,11 +819,13 @@ def _dashboard_metadata_by_path(frame_analysis_abs: Dict[str, Any]) -> Dict[str,
             "organizer_score": payload.get("score"),
             "high_confidence": payload.get("high_confidence"),
             "source_frame_path": payload.get("frame"),
+            "inspection_frame_path": payload.get("inspection_path"),
             "organized_frame_path": payload.get("organized_path"),
+            "preview_frame_path": payload.get("preview_path"),
             "crop_path": payload.get("crop_path"),
             "readout_crop_path": payload.get("readout_crop_path"),
         }
-        for path_key in ("readout_crop_path", "crop_path", "organized_path", "frame"):
+        for path_key in ("readout_crop_path", "crop_path", "inspection_path", "organized_path", "frame"):
             path = payload.get(path_key)
             if path:
                 metadata_by_path[path] = dict(metadata)
@@ -840,7 +849,7 @@ def _frames_from_frame_analysis(frame_analysis_abs: Dict[str, Any], fallback: Li
             frames.append(path)
 
     for candidate in frame_analysis_abs.get("dashboard_candidates") or []:
-        path = candidate.get("organized_path") or candidate.get("frame")
+        path = candidate.get("inspection_path") or candidate.get("organized_path") or candidate.get("frame")
         if path and os.path.exists(path) and path not in frames:
             frames.append(path)
 
@@ -853,7 +862,7 @@ def _surface_frames_from_frame_analysis(frame_analysis_abs: Dict[str, Any], fall
     angle_shots = frame_analysis_abs.get("angle_shots") or {}
     for view in (*EXTERIOR_VIEWS, "interior"):
         candidate = angle_shots.get(view) or {}
-        path = candidate.get("organized_path") or candidate.get("frame")
+        path = candidate.get("inspection_path") or candidate.get("organized_path") or candidate.get("frame")
         if path and os.path.exists(path) and path not in frames:
             frames.append(path)
 
@@ -870,6 +879,10 @@ def _relativize_frame_analysis(frame_analysis_abs: Dict[str, Any], backend_root:
     def rel_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         out = dict(payload)
         out["frame"] = rel(out.get("frame"))
+        if out.get("inspection_path"):
+            out["inspection_path"] = rel(out.get("inspection_path"))
+        if out.get("preview_path"):
+            out["preview_path"] = rel(out.get("preview_path"))
         if out.get("organized_path"):
             out["organized_path"] = rel(out.get("organized_path"))
         if out.get("crop_path"):
@@ -907,6 +920,10 @@ def _absolutize_frame_analysis(frame_analysis: Dict[str, Any], backend_root: str
     def abs_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         out = dict(payload)
         out["frame"] = abs_path(out.get("frame"))
+        if out.get("inspection_path"):
+            out["inspection_path"] = abs_path(out.get("inspection_path"))
+        if out.get("preview_path"):
+            out["preview_path"] = abs_path(out.get("preview_path"))
         if out.get("organized_path"):
             out["organized_path"] = abs_path(out.get("organized_path"))
         if out.get("crop_path"):
@@ -1190,18 +1207,7 @@ def _process_temporal_coverage_evidence(
 
 
 def _process_named_view_evidence(frame_analysis: Dict[str, Any]) -> Dict[str, Any]:
-    required = [
-        "front",
-        "front-left",
-        "left",
-        "rear-left",
-        "rear",
-        "rear-right",
-        "right",
-        "front-right",
-        "interior",
-        "dashboard",
-    ]
+    required = list(REVIEW_REQUIRED_VIEWS)
     angle_shots = frame_analysis.get("angle_shots") if isinstance(frame_analysis.get("angle_shots"), dict) else {}
     coverage = frame_analysis.get("coverage") if isinstance(frame_analysis.get("coverage"), dict) else {}
     present = set(coverage.get("present_views") or [])
