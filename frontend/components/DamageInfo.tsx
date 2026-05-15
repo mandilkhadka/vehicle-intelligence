@@ -21,6 +21,10 @@ interface DamageInfoProps {
     rust?: { count?: number; detected?: boolean };
     cracks?: { count?: number; detected?: boolean };
     paint_damage?: { count?: number; detected?: boolean };
+    wheel_damage?: { count?: number; detected?: boolean };
+    broken_lights?: { count?: number; detected?: boolean };
+    missing_parts?: { count?: number; detected?: boolean };
+    panel_misalignment?: { count?: number; detected?: boolean };
     severity?: string;
     locations?: DamageLocation[];
   };
@@ -51,7 +55,20 @@ export default function DamageInfo({ damage }: DamageInfoProps) {
   const rust = damage.rust?.count || 0;
   const cracks = damage.cracks?.count || 0;
   const paintDamage = damage.paint_damage?.count || 0;
-  const total = scratches + dents + rust + cracks + paintDamage;
+  const wheelDamage = damage.wheel_damage?.count || 0;
+  const brokenLights = damage.broken_lights?.count || 0;
+  const missingParts = damage.missing_parts?.count || 0;
+  const panelMisalignment = damage.panel_misalignment?.count || 0;
+  const total =
+    scratches +
+    dents +
+    rust +
+    cracks +
+    paintDamage +
+    wheelDamage +
+    brokenLights +
+    missingParts +
+    panelMisalignment;
   const severity = (damage.severity || "low").toLowerCase();
   const visibleSnapshots =
     damage.locations?.filter((l) => l.snapshot && (l.confidence || 0) >= 0.3).slice(0, 9) || [];
@@ -65,12 +82,16 @@ export default function DamageInfo({ damage }: DamageInfoProps) {
         </Badge>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           <Stat label="Scratches" value={scratches} />
           <Stat label="Dents" value={dents} />
           <Stat label="Rust" value={rust} />
           <Stat label="Cracks" value={cracks} />
           <Stat label="Paint" value={paintDamage} />
+          <Stat label="Wheels" value={wheelDamage} />
+          <Stat label="Lights" value={brokenLights} />
+          <Stat label="Missing" value={missingParts} />
+          <Stat label="Alignment" value={panelMisalignment} />
         </div>
 
         <p className="text-sm text-muted-foreground">

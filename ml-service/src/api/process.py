@@ -547,6 +547,7 @@ async def process_video(request: ProcessRequest, http_request: Request):
         async def detect_damage():
             logger.info("  [Parallel] Starting damage detection...")
             result = await damage_detector.detect(surface_frames_absolute, request.inspection_id)
+            _attach_damage_angle_metadata(result, frame_analysis_abs)
             for loc in result.get("locations", []) or []:
                 if loc.get("frame"):
                     loc["frame"] = convert_to_relative_path(loc["frame"], backend_root)
@@ -594,6 +595,7 @@ async def process_video(request: ProcessRequest, http_request: Request):
 
         parallel_duration = time.time() - parallel_start
         logger.info(f"Parallel ML processing completed in {parallel_duration:.2f} seconds")
+        _merge_visual_damage_categories(damage_data, gemini_data)
 
         # Merge Gemini's fine-grained vehicle ID into vehicle_info when available.
         # Gemini can name a specific model and year; CLIP zero-shot cannot.
@@ -981,6 +983,185 @@ def _relativize_modification_analysis_paths(
     return out
 
 
+def _attach_damage_angle_metadata(
+    damage_data: Dict[str, Any],
+    frame_analysis_abs: Optional[Dict[str, Any]],
+) -> None:
+    """Attach organizer view metadata to damage detections for 360 viewer linking."""
+    if not isinstance(damage_data, dict) or not isinstance(frame_analysis_abs, dict):
+        return
+
+    metadata_by_path: Dict[str, Dict[str, Any]] = {}
+
+    def register(payload: Dict[str, Any], view: str) -> None:
+        if not isinstance(payload, dict):
+            return
+        metadata = {
+            "angle": payload.get("view") or view,
+            "linked_view": payload.get("view") or view,
+            "frame_index": payload.get("frame_index"),
+            "source_frame_index": payload.get("source_frame_index"),
+            "timestamp_seconds": payload.get("timestamp_seconds"),
+        }
+        for path_key in ("inspection_path", "organized_path", "frame"):
+            path = payload.get(path_key)
+            if path:
+                metadata_by_path[str(path)] = metadata
+
+    for view, payload in (frame_analysis_abs.get("angle_shots") or {}).items():
+        register(payload, view)
+
+    for index, payload in enumerate(frame_analysis_abs.get("representative_frames") or []):
+        register(payload, payload.get("view") or f"representative_{index}")
+
+    for location in damage_data.get("locations") or []:
+        if not isinstance(location, dict):
+            continue
+        frame = location.get("frame")
+        metadata = metadata_by_path.get(str(frame)) if frame else None
+        if metadata:
+            for key, value in metadata.items():
+                if value is not None and location.get(key) is None:
+                    location[key] = value
+
+        if location.get("severity") is None:
+            confidence = float(location.get("confidence") or 0.0)
+            location["severity"] = "high" if confidence >= 0.75 else "medium" if confidence >= 0.45 else "low"
+
+
+_DAMAGE_CATEGORY_ALIASES = {
+    "scratch": "scratches",
+    "scratches": "scratches",
+    "dent": "dents",
+    "dents": "dents",
+    "rust": "rust",
+    "crack": "cracks",
+    "cracks": "cracks",
+    "paint": "paint_damage",
+    "paint_damage": "paint_damage",
+    "paint_chip": "paint_damage",
+    "paint_chips": "paint_damage",
+    "wheel_damage": "wheel_damage",
+    "rim_damage": "wheel_damage",
+    "wheel": "wheel_damage",
+    "broken_light": "broken_lights",
+    "broken_lights": "broken_lights",
+    "light_damage": "broken_lights",
+    "missing_part": "missing_parts",
+    "missing_parts": "missing_parts",
+    "missing_trim": "missing_parts",
+    "panel_misalignment": "panel_misalignment",
+    "misalignment": "panel_misalignment",
+}
+
+_STRUCTURED_DAMAGE_CATEGORIES = (
+    "scratches",
+    "dents",
+    "rust",
+    "cracks",
+    "paint_damage",
+    "wheel_damage",
+    "broken_lights",
+    "missing_parts",
+    "panel_misalignment",
+)
+
+_DAMAGE_LOCATION_TYPES = {
+    "scratches": "scratch",
+    "dents": "dent",
+    "rust": "rust",
+    "cracks": "crack",
+    "paint_damage": "paint_damage",
+    "wheel_damage": "wheel_damage",
+    "broken_lights": "broken_light",
+    "missing_parts": "missing_part",
+    "panel_misalignment": "panel_misalignment",
+}
+
+_MIN_VISUAL_DAMAGE_CONFIDENCE = 0.55
+
+
+def _merge_visual_damage_categories(
+    damage_data: Dict[str, Any],
+    gemini_analysis: Dict[str, Any],
+) -> None:
+    """Ensure every requested damage category is structured and fold VLM item types into counts."""
+    if not isinstance(damage_data, dict):
+        return
+
+    for category in _STRUCTURED_DAMAGE_CATEGORIES:
+        existing = damage_data.get(category)
+        if not isinstance(existing, dict):
+            damage_data[category] = {"count": 0, "detected": False}
+        else:
+            count = int(existing.get("count") or 0)
+            existing["count"] = count
+            existing["detected"] = bool(existing.get("detected") or count > 0)
+
+    if not isinstance(gemini_analysis, dict):
+        return
+
+    locations = damage_data.setdefault("locations", [])
+    if not isinstance(locations, list):
+        locations = []
+        damage_data["locations"] = locations
+
+    existing_location_keys = {
+        (
+            str(location.get("type") or "").strip().lower().replace("-", "_"),
+            str(location.get("frame") or ""),
+            str(location.get("source_frame_index") or ""),
+            str(location.get("linked_view") or location.get("angle") or ""),
+        )
+        for location in locations
+        if isinstance(location, dict)
+    }
+
+    for item in gemini_analysis.get("damage_items") or []:
+        if not isinstance(item, dict):
+            continue
+        raw_type = str(item.get("type") or "").strip().lower().replace("-", "_")
+        category = _DAMAGE_CATEGORY_ALIASES.get(raw_type)
+        if not category:
+            continue
+        confidence = item.get("confidence")
+        try:
+            confidence_value = float(confidence) if confidence is not None else None
+        except (TypeError, ValueError):
+            confidence_value = None
+        if confidence_value is not None and confidence_value < _MIN_VISUAL_DAMAGE_CONFIDENCE:
+            continue
+        current = damage_data.setdefault(category, {"count": 0, "detected": False})
+
+        linked_view = item.get("organizer_view") or item.get("view")
+        location_type = _DAMAGE_LOCATION_TYPES.get(category, raw_type if raw_type != "other" else category)
+        location_key = (
+            location_type,
+            str(item.get("frame") or ""),
+            str(item.get("source_frame_index") or ""),
+            str(linked_view or ""),
+        )
+        if location_key in existing_location_keys:
+            continue
+        current["count"] = int(current.get("count") or 0) + 1
+        current["detected"] = True
+        visual_location = {
+            "type": location_type,
+            "severity": item.get("severity") or "low",
+            "confidence": item.get("confidence"),
+            "frame": item.get("frame"),
+            "angle": linked_view,
+            "linked_view": linked_view,
+            "frame_index": item.get("organizer_frame_index") or item.get("frame_index"),
+            "source_frame_index": item.get("source_frame_index"),
+            "timestamp_seconds": item.get("timestamp_seconds"),
+            "notes": item.get("notes"),
+            "source": "vlm",
+        }
+        locations.append({key: value for key, value in visual_location.items() if value is not None})
+        existing_location_keys.add(location_key)
+
+
 def _build_process_pipeline_audit(
     *,
     frame_analysis: Dict[str, Any],
@@ -1124,7 +1305,7 @@ def _build_process_pipeline_audit(
             "damage_detection",
             bool(damage_evidence["has_required_categories"])
             and damage_evidence.get("severity") not in (None, ""),
-            "Detect scratches, dents, rust, cracks, paint damage, locations, and severity.",
+            "Detect scratches, dents, rust, cracks, paint damage, wheel damage, broken lights, missing parts, panel alignment, locations, and severity.",
             damage_evidence,
         ),
         _audit_check(
@@ -1207,7 +1388,12 @@ def _process_temporal_coverage_evidence(
 
 
 def _process_named_view_evidence(frame_analysis: Dict[str, Any]) -> Dict[str, Any]:
-    required = list(REVIEW_REQUIRED_VIEWS)
+    required = list(EXTERIOR_VIEWS) + ["interior", "dashboard"]
+    detail_views = [
+        view
+        for view in REVIEW_REQUIRED_VIEWS
+        if view not in required
+    ]
     angle_shots = frame_analysis.get("angle_shots") if isinstance(frame_analysis.get("angle_shots"), dict) else {}
     coverage = frame_analysis.get("coverage") if isinstance(frame_analysis.get("coverage"), dict) else {}
     present = set(coverage.get("present_views") or [])
@@ -1220,11 +1406,14 @@ def _process_named_view_evidence(frame_analysis: Dict[str, Any]) -> Dict[str, An
     )
     normalized_present = sorted(present | ({"dashboard"} if dashboard_present else set()))
     missing = [view for view in required if view not in normalized_present]
+    missing_detail_views = [view for view in detail_views if view not in normalized_present]
 
     return {
         "required_named_views": required,
+        "detail_views": detail_views,
         "present_named_views": normalized_present,
         "missing_named_views": missing,
+        "missing_detail_views": missing_detail_views,
         "dashboard_candidates": len(frame_analysis.get("dashboard_candidates") or []),
         "has_required_named_views": len(missing) == 0,
     }
@@ -1298,7 +1487,7 @@ def _process_damage_category_evidence(
     damage: Dict[str, Any],
     gemini_analysis: Dict[str, Any],
 ) -> Dict[str, Any]:
-    required = ["scratches", "dents", "rust", "cracks", "paint_damage"]
+    required = list(_STRUCTURED_DAMAGE_CATEGORIES)
     category_counts = {
         key: (damage.get(key) or {}).get("count")
         for key in required

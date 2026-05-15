@@ -284,6 +284,10 @@ class ReportGenerator:
         rust_count = damage.get('rust', {}).get('count', 0)
         cracks_count = damage.get('cracks', {}).get('count', 0)
         paint_damage_count = damage.get('paint_damage', {}).get('count', 0)
+        wheel_damage_count = damage.get('wheel_damage', {}).get('count', 0)
+        broken_lights_count = damage.get('broken_lights', {}).get('count', 0)
+        missing_parts_count = damage.get('missing_parts', {}).get('count', 0)
+        panel_misalignment_count = damage.get('panel_misalignment', {}).get('count', 0)
         damage_severity = damage.get('severity', 'low')
         
         # Build exhaust information
@@ -352,6 +356,10 @@ The "Gemini Visual Analysis" section below contains direct observations from a m
 - Rust Areas Detected: {rust_count}
 - Cracks Detected: {cracks_count}
 - Paint Damage Areas Detected: {paint_damage_count}
+- Wheel/Rim Damage Areas Detected: {wheel_damage_count}
+- Broken Light Areas Detected: {broken_lights_count}
+- Missing Trim/Parts Detected: {missing_parts_count}
+- Panel Misalignment Areas Detected: {panel_misalignment_count}
 - Overall Severity: {damage_severity}
 
 ### Exhaust System:
@@ -379,7 +387,8 @@ The "Gemini Visual Analysis" section below contains direct observations from a m
 4. **Damage Assessment**:
    - Provide specific details about the type and extent of damage found
    - Use severity levels: "low" (minor cosmetic issues), "moderate" (noticeable damage), "high" (significant structural concerns)
-   - Be descriptive about what was found (e.g., "3 minor scratches on passenger side", "1 dent on rear bumper")
+   - Be descriptive about what was found (e.g., "3 minor scratches on passenger side", "1 dent on rear bumper", "1 broken tail light")
+   - Include scratches, dents, rust, cracks, paint damage, wheel/rim damage, broken lights, missing parts, and panel misalignment when present
 
 5. **Exhaust Status**:
    - Clearly state if exhaust is "stock" (original) or "modified" (aftermarket)
@@ -443,6 +452,10 @@ Return ONLY valid JSON in this exact structure (no markdown, no code blocks, jus
     "rust": {rust_count},
     "cracks": {cracks_count},
     "paint_damage": {paint_damage_count},
+    "wheel_damage": {wheel_damage_count},
+    "broken_lights": {broken_lights_count},
+    "missing_parts": {missing_parts_count},
+    "panel_misalignment": {panel_misalignment_count},
     "details": "Detailed description of all damage found, including locations and severity"
   }},
   "exhaust_status": {{
@@ -645,12 +658,25 @@ IMPORTANT:
             "odometer_reading": self._odometer_report_payload(odometer),
             "damage_assessment": {
                 "overall_severity": damage.get("severity", "low"),
+                "scratches": damage.get("scratches", {}).get("count", 0),
+                "dents": damage.get("dents", {}).get("count", 0),
+                "rust": damage.get("rust", {}).get("count", 0),
+                "cracks": damage.get("cracks", {}).get("count", 0),
+                "paint_damage": damage.get("paint_damage", {}).get("count", 0),
+                "wheel_damage": damage.get("wheel_damage", {}).get("count", 0),
+                "broken_lights": damage.get("broken_lights", {}).get("count", 0),
+                "missing_parts": damage.get("missing_parts", {}).get("count", 0),
+                "panel_misalignment": damage.get("panel_misalignment", {}).get("count", 0),
                 "details": (
                     f"Found {damage.get('scratches', {}).get('count', 0)} scratches, "
                     f"{damage.get('dents', {}).get('count', 0)} dents, "
                     f"{damage.get('rust', {}).get('count', 0)} rust areas, "
-                    f"{damage.get('cracks', {}).get('count', 0)} cracks, and "
-                    f"{damage.get('paint_damage', {}).get('count', 0)} paint damage areas."
+                    f"{damage.get('cracks', {}).get('count', 0)} cracks, "
+                    f"{damage.get('paint_damage', {}).get('count', 0)} paint damage areas, "
+                    f"{damage.get('wheel_damage', {}).get('count', 0)} wheel/rim damage areas, "
+                    f"{damage.get('broken_lights', {}).get('count', 0)} broken light areas, "
+                    f"{damage.get('missing_parts', {}).get('count', 0)} missing trim/parts, and "
+                    f"{damage.get('panel_misalignment', {}).get('count', 0)} panel misalignment areas."
                 ),
             },
             "exhaust_status": {

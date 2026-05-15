@@ -98,6 +98,22 @@ export interface DamageInfo {
     count: number;
     detected: boolean;
   };
+  wheel_damage?: {
+    count: number;
+    detected: boolean;
+  };
+  broken_lights?: {
+    count: number;
+    detected: boolean;
+  };
+  missing_parts?: {
+    count: number;
+    detected: boolean;
+  };
+  panel_misalignment?: {
+    count: number;
+    detected: boolean;
+  };
   severity: DamageSeverity;
   locations?: Array<{
     type: string;
@@ -105,6 +121,12 @@ export interface DamageInfo {
     snapshot?: string;
     confidence: number;
     bbox?: [number, number, number, number];
+    severity?: DamageSeverity;
+    angle?: string;
+    linked_view?: string;
+    frame_index?: number;
+    source_frame_index?: number;
+    timestamp_seconds?: number;
   }>;
 }
 

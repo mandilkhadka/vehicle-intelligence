@@ -14,6 +14,17 @@ echo ""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+if [ -s "$HOME/.nvm/nvm.sh" ]; then
+    # Ensure native Node dependencies, especially better-sqlite3, run on the
+    # repo's supported Node version instead of a newer system Node.
+    unset npm_config_prefix
+    # shellcheck source=/dev/null
+    . "$HOME/.nvm/nvm.sh"
+    if [ -f "$SCRIPT_DIR/.nvmrc" ]; then
+        nvm use --silent > /dev/null
+    fi
+fi
+
 MIN_PYTHON_VERSION="3.10"
 
 # PIDs for cleanup

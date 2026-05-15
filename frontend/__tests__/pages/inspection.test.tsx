@@ -239,6 +239,25 @@ describe("InspectionPage", () => {
   it("renders organized vehicle shots when frame analysis is available", async () => {
     (getInspection as jest.Mock).mockResolvedValue({
       ...mockInspectionData,
+      damage_summary: JSON.stringify({
+        scratches: { count: 1, detected: true },
+        dents: { count: 0, detected: false },
+        rust: { count: 0, detected: false },
+        cracks: { count: 0, detected: false },
+        paint_damage: { count: 0, detected: false },
+        severity: "low",
+        locations: [
+          {
+            type: "scratch",
+            frame: "frames/test/organized/angle_front.jpg",
+            confidence: 0.81,
+            severity: "low",
+            bbox: [10, 20, 90, 80],
+            angle: "front",
+            linked_view: "front",
+          },
+        ],
+      }),
       inspection_report: JSON.stringify({
         summary: "Vehicle is in good condition with minor cosmetic damage.",
         recommendations: ["Address scratches"],
@@ -285,10 +304,12 @@ describe("InspectionPage", () => {
     render(<InspectionPage />);
 
     await waitFor(() => {
-      expect(screen.getByText("Organized Vehicle Shots")).toBeInTheDocument();
+      expect(screen.getByText("Interactive 360 Inspection Viewer")).toBeInTheDocument();
       expect(screen.getByText("100% selected")).toBeInTheDocument();
       expect(screen.getByText("50% high confidence")).toBeInTheDocument();
-      expect(screen.getByText("Angle shots")).toBeInTheDocument();
+      expect(screen.getByText("360 Frames")).toBeInTheDocument();
+      expect(screen.getByText("AI Damage Report")).toBeInTheDocument();
+      expect(screen.getByText(/scratch · front/i)).toBeInTheDocument();
       expect(screen.getByText("Dashboard candidates")).toBeInTheDocument();
       expect(screen.getByText("29 frames analyzed")).toBeInTheDocument();
     });

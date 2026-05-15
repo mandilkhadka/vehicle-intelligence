@@ -136,6 +136,10 @@ export interface MLServiceResponse {
     rust: DamageItem[];
     cracks?: DamageItem[];
     paint_damage?: DamageItem[];
+    wheel_damage?: DamageItem[];
+    broken_lights?: DamageItem[];
+    missing_parts?: DamageItem[];
+    panel_misalignment?: DamageItem[];
   } | null;
   damage?: {
     scratches: { count: number; detected: boolean };
@@ -143,6 +147,10 @@ export interface MLServiceResponse {
     rust: { count: number; detected: boolean };
     cracks?: { count: number; detected: boolean };
     paint_damage?: { count: number; detected: boolean };
+    wheel_damage?: { count: number; detected: boolean };
+    broken_lights?: { count: number; detected: boolean };
+    missing_parts?: { count: number; detected: boolean };
+    panel_misalignment?: { count: number; detected: boolean };
     severity: string;
     locations?: DamageItem[];
   } | null;

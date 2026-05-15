@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 # Using evenly-spaced selection for 360-degree coverage
 MAX_FRAMES = 15
 
+# Low sensitivity mode: require stronger evidence before surfacing a local
+# computer-vision damage finding. This reduces noisy scratches/paint/dent hits.
+DAMAGE_CONFIDENCE_THRESHOLD = 0.55
+
 
 class DamageDetector:
     """Detects vehicle damage (scratches, dents, rust, cracks, paint damage)"""
@@ -65,6 +69,10 @@ class DamageDetector:
         rust_count = 0
         cracks_count = 0
         paint_damage_count = 0
+        wheel_damage_count = 0
+        broken_lights_count = 0
+        missing_parts_count = 0
+        panel_misalignment_count = 0
         damage_locations = []
 
         # Apply frame limiting for performance (Phase 2 optimization)
@@ -97,8 +105,6 @@ class DamageDetector:
             "crack": [],
             "paint_damage": [],
         }
-        MIN_CONFIDENCE_THRESHOLD = 0.3  # Filter out detections below 30% confidence
-
         for frame_idx, frame_path in enumerate(selected_frames):
             try:
                 # Load image
@@ -189,7 +195,7 @@ class DamageDetector:
                         )
                         
                         # Filter low confidence detections
-                        if confidence < MIN_CONFIDENCE_THRESHOLD:
+                        if confidence < DAMAGE_CONFIDENCE_THRESHOLD:
                             continue
                         
                         # Check for duplicates (same location in nearby frames)
@@ -242,6 +248,7 @@ class DamageDetector:
                                 "frame": frame_path,
                                 "snapshot": snapshot_path,
                                 "confidence": confidence,
+                                "severity": "medium" if confidence >= 0.65 else "low",
                                 "bbox": [vx1 + x_expanded, vy1 + y_expanded, vx1 + x_expanded + w_expanded, vy1 + y_expanded + h_expanded],
                             })
 
@@ -281,7 +288,7 @@ class DamageDetector:
                         area_confidence = min(0.9, area / 50000.0)
                         confidence = (color_confidence + area_confidence) / 2.0
                         
-                        if confidence < MIN_CONFIDENCE_THRESHOLD:
+                        if confidence < DAMAGE_CONFIDENCE_THRESHOLD:
                             continue
                         
                         # Check for duplicates
@@ -330,6 +337,7 @@ class DamageDetector:
                                 "frame": frame_path,
                                 "snapshot": snapshot_path,
                                 "confidence": confidence,
+                                "severity": "high" if confidence >= 0.7 else "medium",
                                 "bbox": [vx1 + x_expanded, vy1 + y_expanded, vx1 + x_expanded + w_expanded, vy1 + y_expanded + h_expanded],
                             })
 
@@ -387,7 +395,7 @@ class DamageDetector:
                         continue
 
                     confidence = min(0.9, 0.35 + (local_contrast * 0.4) + (edge_density * 0.4))
-                    if confidence < MIN_CONFIDENCE_THRESHOLD:
+                    if confidence < DAMAGE_CONFIDENCE_THRESHOLD:
                         continue
 
                     x_expanded = max(0, x - padding)
@@ -419,6 +427,7 @@ class DamageDetector:
                         "frame": frame_path,
                         "snapshot": snapshot_path,
                         "confidence": confidence,
+                        "severity": "medium" if confidence >= 0.6 else "low",
                         "bbox": [vx1 + x_expanded, vy1 + y_expanded, vx1 + x_expanded + w_expanded, vy1 + y_expanded + h_expanded],
                     })
 
@@ -473,7 +482,7 @@ class DamageDetector:
                                 shadow_confidence = min(0.6, shadow_contrast * 2)
                                 confidence = (area_confidence * 0.3 + circularity_confidence * 0.3 + shadow_confidence * 0.4)
                                 
-                                if confidence < MIN_CONFIDENCE_THRESHOLD:
+                                if confidence < DAMAGE_CONFIDENCE_THRESHOLD:
                                     continue
                                 
                                 # Check for duplicates
@@ -522,6 +531,7 @@ class DamageDetector:
                                         "frame": frame_path,
                                         "snapshot": snapshot_path,
                                         "confidence": confidence,
+                                        "severity": "high" if confidence >= 0.65 else "medium",
                                         "bbox": [vx1 + x_expanded, vy1 + y_expanded, vx1 + x_expanded + w_expanded, vy1 + y_expanded + h_expanded],
                                     })
 
@@ -533,7 +543,17 @@ class DamageDetector:
         damage_locations.sort(key=lambda x: x.get("confidence", 0), reverse=True)
         
         # Determine severity based on damage count and quality
-        total_damage = scratches_count + dents_count + rust_count + cracks_count + paint_damage_count
+        total_damage = (
+            scratches_count
+            + dents_count
+            + rust_count
+            + cracks_count
+            + paint_damage_count
+            + wheel_damage_count
+            + broken_lights_count
+            + missing_parts_count
+            + panel_misalignment_count
+        )
         avg_confidence = np.mean([loc.get("confidence", 0) for loc in damage_locations]) if damage_locations else 0
         
         # Severity calculation: consider both count and confidence
@@ -566,6 +586,22 @@ class DamageDetector:
             "paint_damage": {
                 "count": paint_damage_count,
                 "detected": paint_damage_count > 0,
+            },
+            "wheel_damage": {
+                "count": wheel_damage_count,
+                "detected": wheel_damage_count > 0,
+            },
+            "broken_lights": {
+                "count": broken_lights_count,
+                "detected": broken_lights_count > 0,
+            },
+            "missing_parts": {
+                "count": missing_parts_count,
+                "detected": missing_parts_count > 0,
+            },
+            "panel_misalignment": {
+                "count": panel_misalignment_count,
+                "detected": panel_misalignment_count > 0,
             },
             "severity": severity,
             "locations": damage_locations[:20],  # Limit to top 20 locations by confidence

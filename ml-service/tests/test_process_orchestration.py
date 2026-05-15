@@ -8,7 +8,9 @@ from src.api.process import (
     ProcessRequest,
     RetryVlmRequest,
     _build_process_pipeline_audit,
+    _merge_visual_damage_categories,
     _merge_vehicle_identity_override,
+    _process_named_view_evidence,
     process_video,
     retry_vlm_analysis,
 )
@@ -215,6 +217,11 @@ class FakeReportGenerator:
         assert data["odometer"]["source_frame_index"] == 12
         assert data["odometer"]["timestamp_seconds"] == 0.4
         assert data["damage"]["locations"][0]["frame"].startswith("frames/")
+        assert data["damage"]["locations"][0]["linked_view"] == "front"
+        assert data["damage"]["locations"][0]["source_frame_index"] == 12
+        assert data["damage"]["broken_lights"]["count"] == 1
+        assert data["damage"]["locations"][1]["type"] == "broken_light"
+        assert data["damage"]["locations"][1]["linked_view"] == "front"
         assert data["gemini_analysis"]["damage_items"][0]["type"] == "scratch"
         assert data["gemini_analysis"]["modification_items"][0]["part"] == "wheels"
         assert data["modification"]["items"][0]["part"] == "wheels"
@@ -257,10 +264,22 @@ class FakeGeminiAnalyzer:
                     "location": "front bumper",
                     "severity": "minor",
                     "frame": frames[0],
+                    "organizer_view": "front",
                     "frame_index": 1,
                     "source_frame_index": 12,
                     "timestamp_seconds": 0.4,
                     "confidence": 0.82,
+                },
+                {
+                    "type": "broken_light",
+                    "location": "front lamp",
+                    "severity": "high",
+                    "frame": frames[0],
+                    "organizer_view": "front",
+                    "frame_index": 1,
+                    "source_frame_index": 12,
+                    "timestamp_seconds": 0.4,
+                    "confidence": 0.91,
                 }
             ],
             "modification_items": [
@@ -375,6 +394,10 @@ def test_process_video_routes_absolute_paths_to_ml_and_relative_paths_to_respons
     assert response.vehicle_info["year"] == 2024
     assert response.vehicle_info["variant"] == "Touring"
     assert response.damage["locations"][0]["frame"].startswith("frames/")
+    assert response.damage["locations"][0]["angle"] == "front"
+    assert response.damage["locations"][0]["linked_view"] == "front"
+    assert response.damage["locations"][0]["source_frame_index"] == 12
+    assert response.damage["locations"][0]["timestamp_seconds"] == 0.4
     assert response.odometer["speedometer_image_path"].endswith("odometer_readout.jpg")
     assert response.odometer["source_frame_index"] == 12
     assert response.odometer["timestamp_seconds"] == 0.4
@@ -469,6 +492,10 @@ def test_process_pipeline_audit_surfaces_low_confidence_and_unavailable_evidence
             "rust": {"count": 0, "detected": False},
             "cracks": {"count": 0, "detected": False},
             "paint_damage": {"count": 0, "detected": False},
+            "wheel_damage": {"count": 0, "detected": False},
+            "broken_lights": {"count": 0, "detected": False},
+            "missing_parts": {"count": 0, "detected": False},
+            "panel_misalignment": {"count": 0, "detected": False},
         },
         exhaust={"type": "stock", "confidence": 0.8},
         report={
@@ -606,3 +633,66 @@ def test_retry_vlm_analysis_uses_saved_organized_frames_and_merges_result():
     assert response.report["visual_analysis"]["available"] is True
     assert response.report["vehicle_details"]["model"] == "Vision"
     assert "pipeline_audit" not in response.report
+
+
+def test_merge_visual_damage_categories_adds_requested_buckets_and_locations():
+    damage = {
+        "locations": [],
+        "scratches": {"count": 0, "detected": False},
+    }
+    gemini = {
+        "damage_items": [
+            {
+                "type": "panel_misalignment",
+                "severity": "moderate",
+                "confidence": 0.8,
+                "frame": "frames/test/organized/rear.jpg",
+                "view": "rear",
+                "frame_index": 1,
+                "source_frame_index": 44,
+                "timestamp_seconds": 1.8,
+            },
+            {
+                "type": "missing_part",
+                "severity": "low",
+                "confidence": 0.41,
+                "frame": "frames/test/organized/front.jpg",
+                "view": "front",
+            }
+        ]
+    }
+
+    _merge_visual_damage_categories(damage, gemini)
+
+    assert damage["wheel_damage"] == {"count": 0, "detected": False}
+    assert damage["broken_lights"] == {"count": 0, "detected": False}
+    assert damage["missing_parts"] == {"count": 0, "detected": False}
+    assert damage["panel_misalignment"] == {"count": 1, "detected": True}
+    assert damage["locations"][0]["type"] == "panel_misalignment"
+    assert damage["locations"][0]["linked_view"] == "rear"
+
+
+def test_named_view_audit_tracks_detail_views_without_blocking_core_coverage():
+    evidence = _process_named_view_evidence(
+        {
+            "coverage": {
+                "present_views": [
+                    "front",
+                    "front-left",
+                    "left",
+                    "rear-left",
+                    "rear",
+                    "rear-right",
+                    "right",
+                    "front-right",
+                    "interior",
+                ],
+            },
+            "dashboard_candidates": [{"view": "odometer"}],
+            "angle_shots": {},
+        }
+    )
+
+    assert evidence["has_required_named_views"] is True
+    assert evidence["missing_named_views"] == []
+    assert evidence["missing_detail_views"] == ["wheels", "trunk", "engine-bay"]

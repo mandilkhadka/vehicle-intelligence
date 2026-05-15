@@ -354,6 +354,10 @@ export interface MetricsResponse {
     rust: number;
     cracks: number;
     paint_damage: number;
+    wheel_damage?: number;
+    broken_lights?: number;
+    missing_parts?: number;
+    panel_misalignment?: number;
   };
   vehicleBreakdown: Array<{
     brand: string;

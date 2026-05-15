@@ -21,4 +21,8 @@ def test_damage_detector_returns_extended_damage_categories(temp_dir):
     assert result["rust"] == {"count": 0, "detected": False}
     assert result["cracks"] == {"count": 0, "detected": False}
     assert result["paint_damage"] == {"count": 0, "detected": False}
+    assert result["wheel_damage"] == {"count": 0, "detected": False}
+    assert result["broken_lights"] == {"count": 0, "detected": False}
+    assert result["missing_parts"] == {"count": 0, "detected": False}
+    assert result["panel_misalignment"] == {"count": 0, "detected": False}
     assert result["severity"] == "low"

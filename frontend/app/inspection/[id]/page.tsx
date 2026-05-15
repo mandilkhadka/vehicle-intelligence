@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
@@ -158,6 +158,31 @@ type ReviewShot = {
   timestampSeconds?: number;
 };
 
+type DamageLocation = {
+  id: string;
+  type: string;
+  frame?: string;
+  snapshot?: string;
+  confidence?: number;
+  severity?: string;
+  bbox?: [number, number, number, number];
+  angle?: string;
+  linkedView?: string;
+};
+
+const EXTERIOR_360_ORDER = [
+  "front",
+  "front-left",
+  "left",
+  "rear-left",
+  "rear",
+  "rear-right",
+  "right",
+  "front-right",
+];
+
+const INTERIOR_360_ORDER = ["interior", "dashboard", "odometer", "wheels", "trunk", "engine-bay"];
+
 const REVIEW_VIEW_ORDER = [
   "front",
   "front-left",
@@ -206,6 +231,59 @@ function buildReviewShots(frameAnalysis: any): ReviewShot[] {
   });
 
   return shots;
+}
+
+function normalizeDamageLocations(damage: any): DamageLocation[] {
+  const locations = Array.isArray(damage?.locations) ? damage.locations : [];
+  return locations
+    .map((location: any, index: number) => {
+      if (!location || typeof location !== "object") return null;
+      const bbox = Array.isArray(location.bbox) && location.bbox.length === 4
+        ? location.bbox.map((value: unknown) => Number(value)) as [number, number, number, number]
+        : undefined;
+      return {
+        id: `${location.type || "damage"}-${index}`,
+        type: String(location.type || "damage"),
+        frame: typeof location.frame === "string" ? location.frame : undefined,
+        snapshot: typeof location.snapshot === "string" ? location.snapshot : undefined,
+        confidence: typeof location.confidence === "number" ? location.confidence : undefined,
+        severity:
+          typeof location.severity === "string"
+            ? location.severity
+            : typeof location.confidence === "number" && location.confidence >= 0.75
+              ? "high"
+              : typeof location.confidence === "number" && location.confidence >= 0.45
+                ? "medium"
+                : undefined,
+        bbox,
+        angle: typeof location.angle === "string" ? location.angle : undefined,
+        linkedView: typeof location.linked_view === "string" ? location.linked_view : undefined,
+      };
+    })
+    .filter(Boolean) as DamageLocation[];
+}
+
+function uploadKey(path: unknown): string | null {
+  const normalized = uploadPath(path);
+  if (!normalized) return null;
+  return normalized.replace(/^uploads\//, "");
+}
+
+function damageMatchesShot(location: DamageLocation, shot: ReviewShot): boolean {
+  const linkedView = location.linkedView || location.angle;
+  if (linkedView && linkedView === shot.view) return true;
+
+  const locationFrame = uploadKey(location.frame);
+  if (!locationFrame) return false;
+  return [shot.imagePath, shot.previewPath].some((path) => uploadKey(path) === locationFrame);
+}
+
+function orderedShots(shots: ReviewShot[], order: string[]): ReviewShot[] {
+  const byView = new Map<string, ReviewShot>();
+  shots.forEach((shot) => {
+    if (!byView.has(shot.view)) byView.set(shot.view, shot);
+  });
+  return order.map((view) => byView.get(view)).filter(Boolean) as ReviewShot[];
 }
 
 function hasVehicleIdentityEvidence(evidence: Record<string, any>): boolean {
@@ -436,6 +514,7 @@ function InspectionContent({
     ? frameAnalysis.dashboard_candidates.slice(0, 6)
     : [];
   const reviewShots = buildReviewShots(frameAnalysis);
+  const damageLocations = normalizeDamageLocations(damage);
 
   const retryVlm = async () => {
     setRetryingVlm(true);
@@ -555,6 +634,7 @@ function InspectionContent({
       {reviewShots.length > 0 && (
         <InspectionImageReview
           shots={reviewShots}
+          damageLocations={damageLocations}
           coverage={frameAnalysis?.coverage}
           framesAnalyzed={frameAnalysis?.frames_analyzed}
           angleCount={organizedShots.length}
@@ -805,43 +885,128 @@ function InspectionContent({
 
 function InspectionImageReview({
   shots,
+  damageLocations,
   coverage,
   framesAnalyzed,
   angleCount,
   dashboardCount,
 }: {
   shots: ReviewShot[];
+  damageLocations: DamageLocation[];
   coverage?: any;
   framesAnalyzed?: number;
   angleCount: number;
   dashboardCount: number;
 }) {
+  const exteriorShots = useMemo(() => orderedShots(shots, EXTERIOR_360_ORDER), [shots]);
+  const interiorShots = useMemo(() => orderedShots(shots, INTERIOR_360_ORDER), [shots]);
+  const [mode, setMode] = useState<"exterior" | "interior">(
+    exteriorShots.length > 0 ? "exterior" : "interior",
+  );
   const [activeIndex, setActiveIndex] = useState(0);
   const [zoom, setZoom] = useState(1);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const activeShot = shots[Math.min(activeIndex, shots.length - 1)] || shots[0];
+  const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{ pointerId: number; startX: number; startIndex: number } | null>(null);
+  const mouseDragRef = useRef<{ startX: number; startIndex: number } | null>(null);
+  const activeShots =
+    mode === "exterior"
+      ? exteriorShots.length > 0 ? exteriorShots : shots
+      : interiorShots.length > 0 ? interiorShots : shots;
+  const activeShot = activeShots[Math.min(activeIndex, activeShots.length - 1)] || activeShots[0] || shots[0];
   const activePath = uploadPath(activeShot?.imagePath);
   const activeSrc = activePath ? `${BACKEND_BASE_URL}/${activePath}` : "";
+  const activeDamageLocations = damageLocations.filter((location) => damageMatchesShot(location, activeShot));
+
+  useEffect(() => {
+    setActiveIndex(0);
+    setZoom(1);
+  }, [mode]);
+
+  useEffect(() => {
+    setNaturalSize({ width: 0, height: 0 });
+  }, [activeSrc]);
 
   const selectIndex = (index: number) => {
-    const nextIndex = Math.max(0, Math.min(index, shots.length - 1));
+    const nextIndex = Math.max(0, Math.min(index, activeShots.length - 1));
     setActiveIndex(nextIndex);
     setZoom(1);
   };
 
   const step = (direction: -1 | 1) => {
-    selectIndex((activeIndex + direction + shots.length) % shots.length);
+    selectIndex((activeIndex + direction + activeShots.length) % activeShots.length);
+  };
+
+  const rotateFromDrag = (startX: number, currentX: number, startIndex: number) => {
+    const frameStep = Math.round((startX - currentX) / 42);
+    const nextIndex = (startIndex + frameStep + activeShots.length * 8) % activeShots.length;
+    if (nextIndex !== activeIndex) setActiveIndex(nextIndex);
+  };
+
+  const selectDamageLocation = (location: DamageLocation) => {
+    const targetMode =
+      interiorShots.some((shot) => damageMatchesShot(location, shot)) &&
+      !exteriorShots.some((shot) => damageMatchesShot(location, shot))
+        ? "interior"
+        : "exterior";
+    const targetShots = targetMode === "interior" ? interiorShots : exteriorShots;
+    const targetIndex = targetShots.findIndex((shot) => damageMatchesShot(location, shot));
+    if (targetMode !== mode) setMode(targetMode);
+    setActiveIndex(targetIndex >= 0 ? targetIndex : 0);
+    setZoom(1.25);
+  };
+
+  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (activeShots.length <= 1) return;
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startIndex: activeIndex,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId || activeShots.length <= 1) return;
+    rotateFromDrag(drag.startX, event.clientX, drag.startIndex);
+  };
+
+  const clearDrag = () => {
+    dragRef.current = null;
+    mouseDragRef.current = null;
+  };
+
+  const onMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (activeShots.length <= 1) return;
+    mouseDragRef.current = {
+      startX: event.clientX,
+      startIndex: activeIndex,
+    };
+  };
+
+  const onMouseMove = (event: React.MouseEvent<HTMLDivElement>) => {
+    const drag = mouseDragRef.current;
+    if (!drag || activeShots.length <= 1) return;
+    rotateFromDrag(drag.startX, event.clientX, drag.startIndex);
+  };
+
+  const onWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    if (!event.ctrlKey && Math.abs(event.deltaY) < Math.abs(event.deltaX)) return;
+    event.preventDefault();
+    setZoom((value) => Math.min(3, Math.max(1, value + (event.deltaY < 0 ? 0.15 : -0.15))));
   };
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (shots.length === 0) return;
+      if (activeShots.length === 0) return;
       if (event.key === "ArrowRight") {
-        setActiveIndex((current) => (current + 1 + shots.length) % shots.length);
+        setActiveIndex((current) => (current + 1 + activeShots.length) % activeShots.length);
         setZoom(1);
       }
       if (event.key === "ArrowLeft") {
-        setActiveIndex((current) => (current - 1 + shots.length) % shots.length);
+        setActiveIndex((current) => (current - 1 + activeShots.length) % activeShots.length);
         setZoom(1);
       }
       if (event.key === "Escape") setIsFullscreen(false);
@@ -850,10 +1015,11 @@ function InspectionImageReview({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [shots.length]);
+  }, [activeShots.length]);
 
   const viewer = (
     <div
+      data-testid="inspection-360-viewer"
       className={
         isFullscreen
           ? "fixed inset-0 z-50 flex flex-col bg-background"
@@ -865,7 +1031,7 @@ function InspectionImageReview({
           <div>
             <h4 className="text-sm font-semibold capitalize">{displayViewName(activeShot.view)}</h4>
             <p className="text-xs text-muted-foreground">
-              {activeShot.group === "dashboard" ? "Dashboard candidate" : "Inspection image"}
+              {mode === "exterior" ? "Exterior 360" : "Interior detail"}
               {typeof activeShot.qualityScore === "number"
                 ? ` · quality ${Math.round(activeShot.qualityScore * 100)}%`
                 : ""}
@@ -874,7 +1040,29 @@ function InspectionImageReview({
                 : ""}
             </p>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex flex-wrap items-center gap-1">
+            {interiorShots.length > 0 && exteriorShots.length > 0 && (
+              <div className="mr-1 grid grid-cols-2 rounded-md border border-border bg-background p-0.5">
+                <Button
+                  type="button"
+                  variant={mode === "exterior" ? "secondary" : "ghost"}
+                  size="sm"
+                  className="h-8 rounded"
+                  onClick={() => setMode("exterior")}
+                >
+                  Exterior
+                </Button>
+                <Button
+                  type="button"
+                  variant={mode === "interior" ? "secondary" : "ghost"}
+                  size="sm"
+                  className="h-8 rounded"
+                  onClick={() => setMode("interior")}
+                >
+                  Interior
+                </Button>
+              </div>
+            )}
             <Button type="button" variant="outline" size="icon" onClick={() => step(-1)} aria-label="Previous image">
               <ChevronLeft className="h-4 w-4" />
             </Button>
@@ -914,30 +1102,111 @@ function InspectionImageReview({
           </div>
         </div>
         <div
+          ref={stageRef}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={clearDrag}
+          onPointerCancel={clearDrag}
+          onMouseDown={onMouseDown}
+          onMouseMove={onMouseMove}
+          onMouseUp={clearDrag}
+          onMouseLeave={clearDrag}
+          onWheel={onWheel}
           className={
             isFullscreen
-              ? "min-h-0 flex-1 overflow-auto bg-black"
-              : "h-[54vh] min-h-[360px] overflow-auto rounded-lg border border-border bg-black"
+              ? "min-h-0 flex-1 touch-pan-y overflow-auto bg-black"
+              : "h-[54vh] min-h-[360px] touch-pan-y overflow-auto rounded-lg border border-border bg-black"
           }
         >
           {activeSrc && (
-            <img
-              src={activeSrc}
-              alt={`${displayViewName(activeShot.view)} inspection image`}
-              className="mx-auto block max-h-none max-w-none transition-transform duration-150"
+            <div
+              className="relative mx-auto"
               style={{
                 width: `${zoom * 100}%`,
                 minWidth: "100%",
-                height: "auto",
               }}
-            />
+            >
+              <img
+                data-testid="active-360-image"
+                src={activeSrc}
+                alt={`${displayViewName(activeShot.view)} inspection image`}
+                draggable={false}
+                onLoad={(event) => {
+                  setNaturalSize({
+                    width: event.currentTarget.naturalWidth,
+                    height: event.currentTarget.naturalHeight,
+                  });
+                }}
+                className="block h-auto w-full select-none transition-opacity duration-150"
+              />
+              {naturalSize.width > 0 &&
+                naturalSize.height > 0 &&
+                activeDamageLocations.map((location) => {
+                  if (!location.bbox) return null;
+                  const [x1, y1, x2, y2] = location.bbox;
+                  const width = Math.max(1, x2 - x1);
+                  const height = Math.max(1, y2 - y1);
+                  return (
+                    <button
+                      type="button"
+                      data-testid="damage-overlay"
+                      key={location.id}
+                      onClick={() => selectDamageLocation(location)}
+                      className="absolute rounded border-2 border-destructive bg-destructive/15 shadow-[0_0_0_9999px_rgba(0,0,0,0.02)] transition hover:bg-destructive/25"
+                      style={{
+                        left: `${(x1 / naturalSize.width) * 100}%`,
+                        top: `${(y1 / naturalSize.height) * 100}%`,
+                        width: `${(width / naturalSize.width) * 100}%`,
+                        height: `${(height / naturalSize.height) * 100}%`,
+                      }}
+                      aria-label={`${displayViewName(location.type)} damage overlay`}
+                    />
+                  );
+                })}
+            </div>
           )}
         </div>
       </div>
 
       <div className={isFullscreen ? "border-t border-border bg-background p-3" : "min-w-0"}>
+        {damageLocations.length > 0 && (
+          <div className="mb-4 rounded-lg border border-border bg-background">
+            <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
+              <h4 className="text-sm font-semibold">AI Damage Report</h4>
+              <Badge variant="outline" className="rounded-md font-mono text-[11px] tracking-normal">
+                {damageLocations.length}
+              </Badge>
+            </div>
+            <div className="max-h-52 overflow-y-auto p-2">
+              {damageLocations.map((location) => (
+                <button
+                  type="button"
+                  data-testid="damage-report-row"
+                  key={location.id}
+                  onClick={() => selectDamageLocation(location)}
+                  className="mb-1 grid w-full grid-cols-[1fr_auto] gap-2 rounded-md px-2 py-2 text-left text-xs transition hover:bg-secondary"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate font-medium capitalize text-foreground">
+                      {displayViewName(location.type)}
+                      {location.angle || location.linkedView ? ` · ${displayViewName(location.angle || location.linkedView || "")}` : ""}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {location.severity || "severity unknown"}
+                    </span>
+                  </span>
+                  {typeof location.confidence === "number" && (
+                    <span className="font-mono text-muted-foreground">
+                      {Math.round(location.confidence * 100)}%
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="mb-3 flex items-center justify-between gap-2">
-          <h4 className="text-sm font-semibold">Angle shots</h4>
+          <h4 className="text-sm font-semibold">360 Frames</h4>
           {typeof framesAnalyzed === "number" && (
             <span className="text-xs text-muted-foreground">{framesAnalyzed} frames analyzed</span>
           )}
@@ -949,10 +1218,11 @@ function InspectionImageReview({
               : "grid max-h-[54vh] grid-cols-2 gap-2 overflow-y-auto pr-1"
           }
         >
-          {shots.map((shot, index) => {
+          {activeShots.map((shot, index) => {
             const previewPath = uploadPath(shot.previewPath || shot.imagePath);
             if (!previewPath) return null;
             const isActive = index === activeIndex;
+            const shotDamageCount = damageLocations.filter((location) => damageMatchesShot(location, shot)).length;
             return (
               <button
                 type="button"
@@ -968,6 +1238,11 @@ function InspectionImageReview({
                     alt={`${displayViewName(shot.view)} preview`}
                     className="h-full w-full object-cover"
                   />
+                  {shotDamageCount > 0 && (
+                    <span className="absolute right-1 top-1 rounded bg-destructive px-1.5 py-0.5 font-mono text-[10px] text-destructive-foreground">
+                      {shotDamageCount}
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center justify-between gap-2 px-2 py-1.5 text-xs">
                   <span className="truncate font-medium capitalize">{displayViewName(shot.view)}</span>
@@ -1000,7 +1275,7 @@ function InspectionImageReview({
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <CardTitle className="flex items-center gap-2">
             <Camera className="h-5 w-5 text-primary" />
-            Organized Vehicle Shots
+            Interactive 360 Inspection Viewer
           </CardTitle>
           {coverage && (
             <div className="flex flex-wrap gap-2">

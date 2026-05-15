@@ -304,6 +304,42 @@ class VehicleFrameOrganizer:
                 temporal_score=temporal_score,
             )
 
+        for view_offset, view in enumerate(EXTERIOR_VIEWS):
+            if angle_shots.get(view):
+                continue
+            ranked = sorted(
+                candidates,
+                key=lambda c: (
+                    c.index in used_indices,
+                    -self._walkaround_angle_score(c, view, view_offset, len(candidates)),
+                ),
+            )
+            chosen = None
+            for candidate in ranked:
+                if candidate.index in used_indices:
+                    continue
+                if self._has_exterior_evidence(candidate, len(candidates)):
+                    chosen = candidate
+                    break
+            if chosen is None:
+                for candidate in ranked:
+                    if self._has_exterior_evidence(candidate, len(candidates)):
+                        chosen = candidate
+                        break
+            if chosen is None:
+                continue
+
+            used_indices.add(chosen.index)
+            temporal_score = self._temporal_prior(chosen.index, len(candidates), view_offset, len(EXTERIOR_VIEWS))
+            payload = self._candidate_payload(
+                chosen,
+                view,
+                self._walkaround_angle_score(chosen, view, view_offset, len(candidates)),
+                temporal_score=temporal_score,
+            )
+            payload["candidate_role"] = "fallback_angle"
+            angle_shots[view] = payload
+
         for view in SPECIAL_VIEWS:
             ranked = sorted(
                 candidates,

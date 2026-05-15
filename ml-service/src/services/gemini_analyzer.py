@@ -299,14 +299,14 @@ class GeminiAnalyzer:
             '      "index": 1,\n'
             '      "view": "front|front-left|left|rear-left|rear|rear-right|right|front-right|interior|dashboard|odometer|exhaust|wheel|other",\n'
             '      "observations": "1-3 sentences on what is visible in this specific frame",\n'
-            '      "damage_notes": "any scratches, dents, rust, cracks, missing trim, paint issues — or \'none observed\'",\n'
+            '      "damage_notes": "any scratches, dents, rust, cracks, wheel/rim damage, broken lights, missing trim/parts, panel misalignment, paint issues — or \'none observed\'",\n'
             '      "condition": "excellent|good|fair|poor"\n'
             '    }}\n'
             '  ],\n'
             '  "damage_findings": "Aggregated 2-4 sentence description of all damage observed across frames, with locations.",\n'
             '  "damage_items": [\n'
             '    {{\n'
-            '      "type": "scratch|dent|rust|crack|paint_damage|missing_part|other",\n'
+            '      "type": "scratch|dent|rust|crack|paint_damage|wheel_damage|broken_light|missing_part|panel_misalignment|other",\n'
             '      "location": "specific vehicle area, e.g. front bumper, left door, rear fender",\n'
             '      "severity": "low|moderate|high",\n'
             '      "frame_index": 1,\n'
@@ -680,7 +680,18 @@ class GeminiAnalyzer:
         normalized: List[Dict[str, Any]] = []
         if not isinstance(items, list):
             return normalized
-        allowed_types = {"scratch", "dent", "rust", "crack", "paint_damage", "missing_part", "other"}
+        allowed_types = {
+            "scratch",
+            "dent",
+            "rust",
+            "crack",
+            "paint_damage",
+            "wheel_damage",
+            "broken_light",
+            "missing_part",
+            "panel_misalignment",
+            "other",
+        }
         allowed_severity = {"low", "moderate", "high"}
         for item in items[:20]:
             if not isinstance(item, dict):

@@ -56,6 +56,12 @@ export const DEFAULT_DAMAGE_INFO = {
   scratches: { count: 0, detected: false },
   dents: { count: 0, detected: false },
   rust: { count: 0, detected: false },
+  cracks: { count: 0, detected: false },
+  paint_damage: { count: 0, detected: false },
+  wheel_damage: { count: 0, detected: false },
+  broken_lights: { count: 0, detected: false },
+  missing_parts: { count: 0, detected: false },
+  panel_misalignment: { count: 0, detected: false },
   severity: 'low' as const,
   locations: [],
 };
