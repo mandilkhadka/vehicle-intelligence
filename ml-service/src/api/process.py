@@ -27,6 +27,9 @@ from src.services.inspection_analysis import InspectionAnalysisPipeline
 from src.services.report_generator import ReportGenerator
 from src.services.gemini_analyzer import GeminiAnalyzer
 from src.services.model_registry import ModelRegistry
+from src.services.panel_inference import attach_parts_to_locations, panel_label
+from src.services.repair_costs import estimate_repair_costs
+from src.services.damage_rationale import attach_rationales
 from src.config.constants import FRAME_EXTRACTION
 from src.utils.image_quality import enhance_image_for_analysis, read_image_with_orientation, write_jpeg
 from src.utils.path_validator import path_validator
@@ -538,11 +541,48 @@ async def process_video(request: ProcessRequest, http_request: Request):
         )
 
         # Step 3: Run independent ML tasks in PARALLEL using asyncio.gather
-        # This is a key performance optimization - these tasks have no dependencies on each other
+        # Each stage runs under its own timeout and is wrapped so a single
+        # failure degrades that stage rather than killing the whole job.
         logger.info("Step 3/4: Running parallel ML processing (vehicle ID, odometer, damage, exhaust)...")
         parallel_start = time.time()
 
-        # Define async wrapper functions for better error handling and logging
+        stage_status: Dict[str, Dict[str, Any]] = {}
+
+        def _record_stage(name: str, ok: bool, duration: float, error: Optional[str] = None) -> None:
+            stage_status[name] = {
+                "ok": ok,
+                "duration_sec": round(duration, 2),
+                "error": error,
+            }
+
+        async def _run_stage(name: str, coro_factory, fallback: Dict[str, Any], timeout: float) -> Dict[str, Any]:
+            stage_start = time.time()
+            try:
+                result = await asyncio.wait_for(coro_factory(), timeout=timeout)
+                _record_stage(name, True, time.time() - stage_start)
+                return result if isinstance(result, dict) else fallback
+            except asyncio.TimeoutError:
+                logger.error(f"  [Parallel] Stage {name} timed out after {timeout}s")
+                _record_stage(name, False, time.time() - stage_start, error=f"timeout after {timeout}s")
+                degraded = dict(fallback)
+                degraded.setdefault("available", False)
+                degraded.setdefault("reason", f"{name} timed out after {timeout}s")
+                return degraded
+            except Exception as exc:
+                logger.error(f"  [Parallel] Stage {name} failed: {exc}", exc_info=True)
+                _record_stage(name, False, time.time() - stage_start, error=str(exc))
+                degraded = dict(fallback)
+                degraded.setdefault("available", False)
+                degraded.setdefault("reason", f"{name} failed: {exc}")
+                return degraded
+
+        # Per-stage timeouts (env-overridable)
+        stage_timeout_vehicle = _env_float("ML_STAGE_TIMEOUT_VEHICLE", 60.0)
+        stage_timeout_odometer = _env_float("ML_STAGE_TIMEOUT_ODOMETER", 90.0)
+        stage_timeout_damage = _env_float("ML_STAGE_TIMEOUT_DAMAGE", 180.0)
+        stage_timeout_exhaust = _env_float("ML_STAGE_TIMEOUT_EXHAUST", 60.0)
+        stage_timeout_gemini = _env_float("ML_STAGE_TIMEOUT_GEMINI", 120.0)
+
         async def identify_vehicle():
             logger.info("  [Parallel] Starting vehicle identification...")
             result = await vehicle_identifier.identify(organized_frames_absolute)
@@ -561,6 +601,21 @@ async def process_video(request: ProcessRequest, http_request: Request):
             logger.info("  [Parallel] Starting damage detection...")
             result = await damage_detector.detect(surface_frames_absolute, request.inspection_id)
             _attach_damage_angle_metadata(result, frame_analysis_abs)
+            # Ground each location on a specific panel (front_bumper, door_fl,
+            # ...) using the organizer view + bbox position. Confidence is
+            # geometric prior only — a future fine-tuned model can override.
+            attach_parts_to_locations(result.get("locations") or [])
+            # Attach repair cost estimates from the rate card. Adds
+            # estimated_cost per location and total_estimated_repair_cost
+            # on the damage dict.
+            estimate_repair_costs(result)
+            # Best-effort: ask Gemini for one-sentence rationales on the
+            # highest-confidence detections. Internally bounded by its own
+            # timeout; never fails the stage.
+            try:
+                await attach_rationales(result, gemini_analyzer, backend_root=backend_root)
+            except Exception as exc:
+                logger.warning(f"  [Parallel] Damage rationale step errored: {exc}")
             for loc in result.get("locations", []) or []:
                 if loc.get("frame"):
                     loc["frame"] = convert_to_relative_path(loc["frame"], backend_root)
@@ -592,22 +647,30 @@ async def process_video(request: ProcessRequest, http_request: Request):
             _relativize_gemini_analysis_paths(result, backend_root)
             return result
 
-        # Execute all parallel ML tasks (including Gemini multimodal analysis).
-        try:
-            vehicle_info, odometer_data, damage_data, exhaust_data, gemini_data = await asyncio.gather(
-                identify_vehicle(),
-                process_odometer(),
-                detect_damage(),
-                classify_exhaust(),
-                analyze_with_gemini(),
-                return_exceptions=False  # Raise first exception immediately
-            )
-        except Exception as e:
-            logger.error(f"Error during parallel processing: {str(e)}", exc_info=True)
-            raise
+        # Fallback shapes match the minimal dict each consumer expects.
+        vehicle_fallback = {"type": "unknown", "brand": "unknown", "model": "unknown", "confidence": 0.0}
+        odometer_fallback = {"value": None, "confidence": 0.0}
+        damage_fallback = {"severity": "unknown", "locations": [], "summary": "Damage detection unavailable"}
+        exhaust_fallback = {"type": "unknown", "confidence": 0.0}
+        gemini_fallback = {"available": False, "reason": "Gemini analysis unavailable", "per_frame": []}
+
+        vehicle_info, odometer_data, damage_data, exhaust_data, gemini_data = await asyncio.gather(
+            _run_stage("vehicle_id", identify_vehicle, vehicle_fallback, stage_timeout_vehicle),
+            _run_stage("odometer", process_odometer, odometer_fallback, stage_timeout_odometer),
+            _run_stage("damage", detect_damage, damage_fallback, stage_timeout_damage),
+            _run_stage("exhaust", classify_exhaust, exhaust_fallback, stage_timeout_exhaust),
+            _run_stage("gemini", analyze_with_gemini, gemini_fallback, stage_timeout_gemini),
+        )
 
         parallel_duration = time.time() - parallel_start
-        logger.info(f"Parallel ML processing completed in {parallel_duration:.2f} seconds")
+        degraded_stages = [name for name, info in stage_status.items() if not info["ok"]]
+        if degraded_stages:
+            logger.warning(
+                "Parallel ML processing completed in %.2fs with degraded stages: %s",
+                parallel_duration, ", ".join(degraded_stages),
+            )
+        else:
+            logger.info(f"Parallel ML processing completed in {parallel_duration:.2f} seconds")
         _merge_visual_damage_categories(damage_data, gemini_data)
 
         # Merge Gemini's fine-grained vehicle ID into vehicle_info when available.
@@ -667,6 +730,8 @@ async def process_video(request: ProcessRequest, http_request: Request):
             report["frame_analysis"] = frame_analysis
             report["inspection_analysis"] = inspection_analysis
             report["local_modification_analysis"] = modification_data
+            report["stage_status"] = stage_status
+            report["partial"] = bool(degraded_stages)
             report["pipeline_audit"] = _build_process_pipeline_audit(
                 frame_analysis=frame_analysis,
                 vehicle_info=vehicle_info,
@@ -1672,24 +1737,48 @@ def _merge_vehicle_info(base_info: Dict[str, Any], gemini_data: Dict[str, Any]) 
     Override CLIP/YOLO results with Gemini's identification when available.
     Gemini reads badges + body shape and is far better at naming a specific model
     and year. We keep the original confidence as a fallback signal.
+
+    Records provenance per-field on `identity_provenance` so the frontend can
+    show whether each field came from CLIP, Gemini, or a user override. Also
+    logs CLIP/Gemini disagreements for later threshold calibration.
     """
     if not gemini_data or not gemini_data.get("available"):
-        return base_info
+        merged_baseline = dict(base_info or {})
+        provenance = dict(merged_baseline.get("identity_provenance") or {})
+        for key in ("type", "brand", "model", "color", "year", "variant"):
+            if merged_baseline.get(key) and key not in provenance:
+                provenance[key] = "clip"
+        if provenance:
+            merged_baseline["identity_provenance"] = provenance
+        return merged_baseline
 
     g_vehicle = gemini_data.get("vehicle") or {}
     merged = dict(base_info or {})
+    provenance: Dict[str, str] = dict(merged.get("identity_provenance") or {})
+    disagreements: Dict[str, Dict[str, Any]] = {}
+
+    def _norm(v: Any) -> str:
+        return str(v or "").strip().lower()
 
     # Prefer Gemini for these fields whenever it returned a non-empty value.
     for key in ("type", "brand", "model", "color"):
         g_val = g_vehicle.get(key)
-        if g_val and str(g_val).strip().lower() not in ("", "unknown", "null", "none"):
+        if g_val and _norm(g_val) not in ("", "unknown", "null", "none"):
+            clip_val = merged.get(key)
+            if clip_val and _norm(clip_val) not in ("", "unknown") and _norm(clip_val) != _norm(g_val):
+                disagreements[key] = {"clip": clip_val, "gemini": g_val}
             merged[key] = g_val
+            provenance[key] = "gemini"
+        elif merged.get(key) and key not in provenance:
+            provenance[key] = "clip"
 
     # New fields Gemini provides that CLIP cannot.
     if g_vehicle.get("year"):
         merged["year"] = g_vehicle.get("year")
+        provenance["year"] = "gemini"
     if g_vehicle.get("variant"):
         merged["variant"] = g_vehicle.get("variant")
+        provenance["variant"] = "gemini"
 
     # Take the higher of the two confidences so a confident Gemini lifts the score.
     g_conf = g_vehicle.get("confidence")
@@ -1699,6 +1788,16 @@ def _merge_vehicle_info(base_info: Dict[str, Any], gemini_data: Dict[str, Any]) 
         g_conf_f = 0.0
     base_conf = float(merged.get("confidence") or 0.0)
     merged["confidence"] = max(base_conf, g_conf_f)
+
+    if disagreements:
+        logger.info(
+            "Vehicle identity disagreement (CLIP vs Gemini): %s — preferring Gemini",
+            disagreements,
+        )
+        merged["identity_disagreements"] = disagreements
+
+    if provenance:
+        merged["identity_provenance"] = provenance
 
     return merged
 
@@ -1731,6 +1830,7 @@ def _merge_vehicle_identity_override(
         "registration",
     )
     applied = []
+    provenance: Dict[str, str] = dict(merged.get("identity_provenance") or {})
     for field in allowed_fields:
         value = override.get(field)
         if value is None:
@@ -1738,12 +1838,14 @@ def _merge_vehicle_identity_override(
         if isinstance(value, str) and not value.strip():
             continue
         merged[field] = value
+        provenance[field] = "user"
         applied.append(field)
 
     source = str(override.get("source") or "provided_identity_evidence").strip()
     merged["identity_source"] = source
     if applied:
         merged["identity_override_fields"] = applied
+        merged["identity_provenance"] = provenance
         merged["identity_notes"] = (
             f"Exact identity fields merged from {source}; video-derived fields remain candidates where not overridden."
         )

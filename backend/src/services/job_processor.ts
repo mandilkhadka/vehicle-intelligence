@@ -7,6 +7,7 @@ import axios, { AxiosError, AxiosResponse } from "axios";
 import { v4 as uuidv4 } from "uuid";
 import * as fs from "fs";
 import * as path from "path";
+import { z } from "zod";
 import {
   updateJobStatus,
   createInspection,
@@ -15,6 +16,117 @@ import {
 import { config } from "../config/env";
 import { PROGRESS_SIMULATION } from "../config/constants";
 import logger from "../utils/logger";
+
+// Loose schema: ML service is trusted, but a malformed JSON body (e.g.
+// "value": "NaN") should be coerced/rejected before we persist it.
+const confidenceSchema = z
+  .union([z.number(), z.null()])
+  .optional()
+  .transform((v) => {
+    if (v === null || v === undefined || Number.isNaN(v as number)) return undefined;
+    if (typeof v !== "number") return undefined;
+    return Math.max(0, Math.min(1, v));
+  });
+
+const countSchema = z
+  .union([z.number(), z.null()])
+  .optional()
+  .transform((v) => {
+    if (typeof v !== "number" || Number.isNaN(v) || v < 0) return 0;
+    return Math.floor(v);
+  });
+
+const mlResponseSchema = z
+  .object({
+    inspection_id: z.string().optional(),
+    frames: z.array(z.string()).optional().default([]),
+    vehicle_info: z
+      .object({
+        type: z.string().optional(),
+        brand: z.string().optional(),
+        model: z.string().optional(),
+        year: z.union([z.string(), z.number()]).optional(),
+        variant: z.string().optional(),
+        confidence: confidenceSchema,
+      })
+      .passthrough()
+      .optional()
+      .default({}),
+    odometer: z
+      .object({
+        value: z.union([z.number(), z.null()]).optional(),
+        confidence: confidenceSchema,
+        speedometer_image_path: z.string().nullable().optional(),
+      })
+      .passthrough()
+      .optional()
+      .default({}),
+    damage: z
+      .object({
+        severity: z.string().optional(),
+        scratches: z.object({ count: countSchema }).passthrough().optional(),
+        dents: z.object({ count: countSchema }).passthrough().optional(),
+        rust: z.object({ count: countSchema }).passthrough().optional(),
+        cracks: z.object({ count: countSchema }).passthrough().optional(),
+        paint_damage: z.object({ count: countSchema }).passthrough().optional(),
+        // Sprint 1 additions — part-grounded locations + cost + rationale.
+        locations: z
+          .array(
+            z
+              .object({
+                type: z.string().optional(),
+                part: z.string().optional(),
+                part_label: z.string().optional(),
+                part_confidence: z.number().min(0).max(1).optional(),
+                confidence: confidenceSchema,
+                severity: z.string().optional(),
+                frame: z.string().nullable().optional(),
+                snapshot: z.string().nullable().optional(),
+                bbox: z.array(z.number()).optional(),
+                rationale: z.string().nullable().optional(),
+                rationale_likely_real: z.boolean().nullable().optional(),
+                estimated_cost: z
+                  .object({
+                    low: z.number(),
+                    high: z.number(),
+                    midpoint: z.number(),
+                    currency: z.string(),
+                  })
+                  .nullable()
+                  .optional(),
+              })
+              .passthrough(),
+          )
+          .optional(),
+        total_estimated_repair_cost: z
+          .object({
+            low: z.number(),
+            high: z.number(),
+            midpoint: z.number(),
+            currency: z.string(),
+            has_unknowns: z.boolean().optional(),
+            counted_locations: z.number().optional(),
+            unknown_locations: z.number().optional(),
+          })
+          .optional(),
+        rationale_available: z.boolean().optional(),
+        rationale_count: z.number().optional(),
+      })
+      .passthrough()
+      .optional()
+      .default({}),
+    exhaust: z
+      .object({
+        type: z.string().optional(),
+        confidence: confidenceSchema,
+        exhaust_image_path: z.string().nullable().optional(),
+      })
+      .passthrough()
+      .optional()
+      .default({}),
+    report: z.unknown().optional(),
+  })
+  .passthrough();
 
 type ErrorDetails = Record<string, unknown>;
 
@@ -364,20 +476,32 @@ export async function processVideoJob(
       progress: 90,
     });
 
-    // Update inspection with results
-    const results = response.data;
+    // Validate ML response shape before persisting. We don't reject on extra
+    // fields — passthrough() preserves them — but we coerce confidences into
+    // [0, 1] and counts into non-negative integers so the DB never stores
+    // out-of-range values.
+    const parsed = mlResponseSchema.safeParse(response.data);
+    if (!parsed.success) {
+      logger.error(
+        { jobId, issues: parsed.error.issues },
+        "ML service returned a malformed response body",
+      );
+      throw new Error("ML service returned an unexpected response shape");
+    }
+    const results = parsed.data;
 
+    const yearValue = results.vehicle_info?.year;
     updateInspection(inspectionId, {
       vehicle_type: results.vehicle_info?.type,
       vehicle_brand: results.vehicle_info?.brand,
       vehicle_model: results.vehicle_info?.model,
-      vehicle_year: results.vehicle_info?.year,
+      vehicle_year: yearValue === undefined ? undefined : String(yearValue),
       vehicle_variant: results.vehicle_info?.variant,
       vehicle_confidence: results.vehicle_info?.confidence,
       vehicle_info: JSON.stringify(results.vehicle_info || {}),
-      odometer_value: results.odometer?.value,
+      odometer_value: results.odometer?.value ?? undefined,
       odometer_confidence: results.odometer?.confidence,
-      speedometer_image_path: results.odometer?.speedometer_image_path,
+      speedometer_image_path: results.odometer?.speedometer_image_path ?? undefined,
       odometer_info: JSON.stringify(results.odometer || {}),
       damage_summary: JSON.stringify(results.damage || {}),
       scratches_detected: results.damage?.scratches?.count || 0,
@@ -388,7 +512,7 @@ export async function processVideoJob(
       damage_severity: results.damage?.severity,
       exhaust_type: results.exhaust?.type,
       exhaust_confidence: results.exhaust?.confidence,
-      exhaust_image_path: results.exhaust?.exhaust_image_path,
+      exhaust_image_path: results.exhaust?.exhaust_image_path ?? undefined,
       inspection_report: JSON.stringify(results.report || {}),
       extracted_frames: JSON.stringify(results.frames || []),
     });
@@ -494,6 +618,21 @@ export async function processVideoJob(
       status: "failed",
       error_message: errorMessage,
     });
+
+    // Clean up the uploaded video on permanent failure so we don't accumulate
+    // multi-hundred-MB files for jobs that will never succeed. Frames and
+    // snapshots are kept for debugging.
+    try {
+      const absoluteVideoPath = path.isAbsolute(videoPath)
+        ? videoPath
+        : path.join(process.cwd(), videoPath);
+      if (fs.existsSync(absoluteVideoPath)) {
+        fs.unlinkSync(absoluteVideoPath);
+        logger.info({ jobId, absoluteVideoPath }, "Removed video for failed job");
+      }
+    } catch (cleanupError) {
+      logger.warn({ jobId, cleanupError }, "Failed to remove video after job failure");
+    }
 
     throw error;
   }

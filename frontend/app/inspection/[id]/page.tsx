@@ -41,6 +41,48 @@ import {
   type InspectionRecord,
 } from "@/lib/api";
 import { safeParseJsonOrValue } from "@/lib/utils/safe-json";
+import type { InspectionPdfData } from "@/components/InspectionPdfDocument";
+
+// Map a raw inspection record (with JSON-blob fields) into the flat shape
+// the PDF component consumes. The PDF is a snapshot of "what's displayed",
+// not the entire pipeline state — so this mapping intentionally narrows.
+function buildPdfData(inspection: any, inspectionId: string): InspectionPdfData {
+  const parse = <T,>(v: any, fallback: T): T =>
+    safeParseJsonOrValue<T>(v, fallback);
+  const vehicleInfo: any = parse(inspection?.vehicle_info, {}) || {};
+  const odometerInfo: any = parse(inspection?.odometer_info, {}) || {};
+  const damageSummary: any = parse(inspection?.damage_summary, {}) || {};
+  return {
+    inspectionId,
+    generatedAt: new Date().toLocaleString(),
+    backendBaseUrl: BACKEND_BASE_URL,
+    vehicle: {
+      type: vehicleInfo.type ?? inspection?.vehicle_type,
+      brand: vehicleInfo.brand ?? inspection?.vehicle_brand,
+      model: vehicleInfo.model ?? inspection?.vehicle_model,
+      year: vehicleInfo.year ?? inspection?.vehicle_year,
+      variant: vehicleInfo.variant ?? inspection?.vehicle_variant,
+      color: vehicleInfo.color,
+      confidence: vehicleInfo.confidence ?? inspection?.vehicle_confidence,
+      vin: vehicleInfo.vin,
+      registration: vehicleInfo.registration,
+    },
+    odometer: {
+      value: odometerInfo.value ?? inspection?.odometer_value ?? null,
+      confidence: odometerInfo.confidence ?? inspection?.odometer_confidence ?? null,
+      source: odometerInfo.source,
+    },
+    exhaust: {
+      type: inspection?.exhaust_type,
+      confidence: inspection?.exhaust_confidence,
+    },
+    damage: {
+      severity: damageSummary.severity ?? inspection?.damage_severity ?? "low",
+      locations: Array.isArray(damageSummary.locations) ? damageSummary.locations : [],
+      total_estimated_repair_cost: damageSummary.total_estimated_repair_cost ?? null,
+    },
+  };
+}
 
 export default function InspectionPage() {
   const params = useParams();
@@ -79,6 +121,28 @@ export default function InspectionPage() {
     URL.revokeObjectURL(url);
   };
 
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const downloadPdf = async () => {
+    if (!inspection) return;
+    setPdfBusy(true);
+    try {
+      const { pdf } = await import("@react-pdf/renderer");
+      const { InspectionPdfDocument } = await import("@/components/InspectionPdfDocument");
+      const data = buildPdfData(inspection, inspectionId);
+      const blob = await pdf(<InspectionPdfDocument data={data} />).toBlob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `inspection-${inspectionId}.pdf`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("PDF export failed", err);
+    } finally {
+      setPdfBusy(false);
+    }
+  };
+
   return (
     <AppShell>
       <div className="p-4 sm:p-6 lg:p-8">
@@ -92,10 +156,16 @@ export default function InspectionPage() {
           }
         >
           {inspection && (
-            <Button variant="outline" onClick={downloadReport} className="gap-2">
-              <Download className="h-4 w-4" />
-              Download JSON
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="outline" onClick={downloadReport} className="gap-2">
+                <Download className="h-4 w-4" />
+                Download JSON
+              </Button>
+              <Button onClick={downloadPdf} disabled={pdfBusy} className="gap-2">
+                <Download className="h-4 w-4" />
+                {pdfBusy ? "Building PDF…" : "Download PDF"}
+              </Button>
+            </div>
           )}
         </PageHeader>
 
@@ -154,6 +224,7 @@ type ReviewShot = {
   group: "angle" | "dashboard" | "section";
   imagePath: string;
   previewPath: string;
+  sourceFramePath?: string;
   score?: number;
   qualityScore?: number;
   timestampSeconds?: number;
@@ -230,8 +301,98 @@ const REVIEW_VIEW_ORDER = [
   "damage-closeups",
 ];
 
+const VIEW_ALIASES: Record<string, string> = {
+  "front left": "front-left",
+  front_left: "front-left",
+  "left front": "front-left",
+  left_front: "front-left",
+  "rear left": "rear-left",
+  rear_left: "rear-left",
+  "left rear": "rear-left",
+  left_rear: "rear-left",
+  "rear right": "rear-right",
+  rear_right: "rear-right",
+  "right rear": "rear-right",
+  right_rear: "rear-right",
+  "front right": "front-right",
+  front_right: "front-right",
+  "right front": "front-right",
+  right_front: "front-right",
+  dash: "dashboard",
+  steering: "steering-wheel",
+  "steering wheel": "steering-wheel",
+  steering_wheel: "steering-wheel",
+  "engine bay": "engine-bay",
+  engine_bay: "engine-bay",
+  tire: "tyres",
+  tires: "tyres",
+  tyre: "tyres",
+  "damage closeup": "damage-closeups",
+  damage_closeup: "damage-closeups",
+  "damage close-up": "damage-closeups",
+  "damage closeups": "damage-closeups",
+  damage_closeups: "damage-closeups",
+};
+
+function normalizeViewKey(value: unknown): string {
+  const raw = cleanText(value).toLowerCase();
+  if (!raw) return "frame";
+  const normalized = raw.replaceAll("_", " ").replace(/\s+/g, " ").trim();
+  const dashed = normalized.replaceAll(" ", "-");
+  return VIEW_ALIASES[raw] || VIEW_ALIASES[normalized] || VIEW_ALIASES[dashed] || dashed;
+}
+
 function displayViewName(view: string): string {
-  return String(view || "frame").replaceAll("-", " ");
+  return normalizeViewKey(view).replaceAll("-", " ");
+}
+
+function preferredImagePath(source: any, group: ReviewShot["group"]): string | undefined {
+  if (!source || typeof source !== "object") return undefined;
+  if (group === "dashboard") {
+    return (
+      source.crop_path ||
+      source.preview_path ||
+      source.inspection_path ||
+      source.organized_path ||
+      source.readout_crop_path ||
+      source.frame
+    );
+  }
+  return (
+    source.inspection_path ||
+    source.organized_path ||
+    source.frame ||
+    source.preview_path ||
+    source.crop_path ||
+    source.readout_crop_path ||
+    source.snapshot
+  );
+}
+
+function preferredPreviewPath(source: any, group: ReviewShot["group"]): string | undefined {
+  if (!source || typeof source !== "object") return undefined;
+  return (
+    source.preview_path ||
+    (group === "dashboard" ? source.crop_path || source.readout_crop_path : undefined) ||
+    source.inspection_path ||
+    source.organized_path ||
+    source.snapshot ||
+    source.frame
+  );
+}
+
+function sourceFramePath(source: any): string | undefined {
+  if (!source || typeof source !== "object") return undefined;
+  return source.frame || source.inspection_path || source.organized_path || source.preview_path;
+}
+
+function shotPriority(shot: ReviewShot): number {
+  const groupPriority = shot.group === "section" ? 3 : shot.group === "dashboard" ? 2 : 1;
+  return (
+    groupPriority * 1000 +
+    Math.round((shot.score || 0) * 100) +
+    Math.round((shot.qualityScore || 0) * 50)
+  );
 }
 
 function buildReviewShots(frameAnalysis: any, inspectionAnalysis?: any): ReviewShot[] {
@@ -240,17 +401,24 @@ function buildReviewShots(frameAnalysis: any, inspectionAnalysis?: any): ReviewS
   const seenPaths = new Set<string>();
   const addShot = (view: string, source: any, group: ReviewShot["group"], index = 0) => {
     if (!source || typeof source !== "object") return;
-    const imagePath = source.inspection_path || source.organized_path || source.frame;
+    const imagePath = preferredImagePath(source, group);
+    const previewPath = preferredPreviewPath(source, group) || imagePath;
+    const originalFramePath = sourceFramePath(source);
     const pathKey = uploadKey(imagePath);
-    if (!imagePath || seen.has(`${group}:${view}:${imagePath}`) || (pathKey && seenPaths.has(pathKey))) return;
-    seen.add(`${group}:${view}:${imagePath}`);
+    const viewKey = normalizeViewKey(
+      group === "section" ? source?.section || source?.view || view : view || source?.view || source?.section,
+    );
+    if (!imagePath || seen.has(`${group}:${viewKey}:${imagePath}`) || (pathKey && seenPaths.has(pathKey))) return;
+    const safePreviewPath = previewPath || imagePath;
+    seen.add(`${group}:${viewKey}:${imagePath}`);
     if (pathKey) seenPaths.add(pathKey);
     shots.push({
-      id: `${group}-${view}-${index}`,
-      view,
+      id: `${group}-${viewKey}-${index}`,
+      view: viewKey,
       group,
       imagePath,
-      previewPath: source.preview_path || source.inspection_path || source.organized_path || source.frame,
+      previewPath: safePreviewPath,
+      sourceFramePath: originalFramePath,
       score:
         typeof source.confidence === "number"
           ? source.confidence
@@ -331,19 +499,22 @@ function uploadKey(path: unknown): string | null {
 
 function damageMatchesShot(location: DamageLocation, shot: ReviewShot): boolean {
   const linkedView = location.linkedView || location.angle;
-  if (linkedView && linkedView === shot.view) return true;
+  if (linkedView && normalizeViewKey(linkedView) === shot.view) return true;
 
   const locationFrame = uploadKey(location.frame);
   if (!locationFrame) return false;
-  return [shot.imagePath, shot.previewPath].some((path) => uploadKey(path) === locationFrame);
+  return [shot.imagePath, shot.previewPath, shot.sourceFramePath].some(
+    (path) => uploadKey(path) === locationFrame,
+  );
 }
 
 function orderedShots(shots: ReviewShot[], order: string[]): ReviewShot[] {
   const byView = new Map<string, ReviewShot>();
   shots.forEach((shot) => {
-    if (!byView.has(shot.view)) byView.set(shot.view, shot);
+    const current = byView.get(shot.view);
+    if (!current || shotPriority(shot) > shotPriority(current)) byView.set(shot.view, shot);
   });
-  return order.map((view) => byView.get(view)).filter(Boolean) as ReviewShot[];
+  return order.map((view) => byView.get(normalizeViewKey(view))).filter(Boolean) as ReviewShot[];
 }
 
 function cleanText(value: unknown): string {
@@ -943,16 +1114,11 @@ function InspectionContent({
     (check: PipelineAuditCheck) => check?.id === "vehicle_identity",
   );
   const referenceImage = report?.reference_image || gemini?.reference_image;
-  const organizedShots = REVIEW_VIEW_ORDER
-    .map((view) => {
-      const shot = frameAnalysis?.angle_shots?.[view];
-      return shot ? { view, ...shot } : null;
-    })
-    .filter(Boolean);
   const dashboardCandidates = Array.isArray(frameAnalysis?.dashboard_candidates)
     ? frameAnalysis.dashboard_candidates.slice(0, 6)
     : [];
   const reviewShots = buildReviewShots(frameAnalysis, inspectionAnalysis);
+  const angleShotCount = reviewShots.filter((shot) => shot.group === "angle").length;
   const damageLocations = normalizeDamageLocations(damage);
   const aiListing = buildAiListingContent({
     inspection,
@@ -1154,7 +1320,7 @@ function InspectionContent({
           damageLocations={damageLocations}
           coverage={frameAnalysis?.coverage}
           framesAnalyzed={frameAnalysis?.frames_analyzed}
-          angleCount={organizedShots.length}
+          angleCount={angleShotCount}
           dashboardCount={dashboardCandidates.length}
         />
       )}
@@ -1364,7 +1530,7 @@ function InspectionContent({
         <ExhaustInfo exhaust={exhaust} />
       </div>
 
-      {frames.length > 0 && (
+      {frames.length > 0 && reviewShots.length === 0 && (
         <Card>
           <CardHeader>
             <CardTitle>Extracted Frames</CardTitle>
@@ -1631,11 +1797,11 @@ function InspectionImageReview({
           onWheel={onWheel}
           className={
             isFullscreen
-              ? "min-h-0 flex-1 touch-pan-y overflow-auto bg-black"
-              : "h-[54vh] min-h-[360px] touch-pan-y overflow-auto rounded-lg border border-border bg-black"
+              ? "flex min-h-0 flex-1 touch-pan-y cursor-grab items-center justify-center overflow-auto bg-black p-4 active:cursor-grabbing"
+              : "flex h-[54vh] min-h-[360px] touch-pan-y cursor-grab items-center justify-center overflow-auto rounded-lg border border-border bg-black p-3 active:cursor-grabbing"
           }
         >
-          {activeSrc && (
+          {activeSrc ? (
             <div
               className="relative mx-auto"
               style={{
@@ -1654,7 +1820,11 @@ function InspectionImageReview({
                     height: event.currentTarget.naturalHeight,
                   });
                 }}
-                className="block h-auto w-full select-none transition-opacity duration-150"
+                className={
+                  isFullscreen
+                    ? "block max-h-[calc(100vh-12rem)] w-full select-none object-contain transition-opacity duration-150"
+                    : "block max-h-[calc(54vh-2rem)] w-full select-none object-contain transition-opacity duration-150"
+                }
               />
               {naturalSize.width > 0 &&
                 naturalSize.height > 0 &&
@@ -1680,6 +1850,10 @@ function InspectionImageReview({
                     />
                   );
                 })}
+            </div>
+          ) : (
+            <div className="px-6 py-12 text-center text-sm text-muted-foreground">
+              Image preview unavailable
             </div>
           )}
         </div>

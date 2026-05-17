@@ -1,0 +1,173 @@
+{
+  "currency": "USD",
+  "notes": "Rough ranges for an average passenger vehicle at an independent body shop. Tune per market.",
+  "by_part_type_severity": {
+    "front_bumper": {
+      "scratch":       {"low": [60, 220],  "medium": [220, 600],  "high": [600, 1400]},
+      "dent":          {"low": [180, 450], "medium": [450, 900],  "high": [900, 1800]},
+      "paint_damage":  {"low": [120, 350], "medium": [350, 750],  "high": [750, 1500]},
+      "crack":         {"low": [200, 500], "medium": [500, 1200], "high": [1200, 2200]}
+    },
+    "hood": {
+      "scratch":       {"low": [80, 250],  "medium": [250, 700],  "high": [700, 1500]},
+      "dent":          {"low": [200, 500], "medium": [500, 1100], "high": [1100, 2400]},
+      "paint_damage":  {"low": [150, 400], "medium": [400, 900],  "high": [900, 1800]},
+      "rust":          {"low": [120, 350], "medium": [350, 900],  "high": [900, 2200]}
+    },
+    "grille": {
+      "scratch":       {"low": [60, 180],  "medium": [180, 450],  "high": [450, 900]},
+      "crack":         {"low": [180, 400], "medium": [400, 800],  "high": [800, 1500]}
+    },
+    "headlight_l": {
+      "broken_lights": {"low": [200, 450], "medium": [450, 900],  "high": [900, 1800]},
+      "crack":         {"low": [180, 400], "medium": [400, 800],  "high": [800, 1600]},
+      "scratch":       {"low": [60, 150],  "medium": [150, 400],  "high": [400, 800]}
+    },
+    "headlight_r": {
+      "broken_lights": {"low": [200, 450], "medium": [450, 900],  "high": [900, 1800]},
+      "crack":         {"low": [180, 400], "medium": [400, 800],  "high": [800, 1600]},
+      "scratch":       {"low": [60, 150],  "medium": [150, 400],  "high": [400, 800]}
+    },
+    "fender_l": {
+      "scratch":       {"low": [70, 230],  "medium": [230, 600],  "high": [600, 1200]},
+      "dent":          {"low": [200, 500], "medium": [500, 1100], "high": [1100, 2200]},
+      "paint_damage":  {"low": [120, 350], "medium": [350, 800],  "high": [800, 1600]},
+      "rust":          {"low": [150, 400], "medium": [400, 1000], "high": [1000, 2400]}
+    },
+    "fender_r": {
+      "scratch":       {"low": [70, 230],  "medium": [230, 600],  "high": [600, 1200]},
+      "dent":          {"low": [200, 500], "medium": [500, 1100], "high": [1100, 2200]},
+      "paint_damage":  {"low": [120, 350], "medium": [350, 800],  "high": [800, 1600]},
+      "rust":          {"low": [150, 400], "medium": [400, 1000], "high": [1000, 2400]}
+    },
+    "door_fl": {
+      "scratch":       {"low": [80, 250],  "medium": [250, 650],  "high": [650, 1400]},
+      "dent":          {"low": [220, 550], "medium": [550, 1200], "high": [1200, 2400]},
+      "paint_damage":  {"low": [130, 380], "medium": [380, 850],  "high": [850, 1700]},
+      "rust":          {"low": [150, 420], "medium": [420, 1100], "high": [1100, 2500]}
+    },
+    "door_fr": {
+      "scratch":       {"low": [80, 250],  "medium": [250, 650],  "high": [650, 1400]},
+      "dent":          {"low": [220, 550], "medium": [550, 1200], "high": [1200, 2400]},
+      "paint_damage":  {"low": [130, 380], "medium": [380, 850],  "high": [850, 1700]},
+      "rust":          {"low": [150, 420], "medium": [420, 1100], "high": [1100, 2500]}
+    },
+    "door_rl": {
+      "scratch":       {"low": [80, 250],  "medium": [250, 650],  "high": [650, 1400]},
+      "dent":          {"low": [220, 550], "medium": [550, 1200], "high": [1200, 2400]},
+      "paint_damage":  {"low": [130, 380], "medium": [380, 850],  "high": [850, 1700]},
+      "rust":          {"low": [150, 420], "medium": [420, 1100], "high": [1100, 2500]}
+    },
+    "door_rr": {
+      "scratch":       {"low": [80, 250],  "medium": [250, 650],  "high": [650, 1400]},
+      "dent":          {"low": [220, 550], "medium": [550, 1200], "high": [1200, 2400]},
+      "paint_damage":  {"low": [130, 380], "medium": [380, 850],  "high": [850, 1700]},
+      "rust":          {"low": [150, 420], "medium": [420, 1100], "high": [1100, 2500]}
+    },
+    "quarter_l": {
+      "scratch":       {"low": [100, 280], "medium": [280, 750],  "high": [750, 1700]},
+      "dent":          {"low": [260, 650], "medium": [650, 1400], "high": [1400, 2800]},
+      "paint_damage":  {"low": [150, 400], "medium": [400, 900],  "high": [900, 1900]},
+      "rust":          {"low": [180, 500], "medium": [500, 1300], "high": [1300, 2800]}
+    },
+    "quarter_r": {
+      "scratch":       {"low": [100, 280], "medium": [280, 750],  "high": [750, 1700]},
+      "dent":          {"low": [260, 650], "medium": [650, 1400], "high": [1400, 2800]},
+      "paint_damage":  {"low": [150, 400], "medium": [400, 900],  "high": [900, 1900]},
+      "rust":          {"low": [180, 500], "medium": [500, 1300], "high": [1300, 2800]}
+    },
+    "rocker_l": {
+      "scratch":       {"low": [80, 220],  "medium": [220, 550],  "high": [550, 1100]},
+      "dent":          {"low": [220, 500], "medium": [500, 1000], "high": [1000, 2000]},
+      "rust":          {"low": [200, 500], "medium": [500, 1300], "high": [1300, 2800]}
+    },
+    "rocker_r": {
+      "scratch":       {"low": [80, 220],  "medium": [220, 550],  "high": [550, 1100]},
+      "dent":          {"low": [220, 500], "medium": [500, 1000], "high": [1000, 2000]},
+      "rust":          {"low": [200, 500], "medium": [500, 1300], "high": [1300, 2800]}
+    },
+    "mirror_l": {
+      "scratch":       {"low": [60, 150],  "medium": [150, 350],  "high": [350, 700]},
+      "missing_parts": {"low": [150, 350], "medium": [350, 700],  "high": [700, 1400]},
+      "broken_lights": {"low": [200, 400], "medium": [400, 800],  "high": [800, 1500]}
+    },
+    "mirror_r": {
+      "scratch":       {"low": [60, 150],  "medium": [150, 350],  "high": [350, 700]},
+      "missing_parts": {"low": [150, 350], "medium": [350, 700],  "high": [700, 1400]},
+      "broken_lights": {"low": [200, 400], "medium": [400, 800],  "high": [800, 1500]}
+    },
+    "trunk": {
+      "scratch":       {"low": [80, 240],  "medium": [240, 650],  "high": [650, 1400]},
+      "dent":          {"low": [220, 550], "medium": [550, 1200], "high": [1200, 2400]},
+      "paint_damage":  {"low": [130, 380], "medium": [380, 850],  "high": [850, 1700]},
+      "rust":          {"low": [180, 450], "medium": [450, 1100], "high": [1100, 2400]}
+    },
+    "tailgate": {
+      "scratch":       {"low": [80, 240],  "medium": [240, 650],  "high": [650, 1400]},
+      "dent":          {"low": [220, 550], "medium": [550, 1200], "high": [1200, 2400]},
+      "paint_damage":  {"low": [130, 380], "medium": [380, 850],  "high": [850, 1700]},
+      "rust":          {"low": [180, 450], "medium": [450, 1100], "high": [1100, 2400]}
+    },
+    "rear_bumper": {
+      "scratch":       {"low": [60, 220],  "medium": [220, 600],  "high": [600, 1400]},
+      "dent":          {"low": [180, 450], "medium": [450, 900],  "high": [900, 1800]},
+      "paint_damage":  {"low": [120, 350], "medium": [350, 750],  "high": [750, 1500]},
+      "crack":         {"low": [200, 500], "medium": [500, 1200], "high": [1200, 2200]}
+    },
+    "taillight_l": {
+      "broken_lights": {"low": [180, 400], "medium": [400, 800],  "high": [800, 1500]},
+      "crack":         {"low": [150, 350], "medium": [350, 700],  "high": [700, 1300]},
+      "scratch":       {"low": [50, 140],  "medium": [140, 350],  "high": [350, 700]}
+    },
+    "taillight_r": {
+      "broken_lights": {"low": [180, 400], "medium": [400, 800],  "high": [800, 1500]},
+      "crack":         {"low": [150, 350], "medium": [350, 700],  "high": [700, 1300]},
+      "scratch":       {"low": [50, 140],  "medium": [140, 350],  "high": [350, 700]}
+    },
+    "roof": {
+      "scratch":       {"low": [120, 350], "medium": [350, 900],  "high": [900, 1900]},
+      "dent":          {"low": [300, 700], "medium": [700, 1500], "high": [1500, 3000]},
+      "paint_damage":  {"low": [150, 450], "medium": [450, 1000], "high": [1000, 2000]},
+      "rust":          {"low": [200, 500], "medium": [500, 1300], "high": [1300, 2700]}
+    },
+    "windshield": {
+      "crack":         {"low": [250, 500], "medium": [500, 900],  "high": [900, 1800]},
+      "scratch":       {"low": [80, 200],  "medium": [200, 500],  "high": [500, 1100]}
+    },
+    "rear_window": {
+      "crack":         {"low": [220, 450], "medium": [450, 850],  "high": [850, 1700]},
+      "scratch":       {"low": [60, 180],  "medium": [180, 450],  "high": [450, 1000]}
+    },
+    "wheel_fl": {
+      "wheel_damage":  {"low": [120, 280], "medium": [280, 600],  "high": [600, 1200]},
+      "scratch":       {"low": [40, 120],  "medium": [120, 300],  "high": [300, 700]}
+    },
+    "wheel_fr": {
+      "wheel_damage":  {"low": [120, 280], "medium": [280, 600],  "high": [600, 1200]},
+      "scratch":       {"low": [40, 120],  "medium": [120, 300],  "high": [300, 700]}
+    },
+    "wheel_rl": {
+      "wheel_damage":  {"low": [120, 280], "medium": [280, 600],  "high": [600, 1200]},
+      "scratch":       {"low": [40, 120],  "medium": [120, 300],  "high": [300, 700]}
+    },
+    "wheel_rr": {
+      "wheel_damage":  {"low": [120, 280], "medium": [280, 600],  "high": [600, 1200]},
+      "scratch":       {"low": [40, 120],  "medium": [120, 300],  "high": [300, 700]}
+    },
+    "interior": {
+      "scratch":       {"low": [80, 200],  "medium": [200, 500],  "high": [500, 1100]},
+      "paint_damage":  {"low": [120, 300], "medium": [300, 700],  "high": [700, 1500]}
+    }
+  },
+  "fallback_by_type_severity": {
+    "scratch":          {"low": [80, 220],  "medium": [220, 550],  "high": [550, 1200]},
+    "dent":             {"low": [200, 500], "medium": [500, 1100], "high": [1100, 2200]},
+    "rust":             {"low": [150, 400], "medium": [400, 1000], "high": [1000, 2400]},
+    "crack":            {"low": [180, 450], "medium": [450, 1000], "high": [1000, 2000]},
+    "paint_damage":     {"low": [120, 350], "medium": [350, 800],  "high": [800, 1600]},
+    "wheel_damage":     {"low": [120, 280], "medium": [280, 600],  "high": [600, 1200]},
+    "broken_lights":    {"low": [200, 450], "medium": [450, 900],  "high": [900, 1800]},
+    "missing_parts":    {"low": [150, 400], "medium": [400, 900],  "high": [900, 1800]},
+    "panel_misalignment": {"low": [200, 500], "medium": [500, 1200], "high": [1200, 2500]}
+  }
+}

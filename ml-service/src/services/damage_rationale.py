@@ -1,0 +1,245 @@
+"""
+Per-detection rationale via Gemini.
+
+After the local damage detector emits its locations, we batch the top N
+highest-confidence snapshots (with their inferred panel labels) into a single
+Gemini call and ask for a one-sentence rationale per location. The rationale
+explains why this is likely real damage in plain English — far more useful
+than a numeric confidence.
+
+Failure is silent: if Gemini is unavailable, times out, returns malformed
+JSON, or the GeminiAnalyzer wasn't initialized, locations simply keep
+rationale = None and the rest of the pipeline continues.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import re
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+_MAX_BATCH = int(os.getenv("ML_DAMAGE_RATIONALE_MAX", "8"))
+_TIMEOUT_SECONDS = float(os.getenv("ML_DAMAGE_RATIONALE_TIMEOUT", "45"))
+_MIN_CONFIDENCE = float(os.getenv("ML_DAMAGE_RATIONALE_MIN_CONFIDENCE", "0.45"))
+
+_JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}")
+
+
+def _try_import_pil():
+    try:
+        from PIL import Image  # type: ignore
+        return Image
+    except Exception:
+        return None
+
+
+def _resolve_snapshot_path(snapshot: Optional[str], backend_root: str) -> Optional[str]:
+    """Snapshots are stored as relative paths under backend/uploads (e.g.
+    'frames/<id>/damage_snapshots/scratch_001.jpg'). Promote to absolute."""
+    if not snapshot:
+        return None
+    if os.path.isabs(snapshot):
+        return snapshot if os.path.exists(snapshot) else None
+    candidate = os.path.join(backend_root, "backend", "uploads", snapshot)
+    return candidate if os.path.exists(candidate) else None
+
+
+def _select_candidates(locations: List[Dict[str, Any]]) -> List[int]:
+    """Indices of the top-N highest-confidence locations that have a snapshot."""
+    scored = []
+    for idx, loc in enumerate(locations):
+        if not isinstance(loc, dict):
+            continue
+        if not loc.get("snapshot"):
+            continue
+        conf = float(loc.get("confidence") or 0.0)
+        if conf < _MIN_CONFIDENCE:
+            continue
+        scored.append((conf, idx))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [idx for _, idx in scored[:_MAX_BATCH]]
+
+
+def _build_prompt(items: List[Dict[str, Any]]) -> str:
+    bullets = "\n".join(
+        f"- index={i}: type={it.get('type','unknown')}, "
+        f"part={it.get('part_label') or it.get('part') or 'unknown area'}, "
+        f"severity={it.get('severity','medium')}, "
+        f"confidence={round(float(it.get('confidence') or 0.0), 2)}"
+        for i, it in enumerate(items)
+    )
+    return (
+        "You are a vehicle damage inspector. I will give you cropped images of "
+        "potential damage detected by a local computer-vision model. For each "
+        "image, write ONE short sentence explaining what is visible and whether "
+        "it looks like real damage of the stated type. Keep each rationale under "
+        "25 words. Be specific and grounded in the image — do not invent "
+        "details. If the image clearly does NOT show the claimed damage type, "
+        "say so and suggest what it might actually be.\n\n"
+        "Stated context per image (matches the image order I send):\n"
+        f"{bullets}\n\n"
+        "Return ONLY a JSON object with this exact shape, no markdown:\n"
+        "{\n"
+        '  "rationales": [\n'
+        '    {"index": 0, "rationale": "...", "likely_real": true},\n'
+        "    ...\n"
+        "  ]\n"
+        "}"
+    )
+
+
+def _parse_response(text: str, count: int) -> Dict[int, Dict[str, Any]]:
+    if not text:
+        return {}
+    match = _JSON_BLOCK_RE.search(text)
+    if not match:
+        return {}
+    try:
+        data = json.loads(match.group(0))
+    except Exception:
+        return {}
+    rationales = data.get("rationales") if isinstance(data, dict) else None
+    if not isinstance(rationales, list):
+        return {}
+    out: Dict[int, Dict[str, Any]] = {}
+    for item in rationales:
+        if not isinstance(item, dict):
+            continue
+        idx = item.get("index")
+        try:
+            idx_i = int(idx)
+        except (TypeError, ValueError):
+            continue
+        if idx_i < 0 or idx_i >= count:
+            continue
+        rationale = item.get("rationale")
+        if not isinstance(rationale, str):
+            continue
+        out[idx_i] = {
+            "rationale": rationale.strip()[:280],
+            "likely_real": bool(item.get("likely_real", True)),
+        }
+    return out
+
+
+async def attach_rationales(
+    damage_data: Dict[str, Any],
+    gemini_analyzer: Any,
+    *,
+    backend_root: str,
+) -> None:
+    """
+    Mutate damage_data in-place so the highest-confidence locations gain:
+        rationale: str | None
+        rationale_likely_real: bool | None
+    Silent on any failure path.
+    """
+    if not isinstance(damage_data, dict):
+        return
+    locations = damage_data.get("locations") or []
+    if not locations:
+        return
+
+    # Initialize fields so the schema is consistent regardless of outcome.
+    for loc in locations:
+        if isinstance(loc, dict):
+            loc.setdefault("rationale", None)
+            loc.setdefault("rationale_likely_real", None)
+
+    if gemini_analyzer is None:
+        damage_data.setdefault("rationale_available", False)
+        return
+    model = getattr(gemini_analyzer, "model", None)
+    if model is None or not getattr(gemini_analyzer, "api_key", None):
+        damage_data.setdefault("rationale_available", False)
+        return
+
+    Image = _try_import_pil()
+    if Image is None:
+        damage_data.setdefault("rationale_available", False)
+        return
+
+    candidate_indices = _select_candidates(locations)
+    if not candidate_indices:
+        damage_data["rationale_available"] = True
+        damage_data.setdefault("rationale_count", 0)
+        return
+
+    images: List[Any] = []
+    items: List[Dict[str, Any]] = []
+    used_indices: List[int] = []
+    for idx in candidate_indices:
+        loc = locations[idx]
+        abs_path = _resolve_snapshot_path(loc.get("snapshot"), backend_root)
+        if not abs_path:
+            continue
+        try:
+            images.append(Image.open(abs_path).convert("RGB"))
+            items.append(loc)
+            used_indices.append(idx)
+        except Exception as exc:
+            logger.debug("Skipping snapshot for rationale: %s (%s)", abs_path, exc)
+
+    if not images:
+        damage_data["rationale_available"] = True
+        damage_data.setdefault("rationale_count", 0)
+        return
+
+    prompt = _build_prompt(items)
+    content: List[Any] = [prompt, *images]
+
+    def _invoke() -> Optional[str]:
+        try:
+            response = gemini_analyzer._call_with_retries(content)  # type: ignore[attr-defined]
+            if response is None:
+                return None
+            text = getattr(response, "text", None)
+            if text:
+                return text
+            # Fall back to walking candidates if .text is unavailable.
+            candidates = getattr(response, "candidates", None) or []
+            for cand in candidates:
+                content_obj = getattr(cand, "content", None)
+                parts = getattr(content_obj, "parts", None) or []
+                for part in parts:
+                    t = getattr(part, "text", None)
+                    if t:
+                        return t
+            return None
+        except Exception as exc:
+            logger.warning("Damage rationale Gemini call failed: %s", exc)
+            return None
+
+    try:
+        text = await asyncio.wait_for(asyncio.to_thread(_invoke), timeout=_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.warning("Damage rationale generation timed out after %ss", _TIMEOUT_SECONDS)
+        damage_data["rationale_available"] = False
+        damage_data.setdefault("rationale_count", 0)
+        return
+    except Exception as exc:
+        logger.warning("Damage rationale generation failed: %s", exc)
+        damage_data["rationale_available"] = False
+        damage_data.setdefault("rationale_count", 0)
+        return
+
+    parsed = _parse_response(text or "", len(items))
+    attached = 0
+    for local_idx, loc_idx in enumerate(used_indices):
+        result = parsed.get(local_idx)
+        if not result:
+            continue
+        loc = locations[loc_idx]
+        if isinstance(loc, dict):
+            loc["rationale"] = result["rationale"]
+            loc["rationale_likely_real"] = result["likely_real"]
+            attached += 1
+
+    damage_data["rationale_available"] = True
+    damage_data["rationale_count"] = attached
