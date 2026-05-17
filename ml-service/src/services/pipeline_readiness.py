@@ -109,6 +109,7 @@ def build_pipeline_readiness(
     capabilities = {
         "frame_extraction": frame_organization_ready,
         "frame_organization": frame_organization_ready,
+        "inspection_section_routing": frame_organization_ready,
         "model_backed_angle_scoring": model_backed_angle_scoring_ready,
         "odometer_reading": odometer_ready,
         "llm_vlm_analysis": llm_vlm_ready,

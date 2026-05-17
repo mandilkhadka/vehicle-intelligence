@@ -47,6 +47,7 @@ def build_completion_audit(
     vehicle = _extract_vehicle(inspection)
     damage_items = _extract_damage_items(inspection)
     damage_evidence = _extract_damage_category_evidence(inspection, damage_items)
+    section_routing_evidence = _extract_section_routing_evidence(inspection)
     modification_items = _extract_modification_items(inspection)
     modification_evidence = _extract_modification_evidence(
         modification_items,
@@ -177,6 +178,13 @@ def build_completion_audit(
             and damage_evidence.get("severity") not in (None, ""),
             "Detect scratches, dents, rust, cracks, paint damage, locations, and severity.",
             evidence=damage_evidence,
+        ),
+        _check(
+            "inspection_section_routing",
+            bool(section_routing_evidence["has_routed_sections"])
+            and bool(section_routing_evidence["has_required_confidence"]),
+            "Route validated inspection images into confidence-aware vehicle sections.",
+            evidence=section_routing_evidence,
         ),
         _check(
             "modification_detection",
@@ -409,7 +417,17 @@ def _extract_damage_category_evidence(
     damage_items: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     damage = inspection.get("damage") if isinstance(inspection.get("damage"), dict) else {}
-    required = ["scratches", "dents", "rust", "cracks", "paint_damage"]
+    required = [
+        "scratches",
+        "dents",
+        "rust",
+        "cracks",
+        "paint_damage",
+        "wheel_damage",
+        "broken_lights",
+        "missing_parts",
+        "panel_misalignment",
+    ]
     category_counts = {
         key: (damage.get(key) or {}).get("count")
         for key in required
@@ -443,6 +461,58 @@ def _extract_damage_category_evidence(
         "location_types": sorted(set(location_types)),
         "visual_damage_items": len(damage_items),
         "visual_damage_types": sorted(set(visual_types)),
+    }
+
+
+def _extract_section_routing_evidence(inspection: Dict[str, Any]) -> Dict[str, Any]:
+    report = inspection.get("report") if isinstance(inspection.get("report"), dict) else {}
+    inspection_analysis = inspection.get("inspection_analysis")
+    if not isinstance(inspection_analysis, dict):
+        inspection_analysis = report.get("inspection_analysis") if isinstance(report.get("inspection_analysis"), dict) else {}
+    if not inspection_analysis:
+        return {
+            "routed_images": 0,
+            "present_sections": [],
+            "required_any_sections": ["front", "dashboard", "wheels", "tyres", "damage-closeups"],
+            "minimum_confidence": 0.35,
+            "low_confidence_images": [],
+            "has_required_confidence": False,
+            "has_routed_sections": False,
+            "not_supplied": True,
+        }
+
+    sections = inspection_analysis.get("sections") if isinstance(inspection_analysis.get("sections"), dict) else {}
+    routed = [
+        image
+        for images in sections.values()
+        if isinstance(images, list)
+        for image in images
+        if isinstance(image, dict)
+    ]
+    present = sorted(
+        section
+        for section, images in sections.items()
+        if isinstance(images, list) and images
+    )
+    low_confidence = [
+        {
+            "section": image.get("section"),
+            "frame": image.get("frame"),
+            "confidence": image.get("confidence"),
+        }
+        for image in routed
+        if float(image.get("confidence") or 0.0) < 0.35
+    ]
+    return {
+        "routed_images": len(routed),
+        "present_sections": present,
+        "required_any_sections": ["front", "dashboard", "wheels", "tyres", "damage-closeups"],
+        "minimum_confidence": 0.35,
+        "low_confidence_images": low_confidence,
+        "rejected_images": len(inspection_analysis.get("rejected_images") or []),
+        "conflicts_resolved": (inspection_analysis.get("consistency") or {}).get("conflicts_resolved"),
+        "has_required_confidence": bool(routed) and not low_confidence,
+        "has_routed_sections": bool(routed) and bool(present),
     }
 
 

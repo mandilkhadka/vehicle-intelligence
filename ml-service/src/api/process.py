@@ -23,6 +23,7 @@ from src.services.odometer_reader import OdometerReader
 from src.services.damage_detector import DamageDetector
 from src.services.exhaust_classifier import ExhaustClassifier
 from src.services.modification_detector import ModificationDetector
+from src.services.inspection_analysis import InspectionAnalysisPipeline
 from src.services.report_generator import ReportGenerator
 from src.services.gemini_analyzer import GeminiAnalyzer
 from src.services.model_registry import ModelRegistry
@@ -359,6 +360,7 @@ class ProcessResponse(BaseModel):
     exhaust: Dict[str, Any]
     report: Dict[str, Any]
     gemini_analysis: Dict[str, Any]
+    inspection_analysis: Dict[str, Any]
     reference_image: Dict[str, Any]
 
 
@@ -381,6 +383,7 @@ class RetryVlmResponse(BaseModel):
     """Response model for rerun VLM analysis."""
     inspection_id: str
     gemini_analysis: Dict[str, Any]
+    inspection_analysis: Dict[str, Any]
     vehicle_info: Dict[str, Any]
     report: Dict[str, Any]
 
@@ -419,8 +422,17 @@ async def retry_vlm_analysis(request: RetryVlmRequest, http_request: Request):
     _relativize_gemini_analysis_paths(gemini_data, backend_root)
 
     vehicle_info = _merge_vehicle_info(dict(request.vehicle_info or {}), gemini_data)
+    frame_analysis_rel = _relativize_frame_analysis(frame_analysis_abs, backend_root)
+    inspection_analysis = await InspectionAnalysisPipeline().analyze(
+        frame_analysis=frame_analysis_rel,
+        vehicle_info=vehicle_info,
+        damage={},
+        exhaust={},
+        vlm_result=gemini_data,
+    )
     report = dict(request.report or {})
     report["gemini_analysis"] = gemini_data
+    report["inspection_analysis"] = inspection_analysis
     report["visual_analysis"] = {
         "available": bool(gemini_data.get("available")),
         "reason": gemini_data.get("reason"),
@@ -435,6 +447,7 @@ async def retry_vlm_analysis(request: RetryVlmRequest, http_request: Request):
     return RetryVlmResponse(
         inspection_id=request.inspection_id,
         gemini_analysis=gemini_data,
+        inspection_analysis=inspection_analysis,
         vehicle_info=vehicle_info,
         report=report,
     )
@@ -604,6 +617,21 @@ async def process_video(request: ProcessRequest, http_request: Request):
 
         reference_image = (gemini_data.get("reference_image") or {}) if gemini_data else {}
 
+        logger.info("Step 3a/4: Validating and routing inspection images into canonical sections...")
+        inspection_analysis = await InspectionAnalysisPipeline().analyze(
+            frame_analysis=frame_analysis,
+            vehicle_info=vehicle_info,
+            damage=damage_data,
+            exhaust=exhaust_data,
+            vlm_result=gemini_data,
+        )
+        logger.info(
+            "Inspection analysis complete. sections=%s rejected=%d conflicts=%d",
+            len(inspection_analysis.get("consistency", {}).get("present_sections") or []),
+            len(inspection_analysis.get("rejected_images") or []),
+            len(inspection_analysis.get("consistency", {}).get("conflicts_resolved") or []),
+        )
+
         logger.info("Step 3b/4: Running local multi-part modification analysis...")
         if modification_detector is not None:
             modification_data = await modification_detector.detect(
@@ -628,6 +656,7 @@ async def process_video(request: ProcessRequest, http_request: Request):
             "exhaust": exhaust_data,
             "modification": modification_data,
             "gemini_analysis": gemini_data,
+            "inspection_analysis": inspection_analysis,
             "frame_analysis": frame_analysis,
         })
 
@@ -636,6 +665,7 @@ async def process_video(request: ProcessRequest, http_request: Request):
             report["gemini_analysis"] = gemini_data
             report["reference_image"] = reference_image
             report["frame_analysis"] = frame_analysis
+            report["inspection_analysis"] = inspection_analysis
             report["local_modification_analysis"] = modification_data
             report["pipeline_audit"] = _build_process_pipeline_audit(
                 frame_analysis=frame_analysis,
@@ -645,6 +675,7 @@ async def process_video(request: ProcessRequest, http_request: Request):
                 exhaust=exhaust_data,
                 report=report,
                 gemini_analysis=gemini_data,
+                inspection_analysis=inspection_analysis,
             )
 
         processing_time = time.time() - start_time
@@ -661,6 +692,7 @@ async def process_video(request: ProcessRequest, http_request: Request):
             exhaust=exhaust_data,
             report=report,
             gemini_analysis=gemini_data,
+            inspection_analysis=inspection_analysis,
             reference_image=reference_image,
         )
 
@@ -1171,6 +1203,7 @@ def _build_process_pipeline_audit(
     exhaust: Dict[str, Any],
     report: Dict[str, Any],
     gemini_analysis: Dict[str, Any],
+    inspection_analysis: Optional[Dict[str, Any]] = None,
     min_coverage: float = 0.75,
     min_temporal_coverage: float = 0.90,
     min_high_confidence_coverage: float = 0.50,
@@ -1194,6 +1227,7 @@ def _build_process_pipeline_audit(
     visual_analysis = _process_visual_analysis_status(report, gemini_analysis)
     condition = _process_condition(report, gemini_analysis)
     damage_evidence = _process_damage_category_evidence(damage, gemini_analysis)
+    section_routing_evidence = _process_section_routing_evidence(inspection_analysis or {})
     modification_items = _process_modification_items(report, gemini_analysis, exhaust)
     modification_evidence = _process_modification_evidence(
         modification_items,
@@ -1307,6 +1341,12 @@ def _build_process_pipeline_audit(
             and damage_evidence.get("severity") not in (None, ""),
             "Detect scratches, dents, rust, cracks, paint damage, wheel damage, broken lights, missing parts, panel alignment, locations, and severity.",
             damage_evidence,
+        ),
+        _audit_check(
+            "inspection_section_routing",
+            bool(section_routing_evidence["has_routed_sections"]),
+            "Route validated inspection images into confidence-aware vehicle sections.",
+            section_routing_evidence,
         ),
         _audit_check(
             "modification_detection",
@@ -1468,6 +1508,54 @@ def _process_selected_frame_quality_evidence(
         and not missing_paths
         and not missing_quality
         and not low_quality,
+    }
+
+
+def _process_section_routing_evidence(inspection_analysis: Dict[str, Any]) -> Dict[str, Any]:
+    if not inspection_analysis:
+        return {
+            "routed_images": None,
+            "present_sections": [],
+            "missing_sections": [],
+            "conflicts_resolved": [],
+            "rejected_count": None,
+            "has_routed_sections": False,
+            "not_supplied": True,
+        }
+    sections = inspection_analysis.get("sections") if isinstance(inspection_analysis.get("sections"), dict) else {}
+    consistency = (
+        inspection_analysis.get("consistency")
+        if isinstance(inspection_analysis.get("consistency"), dict)
+        else {}
+    )
+    expected_sections = [
+        "front",
+        "front-left",
+        "left",
+        "rear-left",
+        "rear",
+        "rear-right",
+        "right",
+        "dashboard",
+        "odometer",
+        "wheels",
+        "tyres",
+        "exhaust",
+        "damage-closeups",
+    ]
+    present = [
+        section
+        for section in expected_sections
+        if isinstance(sections.get(section), list) and len(sections.get(section) or []) > 0
+    ]
+    routed_images = sum(len(items) for items in sections.values() if isinstance(items, list))
+    return {
+        "routed_images": routed_images,
+        "present_sections": present,
+        "missing_sections": consistency.get("missing_sections"),
+        "conflicts_resolved": consistency.get("conflicts_resolved"),
+        "rejected_count": consistency.get("rejected_count"),
+        "has_routed_sections": routed_images > 0 and len(present) > 0,
     }
 
 

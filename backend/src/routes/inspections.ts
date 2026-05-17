@@ -252,6 +252,7 @@ function mergeVehicleInfoFromVlm(
 function buildVlmUpdate(
   inspection: InspectionRecord,
   vlmResult: Record<string, unknown>,
+  inspectionAnalysis?: Record<string, unknown>,
 ): Partial<InspectionRecord> {
   const vehicleInfo = mergeVehicleInfoFromVlm(
     parseJsonObject(inspection.vehicle_info),
@@ -265,6 +266,9 @@ function buildVlmUpdate(
       ? (report.vehicle_details as Record<string, unknown>)
       : {};
   report.gemini_analysis = vlmResult;
+  if (inspectionAnalysis && typeof inspectionAnalysis === "object") {
+    report.inspection_analysis = inspectionAnalysis;
+  }
   report.visual_analysis = {
     available: Boolean(vlmResult.available),
     reason: vlmResult.reason,
@@ -593,7 +597,15 @@ router.post(
 
     const updated = updateInspection(
       inspectionId,
-      buildVlmUpdate(inspection, vlmResult),
+      buildVlmUpdate(
+        inspection,
+        vlmResult,
+        mlResponse.data?.inspection_analysis &&
+          typeof mlResponse.data.inspection_analysis === "object" &&
+          !Array.isArray(mlResponse.data.inspection_analysis)
+          ? (mlResponse.data.inspection_analysis as Record<string, unknown>)
+          : undefined,
+      ),
     );
     logger.info(
       {

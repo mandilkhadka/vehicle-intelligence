@@ -406,6 +406,8 @@ def test_process_video_routes_absolute_paths_to_ml_and_relative_paths_to_respons
     assert response.odometer["crop_path"].startswith("frames/")
     assert response.odometer["readout_crop_path"].startswith("frames/")
     assert response.report["frame_analysis"] == response.frame_analysis
+    assert response.inspection_analysis["sections"]["front"][0]["frame"].startswith("frames/")
+    assert response.report["inspection_analysis"] == response.inspection_analysis
     assert response.report["local_modification_analysis"]["items"][0]["frame"].startswith("frames/")
     assert response.report["gemini_analysis"]["modification_items"][0]["part"] == "wheels"
     assert response.report["gemini_analysis"]["damage_items"][0]["frame"].startswith("frames/")
@@ -531,6 +533,20 @@ def test_process_pipeline_audit_surfaces_low_confidence_and_unavailable_evidence
             "damage_items": [],
             "modification_items": [],
         },
+        inspection_analysis={
+            "available": True,
+            "sections": {
+                "front": [
+                    {
+                        "section": "front",
+                        "frame": "/tmp/front.jpg",
+                        "confidence": 0.82,
+                    }
+                ]
+            },
+            "rejected_images": [],
+            "consistency": {"conflicts_resolved": [], "rejected_count": 0},
+        },
     )
 
     checks = {check["id"]: check for check in audit["checks"]}
@@ -551,6 +567,28 @@ def test_process_pipeline_audit_surfaces_low_confidence_and_unavailable_evidence
         "visual_analysis_available",
         "vehicle_identity",
     }
+
+
+def test_process_pipeline_audit_fails_closed_without_section_routing():
+    audit = _build_process_pipeline_audit(
+        frame_analysis={
+            "coverage": {"ratio": 0.0, "high_confidence_ratio": 0.0, "present_views": []},
+            "angle_shots": {},
+            "dashboard_candidates": [],
+            "extraction_metadata": {},
+        },
+        vehicle_info={},
+        odometer={},
+        damage={},
+        exhaust={},
+        report={},
+        gemini_analysis={"available": False},
+        inspection_analysis=None,
+    )
+
+    checks = {check["id"]: check for check in audit["checks"]}
+    assert checks["inspection_section_routing"]["passed"] is False
+    assert checks["inspection_section_routing"]["evidence"]["not_supplied"] is True
 
 
 def test_vehicle_identity_override_supplies_exact_year_and_variant():
@@ -631,6 +669,7 @@ def test_retry_vlm_analysis_uses_saved_organized_frames_and_merges_result():
     assert response.vehicle_info["brand"] == "Gemini"
     assert response.vehicle_info["year"] == 2024
     assert response.report["visual_analysis"]["available"] is True
+    assert response.report["inspection_analysis"]["available"] is True
     assert response.report["vehicle_details"]["model"] == "Vision"
     assert "pipeline_audit" not in response.report
 

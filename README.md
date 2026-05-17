@@ -174,12 +174,12 @@ The completion audit requires model-backed angle selection, temporal coverage
 across at least 90% of the source video, named front/rear/side/quarter plus
 interior/dashboard views, selected-frame quality, odometer confidence, live VLM
 availability, exact maker/model/year/trim/type/category identity, the full
-five-class damage schema, at least three concrete stock/modified part
-categories, and an inspection summary. Local-only candidates are useful for
-triage, but exact year/trim acceptance requires live VLM evidence,
-VIN/registration data, or manual confirmation. Multi-part modification evidence
-can come from the local CLIP modification scan, VLM, exhaust classifier,
-VIN/registration data, or manual confirmation.
+damage schema, confidence-aware inspection section routing, at least three
+concrete stock/modified part categories, and an inspection summary. Local-only
+candidates are useful for triage, but exact year/trim acceptance requires live
+VLM evidence, VIN/registration data, or manual confirmation. Multi-part
+modification evidence can come from the local CLIP modification scan, VLM,
+exhaust classifier, VIN/registration data, or manual confirmation.
 
 The upload API and upload form accept optional identity evidence fields such as
 `vehicle_brand`, `vehicle_model`, `vin`, `registration`, `vehicle_year`, and
@@ -214,6 +214,17 @@ external VLM review; add `--include-image-data` to embed base64 image data. For
 imported external VLM evidence, keep the merged artifact and rerun
 `audit_pipeline_completion.py` with `--no-require-live-vlm`; the default audit
 still requires the current runtime to have a live VLM path.
+
+The generated `inspection_analysis` artifact is the production UI-routing
+contract. It separates extraction, VLM evidence, classification validation, and
+frontend mapping: organized frames are scored for usability and foreground
+vehicle evidence, VLM/local evidence is normalized into canonical car sections,
+conflicts such as dashboard-versus-wheel or tyre-versus-interior are resolved,
+and the frontend renders the routed sections before falling back to raw
+organizer output. Keep new providers behind the inspection analysis provider
+boundary or the existing Gemini/OpenAI-compatible VLM adapter so API keys stay
+in `.env` files and the UI continues to receive stable section labels,
+confidence scores, timestamps, rejected-frame reasons, and raw model metadata.
 
 ## Technology Stack
 

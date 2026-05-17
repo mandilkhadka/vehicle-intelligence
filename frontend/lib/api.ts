@@ -148,6 +148,7 @@ export interface InspectionRecord {
   inspection_report?: string | (Record<string, unknown> & {
     pipeline_audit?: PipelineAudit;
     frame_analysis?: FrameAnalysis;
+    inspection_analysis?: InspectionAnalysis;
     local_modification_analysis?: {
       available: boolean;
       method?: string;
@@ -237,6 +238,38 @@ export interface FrameAnalysis {
     frame_interval?: number;
   };
   method: string;
+}
+
+export interface InspectionAnalysisImage {
+  id: string;
+  frame: string;
+  preview_path?: string;
+  section: string;
+  group: "exterior" | "interior" | "closeup" | "review";
+  source_view?: string;
+  confidence?: number;
+  quality_score?: number;
+  vehicle_ratio?: number;
+  foreground_bbox?: number[] | null;
+  dashboard_score?: number;
+  timestamp_seconds?: number;
+  high_confidence?: boolean;
+  tags?: string[];
+}
+
+export interface InspectionAnalysis {
+  available: boolean;
+  generated_at?: string;
+  provider?: string;
+  section_order: string[];
+  sections: Record<string, InspectionAnalysisImage[]>;
+  images: InspectionAnalysisImage[];
+  rejected_images: InspectionAnalysisImage[];
+  vehicle?: Record<string, unknown>;
+  damage_detections?: Array<Record<string, unknown>>;
+  consistency?: Record<string, unknown>;
+  stages?: Record<string, unknown>;
+  raw_model_responses?: Record<string, unknown>;
 }
 
 /**

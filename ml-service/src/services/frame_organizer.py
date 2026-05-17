@@ -319,11 +319,15 @@ class VehicleFrameOrganizer:
                 if candidate.index in used_indices:
                     continue
                 if self._has_exterior_evidence(candidate, len(candidates)):
+                    if not self._has_exterior_view_fit(candidate, view, view_offset, len(candidates)):
+                        continue
                     chosen = candidate
                     break
             if chosen is None:
                 for candidate in ranked:
                     if self._has_exterior_evidence(candidate, len(candidates)):
+                        if not self._has_exterior_view_fit(candidate, view, view_offset, len(candidates)):
+                            continue
                         chosen = candidate
                         break
             if chosen is None:
@@ -895,6 +899,7 @@ class VehicleFrameOrganizer:
             "semantic_source": semantic_source,
             "quality_score": round(float(candidate.quality_score), 4),
             "vehicle_ratio": round(float(candidate.vehicle_ratio), 4),
+            "vehicle_bbox": list(candidate.vehicle_box) if candidate.vehicle_box else None,
             "dashboard_score": round(float(candidate.heuristic_dashboard_score), 4),
             "clip_score": round(float(clip_score), 4),
         }

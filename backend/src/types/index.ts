@@ -165,6 +165,7 @@ export interface MLServiceResponse {
     exhaust_image_path?: string;
   } | null;
   frame_analysis?: FrameAnalysis | null;
+  inspection_analysis?: InspectionAnalysis | null;
   extracted_frames?: string[];
   frames?: string[];
   inspection_report?: string | null;
@@ -172,6 +173,7 @@ export interface MLServiceResponse {
     summary: string;
     recommendations: string[];
     frame_analysis?: FrameAnalysis;
+    inspection_analysis?: InspectionAnalysis;
     pipeline_audit?: PipelineAudit;
     modification_assessment?: {
       summary: string;
@@ -207,6 +209,37 @@ export interface MLServiceResponse {
       }>;
     };
   } | null;
+}
+
+export interface InspectionAnalysisImage {
+  id: string;
+  frame: string;
+  preview_path?: string;
+  section: string;
+  group: "exterior" | "interior" | "closeup" | "review";
+  source_view?: string;
+  confidence?: number;
+  quality_score?: number;
+  vehicle_ratio?: number;
+  foreground_bbox?: number[] | null;
+  timestamp_seconds?: number;
+  high_confidence?: boolean;
+  tags?: string[];
+}
+
+export interface InspectionAnalysis {
+  available: boolean;
+  generated_at?: string;
+  provider?: string;
+  section_order: string[];
+  sections: Record<string, InspectionAnalysisImage[]>;
+  images: InspectionAnalysisImage[];
+  rejected_images: InspectionAnalysisImage[];
+  vehicle?: Record<string, unknown>;
+  damage_detections?: Array<Record<string, unknown>>;
+  consistency?: Record<string, unknown>;
+  stages?: Record<string, unknown>;
+  raw_model_responses?: Record<string, unknown>;
 }
 
 /**

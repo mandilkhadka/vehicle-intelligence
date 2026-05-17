@@ -216,10 +216,21 @@ high-confidence angle coverage, selected frame quality of at least 0.40,
 dashboard/odometer candidates, odometer confidence of at least 0.50, a live
 Gemini or OpenAI VLM path, exact maker/model/year/trim/type/category identity
 with at least 0.70 confidence, the full damage schema
-(`scratches`, `dents`, `rust`, `cracks`, `paint_damage`) with severity, stock
-versus modified evidence for at least three concrete part categories from VLM,
-local CLIP, exhaust classifier, VIN/registration data, or manual review, and an
-inspection summary.
+(`scratches`, `dents`, `rust`, `cracks`, `paint_damage`, `wheel_damage`,
+`broken_lights`, `missing_parts`, `panel_misalignment`) with severity,
+confidence-aware inspection section routing, stock versus modified evidence for
+at least three concrete part categories from VLM, local CLIP, exhaust
+classifier, VIN/registration data, or manual review, and an inspection summary.
+
+`inspection_analysis` is the canonical post-processing artifact for UI
+placement. It consumes organized frame evidence, local damage/exhaust results,
+and Gemini/OpenAI-compatible VLM output, then emits stable sections such as
+`front`, `dashboard`, `tyres`, `exhaust`, and `damage-closeups` with confidence,
+quality, foreground box, timestamp, conflict-resolution, and rejected-frame
+metadata. Keep new Gemini, OpenAI, Claude, or local VLM integrations behind the
+provider boundary and return the same normalized schema so classification,
+validation, audit, and frontend rendering remain separate from extraction and
+provider-specific API details.
 
 The audit intentionally fails closed. A local-only vehicle classifier can
 produce useful candidates such as brand, model, year range, and variant

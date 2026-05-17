@@ -100,10 +100,41 @@ def _complete_inspection():
             "rust": {"count": 0, "detected": False},
             "cracks": {"count": 0, "detected": False},
             "paint_damage": {"count": 1, "detected": True},
+            "wheel_damage": {"count": 0, "detected": False},
+            "broken_lights": {"count": 0, "detected": False},
+            "missing_parts": {"count": 0, "detected": False},
+            "panel_misalignment": {"count": 0, "detected": False},
             "severity": "medium",
             "locations": [
                 {"type": "paint_damage", "location": "front bumper", "severity": "moderate"},
             ],
+        },
+        "inspection_analysis": {
+            "available": True,
+            "section_order": ["front", "dashboard", "wheels", "tyres", "damage-closeups"],
+            "sections": {
+                "front": [
+                    {
+                        "section": "front",
+                        "frame": "/tmp/front.jpg",
+                        "confidence": 0.86,
+                        "quality_score": 0.85,
+                    }
+                ],
+                "dashboard": [
+                    {
+                        "section": "dashboard",
+                        "frame": "/tmp/dashboard.jpg",
+                        "confidence": 0.88,
+                        "quality_score": 0.82,
+                    }
+                ],
+                "wheels": [],
+                "tyres": [],
+                "damage-closeups": [],
+            },
+            "rejected_images": [],
+            "consistency": {"conflicts_resolved": [], "rejected_count": 0},
         },
     }
 
@@ -165,6 +196,7 @@ def test_completion_audit_reports_missing_artifacts():
     assert "damage_detection" in audit["missing"]
     assert "modification_detection" in audit["missing"]
     assert "inspection_summary" in audit["missing"]
+    assert "inspection_section_routing" in audit["missing"]
 
 
 def test_completion_audit_requires_all_requested_damage_categories():
@@ -182,6 +214,22 @@ def test_completion_audit_requires_all_requested_damage_categories():
     assert audit["passed"] is False
     assert "damage_detection" in audit["missing"]
     assert damage_check["evidence"]["missing_categories"] == ["cracks", "paint_damage"]
+
+
+def test_completion_audit_requires_inspection_section_routing():
+    inspection = _complete_inspection()
+    inspection.pop("inspection_analysis")
+
+    audit = build_completion_audit(
+        manifest=_complete_manifest(),
+        inspection=inspection,
+        readiness={"capabilities": {"llm_vlm_analysis": True}},
+    )
+    routing_check = next(item for item in audit["checks"] if item["id"] == "inspection_section_routing")
+
+    assert audit["passed"] is False
+    assert "inspection_section_routing" in audit["missing"]
+    assert routing_check["evidence"]["not_supplied"] is True
 
 
 def test_completion_audit_requires_each_named_walkaround_view():

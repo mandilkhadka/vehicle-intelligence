@@ -10,6 +10,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
+  FileText,
   Gauge,
   Loader2,
   Maximize2,
@@ -150,7 +151,7 @@ function yesNo(value: unknown): string {
 type ReviewShot = {
   id: string;
   view: string;
-  group: "angle" | "dashboard";
+  group: "angle" | "dashboard" | "section";
   imagePath: string;
   previewPath: string;
   score?: number;
@@ -170,6 +171,17 @@ type DamageLocation = {
   linkedView?: string;
 };
 
+type AiListingBuilderContent = {
+  title: string;
+  shortSummary: string;
+  conditionGrade: string;
+  detectedDamageList: string[];
+  recommendedDisclosures: string[];
+  missingPhotoChecklist: string[];
+  confidenceWarnings: string[];
+  buyerFacingReport: string;
+};
+
 const EXTERIOR_360_ORDER = [
   "front",
   "front-left",
@@ -181,7 +193,19 @@ const EXTERIOR_360_ORDER = [
   "front-right",
 ];
 
-const INTERIOR_360_ORDER = ["interior", "dashboard", "odometer", "wheels", "trunk", "engine-bay"];
+const DETAIL_360_ORDER = [
+  "dashboard",
+  "steering-wheel",
+  "odometer",
+  "infotainment",
+  "seats",
+  "trunk",
+  "engine-bay",
+  "wheels",
+  "tyres",
+  "exhaust",
+  "damage-closeups",
+];
 
 const REVIEW_VIEW_ORDER = [
   "front",
@@ -194,35 +218,71 @@ const REVIEW_VIEW_ORDER = [
   "front-right",
   "interior",
   "dashboard",
+  "steering-wheel",
+  "odometer",
+  "infotainment",
+  "seats",
   "wheels",
+  "tyres",
+  "exhaust",
   "trunk",
   "engine-bay",
+  "damage-closeups",
 ];
 
 function displayViewName(view: string): string {
   return String(view || "frame").replaceAll("-", " ");
 }
 
-function buildReviewShots(frameAnalysis: any): ReviewShot[] {
+function buildReviewShots(frameAnalysis: any, inspectionAnalysis?: any): ReviewShot[] {
   const shots: ReviewShot[] = [];
   const seen = new Set<string>();
+  const seenPaths = new Set<string>();
   const addShot = (view: string, source: any, group: ReviewShot["group"], index = 0) => {
     if (!source || typeof source !== "object") return;
     const imagePath = source.inspection_path || source.organized_path || source.frame;
-    if (!imagePath || seen.has(`${group}:${view}:${imagePath}`)) return;
+    const pathKey = uploadKey(imagePath);
+    if (!imagePath || seen.has(`${group}:${view}:${imagePath}`) || (pathKey && seenPaths.has(pathKey))) return;
     seen.add(`${group}:${view}:${imagePath}`);
+    if (pathKey) seenPaths.add(pathKey);
     shots.push({
       id: `${group}-${view}-${index}`,
       view,
       group,
       imagePath,
       previewPath: source.preview_path || source.inspection_path || source.organized_path || source.frame,
-      score: typeof source.score === "number" ? source.score : undefined,
+      score:
+        typeof source.confidence === "number"
+          ? source.confidence
+          : typeof source.score === "number"
+            ? source.score
+            : undefined,
       qualityScore: typeof source.quality_score === "number" ? source.quality_score : undefined,
       timestampSeconds:
         typeof source.timestamp_seconds === "number" ? source.timestamp_seconds : undefined,
     });
   };
+
+  const routedSections = inspectionAnalysis?.sections;
+  if (routedSections && typeof routedSections === "object") {
+    const order = Array.isArray(inspectionAnalysis?.section_order)
+      ? inspectionAnalysis.section_order
+      : [...EXTERIOR_360_ORDER, ...DETAIL_360_ORDER];
+    order.forEach((view: string) => {
+      [...(routedSections[view] || [])]
+        .sort((a: any, b: any) => {
+          const confidenceDelta = Number(b?.confidence || 0) - Number(a?.confidence || 0);
+          if (confidenceDelta !== 0) return confidenceDelta;
+          const qualityDelta = Number(b?.quality_score || 0) - Number(a?.quality_score || 0);
+          if (qualityDelta !== 0) return qualityDelta;
+          return Number(a?.timestamp_seconds ?? Number.MAX_SAFE_INTEGER)
+            - Number(b?.timestamp_seconds ?? Number.MAX_SAFE_INTEGER);
+        })
+        .forEach((source: any, index: number) => {
+          addShot(source?.section || view, source, "section", index);
+        });
+    });
+  }
 
   const angleShots = frameAnalysis?.angle_shots || {};
   REVIEW_VIEW_ORDER.forEach((view) => addShot(view, angleShots[view], "angle"));
@@ -284,6 +344,365 @@ function orderedShots(shots: ReviewShot[], order: string[]): ReviewShot[] {
     if (!byView.has(shot.view)) byView.set(shot.view, shot);
   });
   return order.map((view) => byView.get(view)).filter(Boolean) as ReviewShot[];
+}
+
+function cleanText(value: unknown): string {
+  if (value == null) return "";
+  return String(value).replace(/\s+/g, " ").trim();
+}
+
+function displayValue(value: unknown): string {
+  return cleanText(value) || "Not supplied";
+}
+
+function formatPercent(value: unknown): string | null {
+  if (typeof value !== "number" || Number.isNaN(value)) return null;
+  return `${Math.round(value * 100)}%`;
+}
+
+function uniqueList(items: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  items.forEach((item) => {
+    const value = cleanText(item);
+    if (!value) return;
+    const key = value.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(value);
+  });
+  return out;
+}
+
+function normalizeLabel(value: unknown): string {
+  return cleanText(value).replaceAll("_", " ").replaceAll("-", " ");
+}
+
+function buildDamageItems(damage: any, gemini: any, inspectionAnalysis: any): string[] {
+  const items: string[] = [];
+  const sources = [
+    ...(Array.isArray(damage?.locations) ? damage.locations : []),
+    ...(Array.isArray(gemini?.damage_items) ? gemini.damage_items : []),
+    ...(Array.isArray(inspectionAnalysis?.damage_detections) ? inspectionAnalysis.damage_detections : []),
+  ];
+
+  sources.forEach((item: any) => {
+    const type = normalizeLabel(item?.type || "damage");
+    const location = cleanText(item?.location || item?.section || item?.linked_view || item?.angle);
+    const severity = cleanText(item?.severity);
+    const confidence = formatPercent(item?.confidence);
+    items.push(
+      [
+        type || "damage",
+        location ? `at ${location}` : "",
+        severity ? `(${severity})` : "",
+        confidence ? `confidence ${confidence}` : "",
+      ]
+        .filter(Boolean)
+        .join(" "),
+    );
+  });
+
+  const categoryLabels: Record<string, string> = {
+    scratches: "Scratches",
+    dents: "Dents",
+    rust: "Rust",
+    cracks: "Cracks",
+    paint_damage: "Paint damage",
+    wheel_damage: "Wheel damage",
+    broken_lights: "Broken lights",
+    missing_parts: "Missing parts",
+    panel_misalignment: "Panel misalignment",
+  };
+  Object.entries(categoryLabels).forEach(([key, label]) => {
+    const count = Number(damage?.[key]?.count || 0);
+    if (count > 0) items.push(`${label}: ${count}`);
+  });
+
+  return uniqueList(items);
+}
+
+function sectionImageCount(inspectionAnalysis: any, section: string): number {
+  const images = inspectionAnalysis?.sections?.[section];
+  return Array.isArray(images) ? images.length : 0;
+}
+
+function buildMissingPhotoChecklist(inspectionAnalysis: any, frameAnalysis: any): string[] {
+  const required = [
+    ...EXTERIOR_360_ORDER,
+    "dashboard",
+    "odometer",
+    "steering-wheel",
+    "infotainment",
+    "seats",
+    "trunk",
+    "engine-bay",
+    "wheels",
+    "tyres",
+    "exhaust",
+    "damage-closeups",
+  ];
+  const missing = required.filter((section) => {
+    if (sectionImageCount(inspectionAnalysis, section) > 0) return false;
+    if (frameAnalysis?.angle_shots?.[section]) return false;
+    if (
+      section === "dashboard" &&
+      Array.isArray(frameAnalysis?.dashboard_candidates) &&
+      frameAnalysis.dashboard_candidates.length > 0
+    ) {
+      return false;
+    }
+    return true;
+  });
+
+  return missing.length > 0
+    ? missing.map((section) => `Add clear ${displayViewName(section)} photo/video frame.`)
+    : ["All required auction photo sections have routed inspection images."];
+}
+
+function buildConditionGrade(
+  damage: any,
+  gemini: any,
+  pipelineAudit: PipelineAudit | undefined,
+): string {
+  const severity = cleanText(damage?.severity).toLowerCase();
+  const condition = cleanText(gemini?.overall_condition || gemini?.condition).toLowerCase();
+  const damageCount = buildDamageItems(damage, gemini, null).length;
+  const hasAuditFailures = Boolean(pipelineAudit && pipelineAudit.status !== "complete");
+
+  if (severity === "high" || condition === "poor") return "D - Significant issues disclosed";
+  if (severity === "medium" || condition === "fair" || damageCount >= 3) return "C - Visible issues, review closely";
+  if (hasAuditFailures || damageCount > 0 || severity === "low") return "B - Presentable with disclosed findings";
+  if (condition === "excellent") return "A - Clean visible condition";
+  return "B - Good visible condition";
+}
+
+function buildAiListingContent({
+  inspection,
+  vehicleInfo,
+  odometer,
+  damage,
+  exhaust,
+  report,
+  gemini,
+  inspectionAnalysis,
+  frameAnalysis,
+  pipelineAudit,
+  visualAnalysis,
+}: {
+  inspection: any;
+  vehicleInfo: Record<string, any>;
+  odometer: Record<string, any>;
+  damage: any;
+  exhaust: Record<string, any>;
+  report: Record<string, any> | null;
+  gemini: any;
+  inspectionAnalysis: any;
+  frameAnalysis: any;
+  pipelineAudit?: PipelineAudit;
+  visualAnalysis: any;
+}): AiListingBuilderContent {
+  const title = uniqueList([
+    vehicleInfo.year,
+    vehicleInfo.brand,
+    vehicleInfo.model,
+    vehicleInfo.variant,
+  ]).join(" ") || "Vehicle inspection listing";
+  const damageItems = buildDamageItems(damage, gemini, inspectionAnalysis);
+  const missingPhotoChecklist = buildMissingPhotoChecklist(inspectionAnalysis, frameAnalysis);
+  const failedAuditChecks = Array.isArray(pipelineAudit?.checks)
+    ? pipelineAudit.checks.filter((check) => !check?.passed)
+    : [];
+  const confidenceWarnings = uniqueList([
+    typeof vehicleInfo.confidence === "number" && vehicleInfo.confidence < 0.7
+      ? `Vehicle identity confidence is ${formatPercent(vehicleInfo.confidence)}.`
+      : null,
+    typeof odometer.confidence === "number" && odometer.confidence < 0.5
+      ? `Odometer confidence is ${formatPercent(odometer.confidence)}.`
+      : null,
+    visualAnalysis && !visualAnalysis.available
+      ? `Visual AI analysis unavailable: ${visualAnalysis.reason || "reason not supplied"}.`
+      : null,
+    inspectionAnalysis?.consistency?.rejected_count
+      ? `${inspectionAnalysis.consistency.rejected_count} inspection image(s) were rejected for quality or routing.`
+      : null,
+    ...failedAuditChecks.map((check) => `Verification issue: ${String(check.id).replaceAll("_", " ")}.`),
+  ]);
+  const recommendedDisclosures = uniqueList([
+    damageItems.length > 0
+      ? "Disclose all AI-detected damage and include close-up photos for each affected area."
+      : "State that no visible damage was detected by the current AI pass, subject to buyer review.",
+    exhaust?.type ? `Exhaust appears ${exhaust.type}; confirm stock/modified status in seller notes.` : null,
+    report?.modification_assessment?.summary
+      ? `Modification disclosure: ${report.modification_assessment.summary}`
+      : null,
+    odometer.value ? `Odometer reading captured as ${odometer.value}; confirm against instrument cluster and title paperwork.` : "Odometer reading is not verified; disclose as unknown until confirmed.",
+    vehicleInfo.vin || vehicleInfo.registration
+      ? "VIN/registration evidence was supplied; keep it available for buyer verification."
+      : "VIN/registration evidence is missing; add it before publishing the listing.",
+    confidenceWarnings.length > 0
+      ? "Mark listing as needing manual review until confidence warnings are resolved."
+      : null,
+  ]);
+  const shortSummary =
+    cleanText(report?.summary) ||
+    cleanText(gemini?.summary) ||
+    `${title} prepared from AI inspection evidence.`;
+  const conditionGrade = buildConditionGrade(damage, gemini, pipelineAudit);
+  const buyerFacingReport = [
+    `${title}`,
+    "",
+    shortSummary,
+    "",
+    `Condition grade: ${conditionGrade}`,
+    `Odometer: ${displayValue(odometer.value)}${formatPercent(odometer.confidence) ? ` (${formatPercent(odometer.confidence)} confidence)` : ""}`,
+    `Body type/category: ${displayValue(vehicleInfo.vehicle_category || vehicleInfo.category || vehicleInfo.type)}`,
+    `Color: ${displayValue(vehicleInfo.color)}`,
+    `Inspection ID: ${inspection.id}`,
+    "",
+    damageItems.length > 0 ? "Detected damage:" : "Detected damage: None reported by current AI pass.",
+    ...damageItems.map((item) => `- ${item}`),
+    "",
+    "Recommended disclosures:",
+    ...recommendedDisclosures.map((item) => `- ${item}`),
+    "",
+    "Missing photo checklist:",
+    ...missingPhotoChecklist.map((item) => `- ${item}`),
+    "",
+    confidenceWarnings.length > 0 ? "Confidence warnings:" : "Confidence warnings: none.",
+    ...confidenceWarnings.map((item) => `- ${item}`),
+  ].join("\n");
+
+  return {
+    title,
+    shortSummary,
+    conditionGrade,
+    detectedDamageList: damageItems.length > 0 ? damageItems : ["No visible damage detected by current AI evidence."],
+    recommendedDisclosures,
+    missingPhotoChecklist,
+    confidenceWarnings: confidenceWarnings.length > 0 ? confidenceWarnings : ["No major confidence warnings from current artifacts."],
+    buyerFacingReport,
+  };
+}
+
+function escapePdfText(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)");
+}
+
+function wrapPdfLine(line: string, maxLength = 92): string[] {
+  const words = line.split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let current = "";
+  words.forEach((word) => {
+    const next = current ? `${current} ${word}` : word;
+    if (next.length > maxLength && current) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = next;
+    }
+  });
+  if (current || line.trim() === "") lines.push(current);
+  return lines;
+}
+
+function buildPdfPages(lines: string[]): string[][] {
+  const pages: string[][] = [[]];
+  let lineCount = 0;
+  lines.forEach((line) => {
+    const wrapped = wrapPdfLine(line);
+    wrapped.forEach((wrappedLine) => {
+      if (lineCount >= 48) {
+        pages.push([]);
+        lineCount = 0;
+      }
+      pages[pages.length - 1].push(wrappedLine);
+      lineCount += 1;
+    });
+  });
+  return pages;
+}
+
+function createTextPdfBlob(title: string, lines: string[]): Blob {
+  const pages = buildPdfPages(lines);
+  const objects: string[] = [];
+  objects.push("<< /Type /Catalog /Pages 2 0 R >>");
+  const pageObjectIds = pages.map((_, index) => 4 + index * 2);
+  objects.push(`<< /Type /Pages /Kids [${pageObjectIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pages.length} >>`);
+  objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+
+  pages.forEach((pageLines, index) => {
+    const pageObjectId = 4 + index * 2;
+    const contentObjectId = pageObjectId + 1;
+    const contentLines = [
+      "BT",
+      "/F1 10 Tf",
+      "50 792 Td",
+      "14 TL",
+      ...pageLines.map((line) => `(${escapePdfText(line)}) Tj T*`),
+      "ET",
+    ];
+    const content = contentLines.join("\n");
+    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents ${contentObjectId} 0 R >>`);
+    objects.push(`<< /Length ${content.length} >>\nstream\n${content}\nendstream`);
+  });
+
+  let pdf = `%PDF-1.4\n% ${escapePdfText(title)}\n`;
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(pdf.length);
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xrefOffset = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  offsets.slice(1).forEach((offset) => {
+    pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  });
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+  return new Blob([pdf], { type: "application/pdf" });
+}
+
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function downloadAiListingPdf(listing: AiListingBuilderContent, inspectionId: string): void {
+  const lines = [
+    "AI AUCTION LISTING REPORT",
+    "",
+    `Title: ${listing.title}`,
+    `Condition grade: ${listing.conditionGrade}`,
+    "",
+    "Short summary:",
+    listing.shortSummary,
+    "",
+    "Detected damage list:",
+    ...listing.detectedDamageList.map((item) => `- ${item}`),
+    "",
+    "Recommended disclosures:",
+    ...listing.recommendedDisclosures.map((item) => `- ${item}`),
+    "",
+    "Missing-photo checklist:",
+    ...listing.missingPhotoChecklist.map((item) => `- ${item}`),
+    "",
+    "Confidence warnings:",
+    ...listing.confidenceWarnings.map((item) => `- ${item}`),
+    "",
+    "Buyer-facing report:",
+    ...listing.buyerFacingReport.split("\n"),
+  ];
+  downloadBlob(
+    createTextPdfBlob(listing.title, lines),
+    `ai-listing-${inspectionId}.pdf`,
+  );
 }
 
 function hasVehicleIdentityEvidence(evidence: Record<string, any>): boolean {
@@ -400,6 +819,25 @@ function auditEvidenceText(evidence: Record<string, any>): string | null {
   return null;
 }
 
+function ListingBuilderList({
+  title,
+  items,
+}: {
+  title: string;
+  items: string[];
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-background/60 p-3">
+      <h4 className="mb-2 text-sm font-semibold">{title}</h4>
+      <ul className="list-inside list-disc space-y-1 text-sm text-muted-foreground">
+        {items.map((item, index) => (
+          <li key={`${title}-${index}`}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function InspectionContent({
   inspection,
   onInspectionUpdated,
@@ -493,6 +931,7 @@ function InspectionContent({
       ? { available: gemini.available, reason: gemini.reason }
       : null);
   const frameAnalysis = report?.frame_analysis;
+  const inspectionAnalysis = report?.inspection_analysis;
   const reportModification = report?.modification_assessment;
   const pipelineAudit = report?.pipeline_audit as PipelineAudit | undefined;
   const [retryingVlm, setRetryingVlm] = useState(false);
@@ -513,8 +952,21 @@ function InspectionContent({
   const dashboardCandidates = Array.isArray(frameAnalysis?.dashboard_candidates)
     ? frameAnalysis.dashboard_candidates.slice(0, 6)
     : [];
-  const reviewShots = buildReviewShots(frameAnalysis);
+  const reviewShots = buildReviewShots(frameAnalysis, inspectionAnalysis);
   const damageLocations = normalizeDamageLocations(damage);
+  const aiListing = buildAiListingContent({
+    inspection,
+    vehicleInfo,
+    odometer,
+    damage,
+    exhaust,
+    report,
+    gemini,
+    inspectionAnalysis,
+    frameAnalysis,
+    pipelineAudit,
+    visualAnalysis,
+  });
 
   const retryVlm = async () => {
     setRetryingVlm(true);
@@ -576,6 +1028,71 @@ function InspectionContent({
           </CardContent>
         </Card>
       )}
+
+      <Card className="overflow-hidden">
+        <CardHeader className="border-b border-border bg-secondary/30">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <CardTitle className="flex items-center gap-2">
+              <FileText className="h-5 w-5 text-primary" />
+              AI Listing Builder
+            </CardTitle>
+            <Button
+              type="button"
+              variant="outline"
+              className="w-fit gap-2"
+              onClick={() => downloadAiListingPdf(aiListing, inspection.id)}
+            >
+              <Download className="h-4 w-4" />
+              Download Listing PDF
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 md:grid-cols-[1.25fr_0.75fr]">
+            <div>
+              <p className="font-mono text-[11px] uppercase tracking-normal text-muted-foreground">
+                Auction title
+              </p>
+              <h3 className="mt-1 text-lg font-semibold">{aiListing.title}</h3>
+              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                Listing summary: {aiListing.shortSummary}
+              </p>
+            </div>
+            <div className="rounded-lg border border-border bg-background/60 p-3">
+              <p className="font-mono text-[11px] uppercase tracking-normal text-muted-foreground">
+                Condition grade
+              </p>
+              <p className="mt-1 text-base font-semibold">{aiListing.conditionGrade}</p>
+            </div>
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-2">
+            <ListingBuilderList
+              title="Detected damage list"
+              items={aiListing.detectedDamageList}
+            />
+            <ListingBuilderList
+              title="Recommended disclosures"
+              items={aiListing.recommendedDisclosures}
+            />
+            <ListingBuilderList
+              title="Missing-photo checklist"
+              items={aiListing.missingPhotoChecklist}
+            />
+            <ListingBuilderList
+              title="Confidence warnings"
+              items={aiListing.confidenceWarnings}
+            />
+          </div>
+
+          <div className="rounded-lg border border-border bg-background/60 p-3">
+            <h4 className="mb-2 text-sm font-semibold">Buyer-facing report</h4>
+            <p className="whitespace-pre-line text-sm leading-relaxed text-muted-foreground">
+              {aiListing.buyerFacingReport}
+            </p>
+          </div>
+        </CardContent>
+      </Card>
 
       {pipelineAudit && (
         <Card className="overflow-hidden">
@@ -899,7 +1416,7 @@ function InspectionImageReview({
   dashboardCount: number;
 }) {
   const exteriorShots = useMemo(() => orderedShots(shots, EXTERIOR_360_ORDER), [shots]);
-  const interiorShots = useMemo(() => orderedShots(shots, INTERIOR_360_ORDER), [shots]);
+  const interiorShots = useMemo(() => orderedShots(shots, DETAIL_360_ORDER), [shots]);
   const [mode, setMode] = useState<"exterior" | "interior">(
     exteriorShots.length > 0 ? "exterior" : "interior",
   );
@@ -1031,7 +1548,7 @@ function InspectionImageReview({
           <div>
             <h4 className="text-sm font-semibold capitalize">{displayViewName(activeShot.view)}</h4>
             <p className="text-xs text-muted-foreground">
-              {mode === "exterior" ? "Exterior 360" : "Interior detail"}
+              {mode === "exterior" ? "Exterior 360" : "Inspection detail"}
               {typeof activeShot.qualityScore === "number"
                 ? ` · quality ${Math.round(activeShot.qualityScore * 100)}%`
                 : ""}
@@ -1059,7 +1576,7 @@ function InspectionImageReview({
                   className="h-8 rounded"
                   onClick={() => setMode("interior")}
                 >
-                  Interior
+                  Details
                 </Button>
               </div>
             )}

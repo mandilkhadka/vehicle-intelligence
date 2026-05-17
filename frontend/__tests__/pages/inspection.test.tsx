@@ -315,6 +315,86 @@ describe("InspectionPage", () => {
     });
   });
 
+  it("uses generated inspection analysis sections before organizer fallback", async () => {
+    (getInspection as jest.Mock).mockResolvedValue({
+      ...mockInspectionData,
+      inspection_report: JSON.stringify({
+        summary: "Vehicle sections routed.",
+        inspection_analysis: {
+          available: true,
+          provider: "mock",
+          section_order: ["front", "dashboard", "tyres", "exhaust", "damage-closeups"],
+          sections: {
+            front: [
+              {
+                id: "section-front-0",
+                section: "front",
+                group: "exterior",
+                frame: "frames/test/routed/front.jpg",
+                preview_path: "frames/test/routed/front-preview.jpg",
+                confidence: 0.89,
+                quality_score: 0.88,
+              },
+            ],
+            dashboard: [
+              {
+                id: "section-dashboard-0",
+                section: "dashboard",
+                group: "interior",
+                frame: "frames/test/routed/dashboard.jpg",
+                preview_path: "frames/test/routed/dashboard-preview.jpg",
+                confidence: 0.91,
+                quality_score: 0.9,
+              },
+            ],
+            tyres: [
+              {
+                id: "section-tyres-0",
+                section: "tyres",
+                group: "closeup",
+                frame: "frames/test/routed/tyre.jpg",
+                preview_path: "frames/test/routed/tyre-preview.jpg",
+                confidence: 0.88,
+                quality_score: 0.86,
+              },
+            ],
+            exhaust: [
+              {
+                id: "section-exhaust-0",
+                section: "exhaust",
+                group: "closeup",
+                frame: "frames/test/routed/exhaust.jpg",
+                preview_path: "frames/test/routed/exhaust-preview.jpg",
+                confidence: 0.82,
+              },
+            ],
+            "damage-closeups": [],
+          },
+          consistency: {
+            present_sections: ["front", "dashboard", "tyres", "exhaust"],
+            conflicts_resolved: [],
+            rejected_count: 0,
+          },
+        },
+      }),
+    });
+
+    render(<InspectionPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Interactive 360 Inspection Viewer")).toBeInTheDocument();
+      expect(screen.getByText("Details")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText("Details"));
+
+    await waitFor(() => {
+      expect(screen.getAllByText("dashboard").length).toBeGreaterThan(0);
+      expect(screen.getByText("tyres")).toBeInTheDocument();
+      expect(screen.getByText("exhaust")).toBeInTheDocument();
+    });
+  });
+
   it("renders structured visual damage and modification findings", async () => {
     (getInspection as jest.Mock).mockResolvedValue({
       ...mockInspectionData,
@@ -761,5 +841,77 @@ describe("InspectionPage", () => {
     await waitFor(() => {
       expect(screen.getByText("Download JSON")).toBeInTheDocument();
     });
+  });
+
+  it("builds an AI auction listing and downloads it as a PDF", async () => {
+    const createObjectURL = jest.fn(() => "blob:listing-pdf");
+    const revokeObjectURL = jest.fn();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectURL,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: revokeObjectURL,
+    });
+    const clickSpy = jest
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => {});
+
+    (getInspection as jest.Mock).mockResolvedValue({
+      ...mockInspectionData,
+      vehicle_info: JSON.stringify({
+        brand: "Toyota",
+        model: "Sienta",
+        year: "2024",
+        variant: "Hybrid Z",
+        type: "car",
+        vehicle_category: "compact minivan",
+        confidence: 0.92,
+      }),
+      inspection_report: JSON.stringify({
+        summary: "Clean family mover with one disclosed bumper mark.",
+        gemini_analysis: {
+          available: true,
+          provider: "openai",
+          overall_condition: "good",
+          damage_items: [
+            {
+              type: "paint_damage",
+              location: "front bumper",
+              severity: "low",
+              confidence: 0.82,
+            },
+          ],
+        },
+        inspection_analysis: {
+          available: true,
+          section_order: ["front", "dashboard"],
+          sections: {
+            front: [{ section: "front", frame: "frames/test/front.jpg", confidence: 0.9 }],
+            dashboard: [{ section: "dashboard", frame: "frames/test/dashboard.jpg", confidence: 0.88 }],
+          },
+          rejected_images: [],
+          consistency: { rejected_count: 0 },
+        },
+      }),
+    });
+
+    render(<InspectionPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("AI Listing Builder")).toBeInTheDocument();
+      expect(screen.getByText("2024 Toyota Sienta Hybrid Z")).toBeInTheDocument();
+      expect(screen.getByText("Download Listing PDF")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText("Download Listing PDF"));
+
+    expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
+    expect((createObjectURL.mock.calls[0][0] as Blob).type).toBe("application/pdf");
+    expect(clickSpy).toHaveBeenCalled();
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:listing-pdf");
+
+    clickSpy.mockRestore();
   });
 });
