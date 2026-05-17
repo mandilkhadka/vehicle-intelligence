@@ -140,6 +140,7 @@ export default function ReviewPage() {
                       src={src}
                       alt={`${item.type || "damage"} on ${item.part_label || item.part || "unknown area"}`}
                       fill
+                      unoptimized
                       className="object-cover"
                       sizes="(max-width: 1024px) 50vw, 33vw"
                     />

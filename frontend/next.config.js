@@ -38,8 +38,10 @@ const nextConfig = {
           { key: "X-Frame-Options", value: "DENY" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
           {
+            // Allow camera on same-origin so the /capture guided walkaround
+            // can prompt for it; everything else stays denied.
             key: "Permissions-Policy",
-            value: "camera=(), microphone=(), geolocation=(), payment=()",
+            value: "camera=(self), microphone=(), geolocation=(), payment=()",
           },
         ],
       },

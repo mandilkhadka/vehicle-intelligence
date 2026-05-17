@@ -388,6 +388,7 @@ export default function DamageInfo({ damage, inspectionId }: DamageInfoProps) {
                                   alt={`${type} on ${group.partLabel} — ${pct}% confidence`}
                                   fill
                                   loading="lazy"
+                                  unoptimized
                                   className="object-cover"
                                   sizes="(max-width: 768px) 50vw, 33vw"
                                 />
