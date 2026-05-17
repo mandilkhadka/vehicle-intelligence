@@ -18,6 +18,7 @@ import { reapStuckJobs, listVideosEligibleForCleanup } from "./models/inspection
 import { requestIdMiddleware } from "./middleware/requestId";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 import uploadRouter from "./routes/upload";
+import preflightRouter from "./routes/preflight";
 import jobsRouter from "./routes/jobs";
 import inspectionsRouter from "./routes/inspections";
 import metricsRouter from "./routes/metrics";
@@ -228,6 +229,7 @@ app.use(
 );
 
 // API routes
+app.use("/api/upload/preflight", preflightRouter);
 app.use("/api/upload", uploadRouter);
 app.use("/api/jobs", jobsRouter);
 app.use("/api/metrics", metricsRouter);

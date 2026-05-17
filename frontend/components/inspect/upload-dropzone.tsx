@@ -3,22 +3,25 @@
 import React from "react"
 
 import { useState, useCallback } from "react"
-import { Upload, Film, X, FileVideo, CheckCircle2, AlertCircle } from "lucide-react"
+import { Upload, Film, X, FileVideo, CheckCircle2, AlertCircle, ShieldCheck, AlertTriangle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
 import { cn } from "@/lib/utils"
-import { uploadVideo } from "@/lib/api"
+import { uploadVideo, runPreflight, type PreflightResult } from "@/lib/api"
 
 interface UploadedFile {
   id: string
   name: string
   size: number
   progress: number
-  status: "uploading" | "processing" | "complete" | "error"
+  status: "preflight" | "preflight_blocked" | "uploading" | "processing" | "complete" | "error"
   jobId?: string
   error?: string
+  preflight?: PreflightResult
+  rawFile?: File
+  rawOdometerImage?: File | null
 }
 
 interface UploadDropzoneProps {
@@ -60,16 +63,47 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
     setIsDragging(false)
   }, [])
 
-  const handleUpload = useCallback(async (file: File, odometerImage?: File | null) => {
+  const handleUpload = useCallback(async (file: File, odometerImage?: File | null, opts?: { skipPreflight?: boolean }) => {
     const newFile: UploadedFile = {
       id: Math.random().toString(36).substring(7),
       name: file.name,
       size: file.size,
       progress: 0,
-      status: "uploading",
+      status: opts?.skipPreflight ? "uploading" : "preflight",
+      rawFile: file,
+      rawOdometerImage: odometerImage,
     }
 
     setFiles((prev) => [...prev, newFile])
+
+    // Pre-flight quality gate. Surface issues before the user waits for the
+    // full pipeline. Fails open if the ML service is down.
+    if (!opts?.skipPreflight) {
+      try {
+        const preflight = await runPreflight(file)
+        setFiles((prev) =>
+          prev.map((f) =>
+            f.id === newFile.id ? { ...f, preflight } : f,
+          ),
+        )
+        if (!preflight.can_proceed) {
+          setFiles((prev) =>
+            prev.map((f) =>
+              f.id === newFile.id ? { ...f, status: "preflight_blocked" } : f,
+            ),
+          )
+          return
+        }
+      } catch (preflightError) {
+        // Fail open — the backend route also fails open, but defend in depth.
+        console.warn("Pre-flight check failed; continuing to upload", preflightError)
+      }
+      setFiles((prev) =>
+        prev.map((f) =>
+          f.id === newFile.id ? { ...f, status: "uploading" } : f,
+        ),
+      )
+    }
 
     try {
       const result = await uploadVideo(
@@ -154,6 +188,17 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
       return next
     })
   }
+
+  const uploadAnyway = useCallback(
+    (file: UploadedFile) => {
+      if (!file.rawFile) return
+      const rawFile = file.rawFile
+      const rawOdo = file.rawOdometerImage
+      setFiles((prev) => prev.filter((f) => f.id !== file.id))
+      handleUpload(rawFile, rawOdo, { skipPreflight: true })
+    },
+    [handleUpload],
+  )
 
   const formatFileSize = (bytes: number) => {
     if (bytes < 1024 * 1024) {
@@ -297,6 +342,24 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
                   <span className="text-xs text-muted-foreground">
                     {formatFileSize(file.size)}
                   </span>
+                  {file.status === "preflight" && (
+                    <>
+                      <span className="text-xs text-muted-foreground">·</span>
+                      <span className="flex items-center gap-1 text-xs text-primary">
+                        <ShieldCheck className="h-3 w-3" />
+                        Pre-flight check…
+                      </span>
+                    </>
+                  )}
+                  {file.status === "preflight_blocked" && (
+                    <>
+                      <span className="text-xs text-muted-foreground">·</span>
+                      <span className="flex items-center gap-1 text-xs text-amber-600">
+                        <AlertTriangle className="h-3 w-3" />
+                        Pre-flight failed
+                      </span>
+                    </>
+                  )}
                   {file.status === "uploading" && (
                     <>
                       <span className="text-xs text-muted-foreground">·</span>
@@ -338,6 +401,32 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
                     className="mt-2 h-1"
                   />
                 )}
+                {file.status === "preflight_blocked" && file.preflight && (
+                  <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200">
+                    <p className="font-medium">Fix these before re-uploading:</p>
+                    <ul className="mt-1 list-inside list-disc space-y-0.5">
+                      {file.preflight.issues.map((issue) => (
+                        <li key={issue}>{issue}</li>
+                      ))}
+                    </ul>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <Button type="button" size="sm" variant="outline" onClick={() => uploadAnyway(file)}>
+                        Upload anyway
+                      </Button>
+                      <span className="text-[10px] text-muted-foreground">
+                        Coverage {Math.round((file.preflight.coverage_estimate ?? 0) * 100)}% ·
+                        {" "}Vehicle visible {Math.round((file.preflight.vehicle_visible_ratio ?? 0) * 100)}%
+                      </span>
+                    </div>
+                  </div>
+                )}
+                {file.preflight?.warnings?.length ? (
+                  <div className="mt-2 rounded-md border border-border bg-secondary/40 p-2 text-xs text-muted-foreground">
+                    {file.preflight.warnings.map((w) => (
+                      <div key={w}>· {w}</div>
+                    ))}
+                  </div>
+                ) : null}
                 {file.status === "error" && file.error && (
                   <p className="mt-1 text-xs text-destructive">{file.error}</p>
                 )}

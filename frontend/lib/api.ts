@@ -81,6 +81,37 @@ export async function uploadVideo(
   return response.data;
 }
 
+export interface PreflightResult {
+  ok: boolean;
+  can_proceed: boolean;
+  duration_sec?: number | null;
+  sampled_frames?: number;
+  coverage_estimate?: number;
+  blur_score?: number | null;
+  brightness_score?: number | null;
+  vehicle_visible_ratio?: number;
+  issues: string[];
+  warnings: string[];
+  elapsed_sec?: number;
+}
+
+/**
+ * Run the cheap pre-flight quality check before the heavy upload.
+ * Returns a verdict + actionable issue list. The route fails open if the
+ * ML service is down, so a returned `can_proceed: true` does not guarantee
+ * the pipeline will succeed — it only guarantees no blocking issue was
+ * detected.
+ */
+export async function runPreflight(file: File): Promise<PreflightResult> {
+  const formData = new FormData();
+  formData.append("video", file);
+  const response = await apiClient.post("/upload/preflight", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 60000,
+  });
+  return response.data as PreflightResult;
+}
+
 /**
  * Get the status of a processing job
  * @param jobId - The job ID to check

@@ -30,6 +30,7 @@ from src.config.env import load_ml_environment
 load_ml_environment()
 
 from src.api.process import router as process_router, initialize_ml_services
+from src.api.preflight import router as preflight_router
 from src.services.model_registry import get_model_registry
 from src.services.pipeline_readiness import build_pipeline_readiness
 
@@ -189,6 +190,7 @@ async def log_requests(request: Request, call_next):
 
 # Include routers
 app.include_router(process_router, prefix="/api", tags=["processing"])
+app.include_router(preflight_router, prefix="/api", tags=["preflight"])
 
 
 @app.get("/health")
