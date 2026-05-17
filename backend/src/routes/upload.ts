@@ -96,6 +96,21 @@ const uploadWithOdometer = multer({
   { name: "odometer_image", maxCount: 1 },
 ]);
 
+// Per-field length caps + safe-charset patterns. Anything that fails is
+// dropped rather than rejecting the whole upload — the override is purely
+// optional metadata.
+const IDENTITY_FIELD_RULES: Record<string, { maxLen: number; pattern?: RegExp }> = {
+  source: { maxLen: 64, pattern: /^[A-Za-z0-9 _.\-]+$/ },
+  brand: { maxLen: 64, pattern: /^[\p{L}\p{N} .,'\-/&]+$/u },
+  model: { maxLen: 128, pattern: /^[\p{L}\p{N} .,'\-/&]+$/u },
+  year: { maxLen: 8, pattern: /^[0-9]{2,4}$/ },
+  variant: { maxLen: 128, pattern: /^[\p{L}\p{N} .,'\-/&]+$/u },
+  type: { maxLen: 64, pattern: /^[A-Za-z0-9 _\-]+$/ },
+  vehicle_category: { maxLen: 64, pattern: /^[A-Za-z0-9 _\-]+$/ },
+  vin: { maxLen: 32, pattern: /^[A-HJ-NPR-Z0-9]{8,32}$/i },
+  registration: { maxLen: 32, pattern: /^[A-Za-z0-9 \-]+$/ },
+};
+
 function bodyString(req: Request, field: string): string | undefined {
   const value = req.body?.[field];
   if (typeof value !== "string") {
@@ -105,19 +120,38 @@ function bodyString(req: Request, field: string): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+function sanitizeIdentityField(field: string, raw: string | undefined): string | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+  const rule = IDENTITY_FIELD_RULES[field];
+  if (!rule) {
+    return undefined;
+  }
+  if (raw.length > rule.maxLen) {
+    logger.warn({ field, length: raw.length, max: rule.maxLen }, "Identity field too long; dropping");
+    return undefined;
+  }
+  if (rule.pattern && !rule.pattern.test(raw)) {
+    logger.warn({ field }, "Identity field failed charset check; dropping");
+    return undefined;
+  }
+  return raw;
+}
+
 function vehicleIdentityOverrideFromBody(
   req: Request,
 ): Record<string, unknown> | undefined {
   const override = {
-    source: bodyString(req, "vehicle_identity_source") || "upload_form",
-    brand: bodyString(req, "vehicle_brand"),
-    model: bodyString(req, "vehicle_model"),
-    year: bodyString(req, "vehicle_year"),
-    variant: bodyString(req, "vehicle_variant"),
-    type: bodyString(req, "vehicle_type"),
-    vehicle_category: bodyString(req, "vehicle_category"),
-    vin: bodyString(req, "vin"),
-    registration: bodyString(req, "registration"),
+    source: sanitizeIdentityField("source", bodyString(req, "vehicle_identity_source")) || "upload_form",
+    brand: sanitizeIdentityField("brand", bodyString(req, "vehicle_brand")),
+    model: sanitizeIdentityField("model", bodyString(req, "vehicle_model")),
+    year: sanitizeIdentityField("year", bodyString(req, "vehicle_year")),
+    variant: sanitizeIdentityField("variant", bodyString(req, "vehicle_variant")),
+    type: sanitizeIdentityField("type", bodyString(req, "vehicle_type")),
+    vehicle_category: sanitizeIdentityField("vehicle_category", bodyString(req, "vehicle_category")),
+    vin: sanitizeIdentityField("vin", bodyString(req, "vin")),
+    registration: sanitizeIdentityField("registration", bodyString(req, "registration")),
   };
   const hasEvidence = Object.entries(override).some(
     ([key, value]) => key !== "source" && value !== undefined,

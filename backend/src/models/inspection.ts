@@ -252,6 +252,57 @@ export function updateInspection(
 }
 
 /**
+ * Return uploaded video paths for completed jobs whose inspection finished
+ * more than `retentionDays` ago. The caller is expected to remove these files
+ * from disk. Frames and snapshots under uploads/frames are kept so users can
+ * still revisit their inspection report.
+ */
+export function listVideosEligibleForCleanup(retentionDays: number): Array<{ jobId: string; filePath: string }> {
+  const db = getDatabase();
+  const stmt = db.prepare(`
+    SELECT j.id AS jobId, f.file_path AS filePath
+      FROM jobs j
+      INNER JOIN inspections i ON j.id = i.job_id
+      INNER JOIN files f ON i.file_id = f.id
+     WHERE j.status = 'completed'
+       AND (julianday(CURRENT_TIMESTAMP) - julianday(i.updated_at)) > ?
+       AND f.file_path IS NOT NULL
+       AND f.file_path != ''
+  `);
+  return stmt.all(retentionDays) as Array<{ jobId: string; filePath: string }>;
+}
+
+/**
+ * Mark long-stuck jobs as failed.
+ *
+ * Job processing runs in-process; if the backend crashes mid-job, rows stay
+ * in `pending` or `processing` forever and the frontend polls them
+ * indefinitely. On startup (and optionally on a schedule) call this to flip
+ * stale rows to `failed` with a recognizable error message so the UI moves on.
+ */
+export function reapStuckJobs(opts?: { processingMaxAgeMinutes?: number; pendingMaxAgeMinutes?: number }): number {
+  const db = getDatabase();
+  const processingMax = opts?.processingMaxAgeMinutes ?? 30;
+  const pendingMax = opts?.pendingMaxAgeMinutes ?? 60;
+
+  // SQLite's CURRENT_TIMESTAMP is UTC; updated_at is set on every status update.
+  const stmt = db.prepare(`
+    UPDATE jobs
+       SET status = 'failed',
+           error_message = COALESCE(error_message, ?),
+           updated_at = CURRENT_TIMESTAMP
+     WHERE (status = 'processing' AND (julianday(CURRENT_TIMESTAMP) - julianday(updated_at)) * 24 * 60 > ?)
+        OR (status = 'pending'    AND (julianday(CURRENT_TIMESTAMP) - julianday(created_at)) * 24 * 60 > ?)
+  `);
+  const result = stmt.run(
+    "Job abandoned (backend restarted while processing or never picked up)",
+    processingMax,
+    pendingMax,
+  );
+  return Number(result.changes) || 0;
+}
+
+/**
  * Get all inspections
  */
 export function getAllInspections(): InspectionRecord[] {

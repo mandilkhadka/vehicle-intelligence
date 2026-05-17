@@ -237,10 +237,35 @@ if [ "$FAILED" = true ]; then
     # Don't exit — keep running services that did start
 fi
 
-# Wait for HTTP endpoints
-wait_for_service "http://localhost:3001/api/jobs/health-check" "Backend" 15 || true
-wait_for_service "http://localhost:8000/health" "ML Service" 90 || true
-wait_for_service "http://localhost:3000" "Frontend" 30 || true
+# Wait for HTTP endpoints. Allow overrides for slow machines / cold model loads.
+BACKEND_READY_TIMEOUT=${BACKEND_READY_TIMEOUT:-30}
+ML_READY_TIMEOUT=${ML_READY_TIMEOUT:-180}
+FRONTEND_READY_TIMEOUT=${FRONTEND_READY_TIMEOUT:-60}
+STRICT_HEALTH_CHECKS=${STRICT_HEALTH_CHECKS:-true}
+
+backend_ready=true
+ml_ready=true
+frontend_ready=true
+
+wait_for_service "http://localhost:3001/api/jobs/health-check" "Backend" "$BACKEND_READY_TIMEOUT" || backend_ready=false
+wait_for_service "http://localhost:8000/health" "ML Service" "$ML_READY_TIMEOUT" || ml_ready=false
+wait_for_service "http://localhost:3000" "Frontend" "$FRONTEND_READY_TIMEOUT" || frontend_ready=false
+
+if [ "$STRICT_HEALTH_CHECKS" = "true" ]; then
+    if [ "$backend_ready" = false ] || [ "$ml_ready" = false ]; then
+        echo ""
+        echo "  ✗ Critical service(s) failed health checks. Aborting."
+        echo "    Set STRICT_HEALTH_CHECKS=false to keep partial environments running."
+        echo "    Backend log:    /tmp/vi-backend.log"
+        echo "    ML Service log: /tmp/vi-ml-service.log"
+        echo "    Frontend log:   /tmp/vi-frontend.log"
+        exit 1
+    fi
+    if [ "$frontend_ready" = false ]; then
+        echo "  ⚠ Frontend did not respond in ${FRONTEND_READY_TIMEOUT}s but backend/ML are up."
+        echo "    Tail /tmp/vi-frontend.log if it stays unreachable."
+    fi
+fi
 
 echo ""
 echo "================================================"

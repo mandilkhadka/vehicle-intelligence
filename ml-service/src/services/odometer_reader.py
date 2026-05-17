@@ -44,14 +44,57 @@ try:
 except ImportError:
     GEMINI_AVAILABLE = False
 
-_MAX_OCR_FRAMES = 3
-_TESSERACT_TIMEOUT_SECONDS = 4
-_EARLY_STOP_OCR_CONFIDENCE = 0.86
-_MIN_RELIABLE_LOCAL_OCR_CONFIDENCE = 0.50
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return float(default)
+    try:
+        return float(raw)
+    except ValueError:
+        return float(default)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return int(default)
+    try:
+        return int(raw)
+    except ValueError:
+        return int(default)
+
+
+# Env-tunable knobs. Defaults match the previous hardcoded behaviour.
+_MAX_OCR_FRAMES = _env_int("ML_ODOMETER_MAX_FRAMES", 3)
+_TESSERACT_TIMEOUT_SECONDS = _env_int("ML_TESSERACT_TIMEOUT_SECONDS", 4)
+_EARLY_STOP_OCR_CONFIDENCE = _env_float("ML_ODOMETER_EARLY_STOP_CONFIDENCE", 0.86)
+_MIN_RELIABLE_LOCAL_OCR_CONFIDENCE = _env_float("ML_ODOMETER_MIN_RELIABLE_CONFIDENCE", 0.50)
+
+# Plausibility bounds. A modern passenger vehicle should never read above ~2M km/mi.
+# Use a generous ceiling but reject obvious OCR hallucinations like 99999999.
+_MAX_PLAUSIBLE_ODOMETER = _env_int("ML_ODOMETER_MAX_PLAUSIBLE", 2_000_000)
+_MIN_PLAUSIBLE_ODOMETER = _env_int("ML_ODOMETER_MIN_PLAUSIBLE", 0)
+
 _LOW_CONFIDENCE_OCR_REASON = (
     "Local OCR produced only low-confidence or conflicting odometer candidates; "
     "manual/VLM verification is required"
 )
+
+
+def _is_plausible_odometer(value) -> bool:
+    """Reject obviously bad OCR digits before they reach the user-facing report."""
+    try:
+        num = int(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return False
+    if num < _MIN_PLAUSIBLE_ODOMETER or num > _MAX_PLAUSIBLE_ODOMETER:
+        return False
+    # Reject runs of identical digits (e.g. 99999999, 88888888) which are
+    # classic OCR hallucinations on 7-segment displays.
+    s = str(num)
+    if len(s) >= 6 and len(set(s)) == 1:
+        return False
+    return True
 
 
 class OdometerReader:
@@ -352,6 +395,12 @@ class OdometerReader:
 
     @staticmethod
     def _rank_ocr_readings(odometer_values: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        # Filter out implausible OCR results (e.g. 99999999 hallucinations,
+        # negative values, absurd ranges) before scoring. These are usually
+        # caused by 7-segment glare or partial digit occlusion.
+        odometer_values = [r for r in odometer_values if _is_plausible_odometer(r.get("value"))]
+        if not odometer_values:
+            return []
         value_groups: Dict[int, Dict[str, Any]] = {}
         for reading in odometer_values:
             value = reading["value"]
@@ -438,6 +487,8 @@ Rules:
                 print(f"Gemini vision odometer error for {frame_path}: {e}")
                 continue
 
+        # Drop implausible VLM readings (e.g. 99999999) so they don't trump OCR.
+        readings = [r for r in readings if r.get("value") is None or _is_plausible_odometer(r.get("value"))]
         if not readings:
             if unavailable_reason:
                 return {
@@ -493,6 +544,7 @@ Rules:
             if parsed:
                 readings.append(parsed)
 
+        readings = [r for r in readings if r.get("value") is None or _is_plausible_odometer(r.get("value"))]
         if not readings:
             if unavailable_reason:
                 return {

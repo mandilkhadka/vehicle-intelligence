@@ -15,13 +15,43 @@ from src.utils.frame_utils import select_frames
 
 logger = logging.getLogger(__name__)
 
-# Maximum frames to process for damage detection
-# Using evenly-spaced selection for 360-degree coverage
-MAX_FRAMES = 15
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return float(default)
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+        return float(default)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return int(default)
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+        return int(default)
+
+
+# Maximum frames to process for damage detection. Evenly-spaced for 360-degree
+# coverage. Override with ML_DAMAGE_MAX_FRAMES.
+MAX_FRAMES = _env_int("ML_DAMAGE_MAX_FRAMES", 15)
 
 # Low sensitivity mode: require stronger evidence before surfacing a local
-# computer-vision damage finding. This reduces noisy scratches/paint/dent hits.
-DAMAGE_CONFIDENCE_THRESHOLD = 0.55
+# computer-vision damage finding. Reduces noisy scratches/paint/dent hits.
+# Override with ML_DAMAGE_CONFIDENCE_THRESHOLD.
+DAMAGE_CONFIDENCE_THRESHOLD = _env_float("ML_DAMAGE_CONFIDENCE_THRESHOLD", 0.55)
+
+# Dedup tuning: how far (px) and how many frames apart we still treat a hit as
+# the same physical damage seen from another angle. Override with
+# ML_DAMAGE_DEDUP_RADIUS_PX and ML_DAMAGE_DEDUP_FRAME_WINDOW.
+DEDUP_RADIUS_PX = _env_int("ML_DAMAGE_DEDUP_RADIUS_PX", 80)
+DEDUP_FRAME_WINDOW = _env_int("ML_DAMAGE_DEDUP_FRAME_WINDOW", 5)
 
 
 class DamageDetector:
@@ -105,6 +135,12 @@ class DamageDetector:
             "crack": [],
             "paint_damage": [],
         }
+
+        # Batch vehicle-region detection for all selected frames in a single
+        # YOLO call. This avoids per-frame Python overhead and lets ultralytics
+        # internally batch across the GPU/CPU.
+        vehicle_regions_by_path: Dict[str, Optional[tuple]] = self._batch_vehicle_regions(selected_frames)
+
         for frame_idx, frame_path in enumerate(selected_frames):
             try:
                 # Load image
@@ -115,7 +151,7 @@ class DamageDetector:
                 h, w = image.shape[:2]
 
                 # Detect vehicle region first to focus on vehicle area
-                vehicle_region = self._get_vehicle_region(image, frame_path)
+                vehicle_region = vehicle_regions_by_path.get(frame_path)
                 if vehicle_region is None:
                     vehicle_region = (0, 0, w, h)  # Use full image if vehicle not detected
                 
@@ -205,7 +241,7 @@ class DamageDetector:
                         for prev_region in detected_regions[damage_type]:
                             prev_x, prev_y, prev_frame = prev_region
                             # If same location within 50 pixels and within 3 frames, consider duplicate
-                            if abs(prev_x - center_x) < 50 and abs(prev_y - center_y) < 50 and abs(prev_frame - frame_idx) < 3:
+                            if abs(prev_x - center_x) < DEDUP_RADIUS_PX and abs(prev_y - center_y) < DEDUP_RADIUS_PX and abs(prev_frame - frame_idx) < DEDUP_FRAME_WINDOW:
                                 is_duplicate = True
                                 break
                         
@@ -297,7 +333,7 @@ class DamageDetector:
                         is_duplicate = False
                         for prev_region in detected_regions["rust"]:
                             prev_x, prev_y, prev_frame = prev_region
-                            if abs(prev_x - center_x) < 80 and abs(prev_y - center_y) < 80 and abs(prev_frame - frame_idx) < 3:
+                            if abs(prev_x - center_x) < DEDUP_RADIUS_PX and abs(prev_y - center_y) < DEDUP_RADIUS_PX and abs(prev_frame - frame_idx) < DEDUP_FRAME_WINDOW:
                                 is_duplicate = True
                                 break
                         
@@ -386,7 +422,7 @@ class DamageDetector:
                     is_duplicate = False
                     for damage_type in ("paint_damage", "scratch", "crack", "rust"):
                         for prev_x, prev_y, prev_frame in detected_regions[damage_type]:
-                            if abs(prev_x - center_x) < 60 and abs(prev_y - center_y) < 60 and abs(prev_frame - frame_idx) < 3:
+                            if abs(prev_x - center_x) < DEDUP_RADIUS_PX and abs(prev_y - center_y) < DEDUP_RADIUS_PX and abs(prev_frame - frame_idx) < DEDUP_FRAME_WINDOW:
                                 is_duplicate = True
                                 break
                         if is_duplicate:
@@ -491,7 +527,7 @@ class DamageDetector:
                                 is_duplicate = False
                                 for prev_region in detected_regions["dent"]:
                                     prev_x, prev_y, prev_frame = prev_region
-                                    if abs(prev_x - center_x) < 60 and abs(prev_y - center_y) < 60 and abs(prev_frame - frame_idx) < 3:
+                                    if abs(prev_x - center_x) < DEDUP_RADIUS_PX and abs(prev_y - center_y) < DEDUP_RADIUS_PX and abs(prev_frame - frame_idx) < DEDUP_FRAME_WINDOW:
                                         is_duplicate = True
                                         break
                                 
@@ -604,6 +640,9 @@ class DamageDetector:
                 "detected": panel_misalignment_count > 0,
             },
             "severity": severity,
+            "total_count": int(total_damage),
+            "average_confidence": float(round(avg_confidence, 3)) if total_damage else 0.0,
+            "confidence_threshold": DAMAGE_CONFIDENCE_THRESHOLD,
             "locations": damage_locations[:20],  # Limit to top 20 locations by confidence
         }
 
@@ -614,17 +653,60 @@ class DamageDetector:
         """
         try:
             results = self.yolo_model(frame_path)
-            
-            for result in results:
-                boxes = result.boxes
-                if boxes is not None:
-                    for box in boxes:
-                        class_id = int(box.cls[0])
-                        # YOLO COCO classes: 2=car, 3=motorcycle, 7=truck
-                        if class_id in [2, 3, 7]:
-                            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                            return (int(x1), int(y1), int(x2), int(y2))
+            return self._largest_vehicle_box(results)
         except Exception as e:
             logger.warning(f"Vehicle region detection error: {e}")
 
         return None
+
+    def _batch_vehicle_regions(self, frame_paths: List[str]) -> Dict[str, Optional[tuple]]:
+        """
+        Run YOLO once across all frames and return a {frame_path: bbox} map.
+
+        ultralytics accepts a list of paths and internally batches inference,
+        which is much faster than calling the model once per frame in Python.
+        """
+        regions: Dict[str, Optional[tuple]] = {p: None for p in frame_paths}
+        if not frame_paths:
+            return regions
+        try:
+            results = self.yolo_model(frame_paths)
+        except Exception as e:
+            logger.warning(f"Batch vehicle region detection error: {e}")
+            return regions
+
+        # ultralytics returns a list of Results aligned with the input list.
+        for path, result in zip(frame_paths, results):
+            try:
+                regions[path] = self._largest_vehicle_box([result])
+            except Exception as e:
+                logger.debug(f"Failed to extract vehicle box for {path}: {e}")
+                regions[path] = None
+        return regions
+
+    @staticmethod
+    def _largest_vehicle_box(results) -> Optional[tuple]:
+        """Pick the largest vehicle bounding box from a Results iterable."""
+        best: Optional[tuple] = None
+        best_area = 0
+        for result in results:
+            boxes = getattr(result, "boxes", None)
+            if boxes is None:
+                continue
+            for box in boxes:
+                try:
+                    class_id = int(box.cls[0])
+                except Exception:
+                    continue
+                # YOLO COCO classes: 2=car, 3=motorcycle, 7=truck
+                if class_id not in (2, 3, 7):
+                    continue
+                try:
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                except Exception:
+                    continue
+                area = max(0, int(x2) - int(x1)) * max(0, int(y2) - int(y1))
+                if area > best_area:
+                    best_area = area
+                    best = (int(x1), int(y1), int(x2), int(y2))
+        return best

@@ -12,7 +12,9 @@ import pinoHttp from "pino-http";
 import path from "path";
 import { config } from "./config/env";
 import logger from "./utils/logger";
+import * as fs from "fs";
 import { initDatabase, getDatabase } from "./db/init";
+import { reapStuckJobs, listVideosEligibleForCleanup } from "./models/inspection";
 import { requestIdMiddleware } from "./middleware/requestId";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 import uploadRouter from "./routes/upload";
@@ -28,6 +30,63 @@ try {
   logger.fatal({ error }, "Failed to initialize database");
   process.exit(1);
 }
+
+// Reap orphaned jobs left behind by a previous crash so the frontend isn't
+// stuck polling rows that nobody is processing.
+try {
+  const reaped = reapStuckJobs();
+  if (reaped > 0) {
+    logger.warn({ reaped }, "Marked stuck jobs as failed on startup");
+  }
+} catch (error) {
+  logger.warn({ error }, "Failed to reap stuck jobs on startup (non-fatal)");
+}
+
+// Periodic reaper so jobs that get stuck mid-run (e.g. ML service hang past
+// its timeout) eventually surface as failed.
+const REAP_INTERVAL_MS = 5 * 60 * 1000;
+setInterval(() => {
+  try {
+    const reaped = reapStuckJobs();
+    if (reaped > 0) {
+      logger.warn({ reaped }, "Periodic reaper marked stuck jobs as failed");
+    }
+  } catch (error) {
+    logger.warn({ error }, "Periodic reaper failed (non-fatal)");
+  }
+}, REAP_INTERVAL_MS).unref();
+
+// Periodic disk cleanup: delete uploaded videos for completed jobs older than
+// VIDEO_RETENTION_DAYS so the uploads directory doesn't grow unbounded.
+const VIDEO_RETENTION_DAYS = Number(process.env.VIDEO_RETENTION_DAYS ?? "30");
+const CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+function sweepOldVideos(): void {
+  if (!Number.isFinite(VIDEO_RETENTION_DAYS) || VIDEO_RETENTION_DAYS <= 0) {
+    return;
+  }
+  let removed = 0;
+  try {
+    const candidates = listVideosEligibleForCleanup(VIDEO_RETENTION_DAYS);
+    for (const { jobId, filePath } of candidates) {
+      try {
+        if (filePath && fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+          removed += 1;
+          logger.info({ jobId, filePath }, "Removed expired video file");
+        }
+      } catch (error) {
+        logger.warn({ jobId, filePath, error }, "Failed to remove expired video");
+      }
+    }
+  } catch (error) {
+    logger.warn({ error }, "Video retention sweep failed (non-fatal)");
+  }
+  if (removed > 0) {
+    logger.info({ removed, retentionDays: VIDEO_RETENTION_DAYS }, "Video retention sweep complete");
+  }
+}
+sweepOldVideos();
+setInterval(sweepOldVideos, CLEANUP_INTERVAL_MS).unref();
 
 // Create Express app
 const app: Express = express();

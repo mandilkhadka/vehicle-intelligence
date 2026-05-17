@@ -171,14 +171,28 @@ class VehicleIdentifier:
         sample_frames = frame_paths[:_MAX_SAMPLE_FRAMES] if len(frame_paths) > _MAX_SAMPLE_FRAMES else frame_paths
 
         # Cache YOLO results once per frame; reused by type/color/brand-cropping.
+        # Batch through ultralytics in a single call so per-frame Python overhead
+        # is amortized.
         logger.info(f"VehicleIdentifier: Caching YOLO results for {len(sample_frames)} frames")
         yolo_cache: Dict[str, Any] = {}
-        for frame_path in sample_frames:
-            try:
-                yolo_cache[frame_path] = self.yolo_model(frame_path)
-            except Exception as e:
-                logger.warning(f"YOLO inference failed for {frame_path}: {e}")
-                yolo_cache[frame_path] = None
+        try:
+            batch_results = self.yolo_model(list(sample_frames))
+        except Exception as e:
+            logger.warning(f"Batch YOLO inference failed, falling back to per-frame: {e}")
+            batch_results = None
+
+        if batch_results is not None and len(batch_results) == len(sample_frames):
+            for frame_path, res in zip(sample_frames, batch_results):
+                # Wrap single Results in a list so downstream consumers that
+                # iterate `results` keep working unchanged.
+                yolo_cache[frame_path] = [res]
+        else:
+            for frame_path in sample_frames:
+                try:
+                    yolo_cache[frame_path] = self.yolo_model(frame_path)
+                except Exception as e:
+                    logger.warning(f"YOLO inference failed for {frame_path}: {e}")
+                    yolo_cache[frame_path] = None
 
         vehicle_type = self._detect_vehicle_type_cached(sample_frames[0], yolo_cache)
         brand, model, confidence = self._identify_brand(sample_frames, yolo_cache)

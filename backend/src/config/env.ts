@@ -24,6 +24,11 @@ const envSchema = z.object({
     .transform((value) => ["1", "true", "yes"].includes(value.toLowerCase()))
     .default("false"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
+  ML_SERVICE_TIMEOUT_MS: z
+    .string()
+    .transform(Number)
+    .pipe(z.number().int().positive())
+    .default("600000"),
 });
 
 type EnvConfig = z.infer<typeof envSchema>;
@@ -71,7 +76,10 @@ export const config = {
   },
   mlService: {
     url: env.ML_SERVICE_URL,
-    timeout: 300000, // 5 minutes for video processing
+    // Outer HTTP timeout. Must exceed the ML service's per-stage timeout
+    // budget so a slow Gemini call doesn't get killed by the network layer
+    // and the partial-results path in process.py can return.
+    timeout: env.ML_SERVICE_TIMEOUT_MS,
     apiKey: env.ML_SERVICE_API_KEY,
   },
   database: {
