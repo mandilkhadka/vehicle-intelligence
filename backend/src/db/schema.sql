@@ -83,3 +83,47 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_file_id ON jobs(file_id);
 CREATE INDEX IF NOT EXISTS idx_inspections_job_id ON inspections(job_id);
 CREATE INDEX IF NOT EXISTS idx_inspections_file_id ON inspections(file_id);
+
+-- HITL feedback on detected damage. Stored separately from the
+-- damage_summary JSON so it survives pipeline schema changes.
+-- Keyed by (inspection_id, location_index) instead of an internal damage
+-- UUID, because location_index is stable across re-renders.
+CREATE TABLE IF NOT EXISTS damage_feedback (
+    id TEXT PRIMARY KEY,
+    inspection_id TEXT NOT NULL,
+    location_index INTEGER NOT NULL,
+    verdict TEXT NOT NULL,
+    -- verdict: 'confirmed' | 'wrong_type' | 'false_positive' | 'missed_severity'
+    corrected_type TEXT,
+    corrected_severity TEXT,
+    note TEXT,
+    reviewer TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (inspection_id) REFERENCES inspections(id)
+);
+
+-- Damage the model didn't catch. Reviewer draws a bbox over any frame
+-- in the gallery and tags it with the correct type/severity.
+CREATE TABLE IF NOT EXISTS damage_missing_reports (
+    id TEXT PRIMARY KEY,
+    inspection_id TEXT NOT NULL,
+    frame_path TEXT,
+    bbox TEXT,
+    -- bbox: JSON array [x1, y1, x2, y2] in frame coordinates
+    type TEXT,
+    severity TEXT,
+    part TEXT,
+    note TEXT,
+    reviewer TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (inspection_id) REFERENCES inspections(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_damage_feedback_inspection
+    ON damage_feedback(inspection_id);
+CREATE INDEX IF NOT EXISTS idx_damage_feedback_created_at
+    ON damage_feedback(created_at);
+CREATE INDEX IF NOT EXISTS idx_damage_missing_inspection
+    ON damage_missing_reports(inspection_id);
+CREATE INDEX IF NOT EXISTS idx_damage_missing_created_at
+    ON damage_missing_reports(created_at);

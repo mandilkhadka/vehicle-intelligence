@@ -22,6 +22,7 @@ import preflightRouter from "./routes/preflight";
 import jobsRouter from "./routes/jobs";
 import inspectionsRouter from "./routes/inspections";
 import metricsRouter from "./routes/metrics";
+import feedbackRouter from "./routes/feedback";
 
 // Initialize database
 try {
@@ -234,6 +235,7 @@ app.use("/api/upload", uploadRouter);
 app.use("/api/jobs", jobsRouter);
 app.use("/api/metrics", metricsRouter);
 app.use("/api/inspections", inspectionsRouter);
+app.use("/api", feedbackRouter);
 
 // 404 handler
 app.use(notFoundHandler);

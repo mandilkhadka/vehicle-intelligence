@@ -1,12 +1,18 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
-import { ChevronDown, ChevronRight, Info } from "lucide-react";
+import { ChevronDown, ChevronRight, Info, ThumbsDown, ThumbsUp, Check, Loader2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { BACKEND_BASE_URL } from "@/lib/api";
+import {
+  BACKEND_BASE_URL,
+  listDamageFeedback,
+  submitDamageFeedback,
+  type DamageFeedbackRecord,
+  type FeedbackVerdict,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 interface EstimatedCost {
@@ -54,6 +60,7 @@ interface DamageInfoProps {
     rationale_available?: boolean;
     rationale_count?: number;
   };
+  inspectionId?: string;
 }
 
 const SEVERITY_STYLES: Record<string, string> = {
@@ -135,7 +142,7 @@ function groupByPart(locations: DamageLocation[]): PartGroup[] {
   });
 }
 
-export default function DamageInfo({ damage }: DamageInfoProps) {
+export default function DamageInfo({ damage, inspectionId }: DamageInfoProps) {
   const [minConfidence, setMinConfidence] = useState(0.5);
   const [expandedPart, setExpandedPart] = useState<string | null>(null);
 
@@ -144,7 +151,72 @@ export default function DamageInfo({ damage }: DamageInfoProps) {
     () => allLocations.filter((l) => (l.confidence ?? 0) >= minConfidence),
     [allLocations, minConfidence],
   );
-  const partGroups = useMemo(() => groupByPart(filteredLocations), [filteredLocations]);
+  // We always group on the ORIGINAL location list so feedback indices stay
+  // stable across filter changes. The filter only hides cards visually.
+  const indexedLocations = useMemo(
+    () =>
+      allLocations.map((loc, idx) => ({
+        ...loc,
+        __originalIndex: idx,
+      })) as Array<DamageLocation & { __originalIndex: number }>,
+    [allLocations],
+  );
+  const visibleIndexedLocations = useMemo(
+    () => indexedLocations.filter((l) => (l.confidence ?? 0) >= minConfidence),
+    [indexedLocations, minConfidence],
+  );
+  const partGroups = useMemo(() => groupByPart(visibleIndexedLocations as any), [visibleIndexedLocations]);
+
+  // Feedback state — { [locationIndex]: { verdict, pending? } }
+  const [feedbackByIndex, setFeedbackByIndex] = useState<
+    Record<number, { verdict: FeedbackVerdict; pending?: boolean; id?: string }>
+  >({});
+
+  useEffect(() => {
+    if (!inspectionId) return;
+    let cancelled = false;
+    listDamageFeedback(inspectionId)
+      .then((rows) => {
+        if (cancelled) return;
+        const map: Record<number, { verdict: FeedbackVerdict; id?: string }> = {};
+        // Most recent verdict per location wins.
+        for (const row of rows) {
+          map[row.location_index] = { verdict: row.verdict, id: row.id };
+        }
+        setFeedbackByIndex(map);
+      })
+      .catch(() => {
+        // Non-critical — feedback is best-effort, hide silent fetch errors.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [inspectionId]);
+
+  const recordVerdict = async (locationIndex: number, verdict: FeedbackVerdict) => {
+    if (!inspectionId) return;
+    setFeedbackByIndex((prev) => ({
+      ...prev,
+      [locationIndex]: { verdict, pending: true },
+    }));
+    try {
+      const record = await submitDamageFeedback(inspectionId, {
+        location_index: locationIndex,
+        verdict,
+      });
+      setFeedbackByIndex((prev) => ({
+        ...prev,
+        [locationIndex]: { verdict: record.verdict, id: record.id },
+      }));
+    } catch (err) {
+      console.error("Failed to submit feedback", err);
+      setFeedbackByIndex((prev) => {
+        const next = { ...prev };
+        delete next[locationIndex];
+        return next;
+      });
+    }
+  };
 
   if (!damage) {
     return (
@@ -297,6 +369,14 @@ export default function DamageInfo({ damage }: DamageInfoProps) {
                           if (!loc.snapshot) return null;
                           const pct = Math.round((loc.confidence || 0) * 100);
                           const type = loc.type || "damage";
+                          const originalIndex = (loc as DamageLocation & { __originalIndex?: number })
+                            .__originalIndex;
+                          const fb = originalIndex !== undefined ? feedbackByIndex[originalIndex] : undefined;
+                          const isConfirmed = fb?.verdict === "confirmed";
+                          const isWrong =
+                            fb?.verdict === "false_positive" ||
+                            fb?.verdict === "wrong_type" ||
+                            fb?.verdict === "missed_severity";
                           return (
                             <div
                               key={`${loc.snapshot}-${i}`}
@@ -331,11 +411,57 @@ export default function DamageInfo({ damage }: DamageInfoProps) {
                                   <span>{loc.rationale}</span>
                                 </div>
                               )}
-                              {loc.estimated_cost && (
-                                <div className="text-xs text-muted-foreground">
-                                  Est. {formatRange(loc.estimated_cost)}
-                                </div>
-                              )}
+                              <div className="flex items-center justify-between gap-2">
+                                {loc.estimated_cost ? (
+                                  <span className="text-xs text-muted-foreground">
+                                    Est. {formatRange(loc.estimated_cost)}
+                                  </span>
+                                ) : (
+                                  <span />
+                                )}
+                                {inspectionId && originalIndex !== undefined && (
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      aria-label="Confirm this detection"
+                                      title="Confirm"
+                                      onClick={() => recordVerdict(originalIndex, "confirmed")}
+                                      disabled={fb?.pending}
+                                      className={cn(
+                                        "flex h-7 w-7 items-center justify-center rounded-md border text-muted-foreground transition",
+                                        isConfirmed && "border-emerald-500 bg-emerald-500/10 text-emerald-600",
+                                        !fb && "hover:bg-accent",
+                                      )}
+                                    >
+                                      {fb?.pending && isConfirmed ? (
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                      ) : isConfirmed ? (
+                                        <Check className="h-3.5 w-3.5" />
+                                      ) : (
+                                        <ThumbsUp className="h-3.5 w-3.5" />
+                                      )}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      aria-label="Mark this detection wrong"
+                                      title="Wrong / false positive"
+                                      onClick={() => recordVerdict(originalIndex, "false_positive")}
+                                      disabled={fb?.pending}
+                                      className={cn(
+                                        "flex h-7 w-7 items-center justify-center rounded-md border text-muted-foreground transition",
+                                        isWrong && "border-destructive bg-destructive/10 text-destructive",
+                                        !fb && "hover:bg-accent",
+                                      )}
+                                    >
+                                      {fb?.pending && isWrong ? (
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                      ) : (
+                                        <ThumbsDown className="h-3.5 w-3.5" />
+                                      )}
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
                             </div>
                           );
                         })}

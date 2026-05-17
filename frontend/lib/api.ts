@@ -95,6 +95,101 @@ export interface PreflightResult {
   elapsed_sec?: number;
 }
 
+export type FeedbackVerdict =
+  | "confirmed"
+  | "wrong_type"
+  | "false_positive"
+  | "missed_severity";
+
+export interface DamageFeedbackRecord {
+  id: string;
+  inspection_id: string;
+  location_index: number;
+  verdict: FeedbackVerdict;
+  corrected_type?: string;
+  corrected_severity?: string;
+  note?: string;
+  reviewer?: string;
+  created_at: string;
+}
+
+export interface MissingDamageRecord {
+  id: string;
+  inspection_id: string;
+  frame_path?: string;
+  bbox?: string;
+  type?: string;
+  severity?: string;
+  part?: string;
+  note?: string;
+  reviewer?: string;
+  created_at: string;
+}
+
+export async function submitDamageFeedback(
+  inspectionId: string,
+  body: {
+    location_index: number;
+    verdict: FeedbackVerdict;
+    corrected_type?: string;
+    corrected_severity?: string;
+    note?: string;
+    reviewer?: string;
+  },
+): Promise<DamageFeedbackRecord> {
+  const response = await apiClient.post(
+    `/inspections/${inspectionId}/feedback`,
+    body,
+  );
+  return response.data;
+}
+
+export async function listDamageFeedback(
+  inspectionId: string,
+): Promise<DamageFeedbackRecord[]> {
+  const response = await apiClient.get(`/inspections/${inspectionId}/feedback`);
+  return response.data;
+}
+
+export async function submitMissingDamage(
+  inspectionId: string,
+  body: {
+    frame_path?: string;
+    bbox?: number[];
+    type?: string;
+    severity?: string;
+    part?: string;
+    note?: string;
+    reviewer?: string;
+  },
+): Promise<MissingDamageRecord> {
+  const response = await apiClient.post(
+    `/inspections/${inspectionId}/missing-damage`,
+    body,
+  );
+  return response.data;
+}
+
+export interface UncertainDetection {
+  inspection_id: string;
+  location_index: number;
+  type?: string;
+  part?: string;
+  part_label?: string;
+  severity?: string;
+  confidence: number;
+  uncertainty: number;
+  snapshot?: string;
+  frame?: string;
+  has_feedback: boolean;
+  created_at: string;
+}
+
+export async function getReviewQueue(limit = 100): Promise<UncertainDetection[]> {
+  const response = await apiClient.get(`/feedback/review`, { params: { limit } });
+  return response.data.items as UncertainDetection[];
+}
+
 /**
  * Run the cheap pre-flight quality check before the heavy upload.
  * Returns a verdict + actionable issue list. The route fails open if the

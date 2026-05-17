@@ -1526,7 +1526,7 @@ function InspectionContent({
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
         <VehicleInfo vehicleInfo={vehicleInfo} />
         <OdometerInfo odometer={odometer} />
-        <DamageInfo damage={damage} />
+        <DamageInfo damage={damage} inspectionId={inspection?.id} />
         <ExhaustInfo exhaust={exhaust} />
       </div>
 

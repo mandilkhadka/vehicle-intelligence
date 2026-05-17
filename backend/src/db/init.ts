@@ -105,6 +105,46 @@ export function initDatabase(): Database.Database {
       logger.warn({ error }, "Index creation error (non-critical)");
     }
 
+    // Migration: feedback tables for HITL labeling. The schema is also in
+    // schema.sql with IF NOT EXISTS guards, but we run it here too so
+    // installations that pre-date Sprint 3 pick up the tables without
+    // a manual migration step.
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS damage_feedback (
+          id TEXT PRIMARY KEY,
+          inspection_id TEXT NOT NULL,
+          location_index INTEGER NOT NULL,
+          verdict TEXT NOT NULL,
+          corrected_type TEXT,
+          corrected_severity TEXT,
+          note TEXT,
+          reviewer TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (inspection_id) REFERENCES inspections(id)
+        );
+        CREATE TABLE IF NOT EXISTS damage_missing_reports (
+          id TEXT PRIMARY KEY,
+          inspection_id TEXT NOT NULL,
+          frame_path TEXT,
+          bbox TEXT,
+          type TEXT,
+          severity TEXT,
+          part TEXT,
+          note TEXT,
+          reviewer TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (inspection_id) REFERENCES inspections(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_damage_feedback_inspection ON damage_feedback(inspection_id);
+        CREATE INDEX IF NOT EXISTS idx_damage_feedback_created_at ON damage_feedback(created_at);
+        CREATE INDEX IF NOT EXISTS idx_damage_missing_inspection ON damage_missing_reports(inspection_id);
+        CREATE INDEX IF NOT EXISTS idx_damage_missing_created_at ON damage_missing_reports(created_at);
+      `);
+    } catch (error) {
+      logger.warn({ error }, "Feedback table creation error (non-critical)");
+    }
+
     logger.info({ dbPath }, "Database initialized successfully");
 
     return db;
