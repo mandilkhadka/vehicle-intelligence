@@ -70,20 +70,16 @@ export function StatsCards({ metrics, isLoading = false }: StatsCardsProps) {
       {statsData.map((stat) => {
         const Icon = stat.icon
         return (
-          <Card key={stat.title} className="overflow-hidden">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
+          <Card key={stat.title}>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-normal text-muted-foreground">
                 {stat.title}
               </CardTitle>
-              <div className="rounded-md border border-border bg-secondary p-2">
-                <Icon className="h-4 w-4 text-primary" />
-              </div>
+              <Icon className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              <div className="font-mono text-3xl font-semibold tracking-normal">{stat.value}</div>
-              <div className="mt-1 text-xs uppercase tracking-normal text-muted-foreground">
-                {stat.description}
-              </div>
+              <div className="text-2xl font-semibold tabular-nums">{stat.value}</div>
+              <p className="mt-1 text-xs text-muted-foreground">{stat.description}</p>
             </CardContent>
           </Card>
         )

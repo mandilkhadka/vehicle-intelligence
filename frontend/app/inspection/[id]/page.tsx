@@ -1216,7 +1216,7 @@ function InspectionContent({
         <CardContent className="space-y-4">
           <div className="grid gap-3 md:grid-cols-[1.25fr_0.75fr]">
             <div>
-              <p className="font-mono text-[11px] uppercase tracking-normal text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 Auction title
               </p>
               <h3 className="mt-1 text-lg font-semibold">{aiListing.title}</h3>
@@ -1225,7 +1225,7 @@ function InspectionContent({
               </p>
             </div>
             <div className="rounded-lg border border-border bg-background/60 p-3">
-              <p className="font-mono text-[11px] uppercase tracking-normal text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 Condition grade
               </p>
               <p className="mt-1 text-base font-semibold">{aiListing.conditionGrade}</p>
@@ -1267,7 +1267,7 @@ function InspectionContent({
               <CardTitle>Pipeline Verification</CardTitle>
               <Badge
                 variant={pipelineAudit.status === "complete" ? "secondary" : "outline"}
-                className="w-fit rounded-md bg-background font-mono text-[11px] uppercase tracking-normal"
+                className="w-fit rounded-md bg-background text-xs"
               >
                 {pipelineAudit.status || "unknown"}
               </Badge>
@@ -1333,7 +1333,7 @@ function InspectionContent({
                 <BrainCircuit className="h-5 w-5 text-primary" />
                 AI Visual Analysis
               </CardTitle>
-              <Badge variant="outline" className="w-fit rounded-md bg-background font-mono text-[11px] uppercase tracking-normal">
+              <Badge variant="outline" className="w-fit rounded-md bg-background text-xs">
                 {visualProvider}
               </Badge>
             </div>
@@ -1468,7 +1468,7 @@ function InspectionContent({
                   <BrainCircuit className="h-5 w-5 text-muted-foreground" />
                   AI Visual Analysis Unavailable
                 </CardTitle>
-                <Badge variant="outline" className="w-fit rounded-md bg-background font-mono text-[11px] uppercase tracking-normal">
+                <Badge variant="outline" className="w-fit rounded-md bg-background text-xs">
                   Manual review
                 </Badge>
               </div>
@@ -1864,7 +1864,7 @@ function InspectionImageReview({
           <div className="mb-4 rounded-lg border border-border bg-background">
             <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
               <h4 className="text-sm font-semibold">AI Damage Report</h4>
-              <Badge variant="outline" className="rounded-md font-mono text-[11px] tracking-normal">
+              <Badge variant="outline" className="rounded-md text-xs font-medium">
                 {damageLocations.length}
               </Badge>
             </div>
@@ -1930,7 +1930,7 @@ function InspectionImageReview({
                     className="h-full w-full object-cover"
                   />
                   {shotDamageCount > 0 && (
-                    <span className="absolute right-1 top-1 rounded bg-destructive px-1.5 py-0.5 font-mono text-[10px] text-destructive-foreground">
+                    <span className="absolute right-1 top-1 rounded bg-destructive px-1.5 py-0.5 text-[10px] font-medium text-destructive-foreground">
                       {shotDamageCount}
                     </span>
                   )}
@@ -1970,15 +1970,15 @@ function InspectionImageReview({
           </CardTitle>
           {coverage && (
             <div className="flex flex-wrap gap-2">
-              <Badge variant="outline" className="w-fit rounded-md bg-background font-mono text-[11px] uppercase tracking-normal">
+              <Badge variant="outline" className="w-fit rounded-md bg-background text-xs">
                 {Math.round((coverage.ratio || 0) * 100)}% selected
               </Badge>
               {typeof coverage.high_confidence_ratio === "number" && (
-                <Badge variant="outline" className="w-fit rounded-md bg-background font-mono text-[11px] uppercase tracking-normal">
+                <Badge variant="outline" className="w-fit rounded-md bg-background text-xs">
                   {Math.round((coverage.high_confidence_ratio || 0) * 100)}% high confidence
                 </Badge>
               )}
-              <Badge variant="outline" className="w-fit rounded-md bg-background font-mono text-[11px] uppercase tracking-normal">
+              <Badge variant="outline" className="w-fit rounded-md bg-background text-xs">
                 {angleCount} angle shots
               </Badge>
             </div>

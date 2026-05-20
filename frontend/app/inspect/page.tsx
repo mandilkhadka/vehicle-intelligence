@@ -36,9 +36,8 @@ export default function InspectPage() {
     <AppShell>
       <div className="mx-auto max-w-5xl p-4 sm:p-6 lg:p-8">
         <PageHeader
-          eyebrow="Capture"
-          title="New Inspection"
-          description="Upload a 360 degree walkaround video and, when available, a clear odometer photo for a stronger report."
+          title="New inspection"
+          description="Upload a 360° walkaround video. An odometer photo is optional."
         >
           <Button variant="outline" asChild className="gap-2">
             <Link href="/capture">

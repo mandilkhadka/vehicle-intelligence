@@ -73,19 +73,6 @@ export function Sidebar() {
           })}
         </nav>
 
-        {!collapsed && (
-          <div className="mx-3 mb-2 rounded-md border border-sidebar-border bg-background/45 p-3">
-            <p className="font-mono text-[11px] uppercase tracking-normal text-muted-foreground">
-              Pipeline
-            </p>
-            <div className="mt-2 grid grid-cols-3 gap-1.5 text-center text-[11px]">
-              <span className="rounded bg-primary/10 px-1.5 py-1 text-primary">Video</span>
-              <span className="rounded bg-accent/15 px-1.5 py-1 text-accent-foreground">AI</span>
-              <span className="rounded bg-emerald-500/10 px-1.5 py-1 text-emerald-600 dark:text-emerald-400">Report</span>
-            </div>
-          </div>
-        )}
-
         <div className="border-t border-sidebar-border p-3">
           <Button
             variant="ghost"

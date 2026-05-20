@@ -10,7 +10,8 @@ import { QuickActions } from "@/components/dashboard/quick-actions"
 import { DateFilter } from "@/components/dashboard/date-filter"
 import { AnalyticsSection } from "@/components/dashboard/analytics-section"
 import { getMetrics, MetricsResponse } from "@/lib/api"
-import { Activity, RefreshCw } from "lucide-react"
+import { RefreshCw } from "lucide-react"
+import { Button } from "@/components/ui/button"
 
 const AUTO_REFRESH_INTERVAL = 30000 // 30 seconds
 
@@ -94,57 +95,23 @@ export default function DashboardPage() {
   return (
     <AppShell>
       <div className="p-4 sm:p-6 lg:p-8">
-        <PageHeader
-          eyebrow="Operations"
-          title="Inspection Dashboard"
-          description="Monitor vehicle uploads, model confidence, damage trends, and recent inspection outcomes from one console."
-        >
-          <div className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
-            {isRefreshing ? (
-              <RefreshCw className="h-4 w-4 animate-spin text-primary" />
-            ) : (
-              <Activity className="h-4 w-4 text-emerald-500" />
-            )}
-            <span className="hidden sm:inline">
-              {lastUpdated ? `Updated ${format(lastUpdated, "h:mm a")}` : "Syncing metrics"}
-            </span>
-          </div>
-        </PageHeader>
-
-        <div className="mb-6 grid gap-4 xl:grid-cols-[1fr_auto] xl:items-center">
-          <div className="rounded-lg border border-border bg-card p-4">
-            <div className="grid gap-4 text-sm sm:grid-cols-3">
-              <div>
-                <p className="font-mono text-[11px] uppercase tracking-normal text-muted-foreground">
-                  Analysis Window
-                </p>
-                <p className="mt-1 font-medium">
-                  {format(dateRange.start, "MMM d")} - {format(dateRange.end, "MMM d, yyyy")}
-                </p>
-              </div>
-              <div>
-                <p className="font-mono text-[11px] uppercase tracking-normal text-muted-foreground">
-                  Refresh Cadence
-                </p>
-                <p className="mt-1 font-medium">Every 30 seconds</p>
-              </div>
-              <div>
-                <p className="font-mono text-[11px] uppercase tracking-normal text-muted-foreground">
-                  Review Queue
-                </p>
-                <p className="mt-1 font-medium">
-                  {metrics?.summary.totalInspections ?? 0} inspections
-                </p>
-              </div>
-            </div>
-          </div>
-
+        <PageHeader title="Dashboard">
           <DateFilter
             startDate={dateRange.start}
             endDate={dateRange.end}
             onRangeChange={handleRangeChange}
           />
-        </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => fetchMetrics(true)}
+            disabled={isRefreshing || isLoading}
+            aria-label={lastUpdated ? `Updated ${format(lastUpdated, "h:mm a")}` : "Refresh"}
+            title={lastUpdated ? `Updated ${format(lastUpdated, "h:mm a")}` : "Refresh"}
+          >
+            <RefreshCw className={isRefreshing ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+          </Button>
+        </PageHeader>
 
         <div className="space-y-6">
           <StatsCards metrics={metrics} isLoading={isLoading} />

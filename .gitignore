@@ -261,3 +261,16 @@ docker-compose.override.yml
 
 # Root-level lock files (keep service-specific ones)
 /package-lock.json
+
+# Local scratch — keep large sample videos and reference screenshots
+# out of git history.
+/*.mov
+/*.mp4
+/round4-*.png
+/improvement.txt
+
+# Operational script outputs
+/training-set/
+training-set/
+*.training-set/
+

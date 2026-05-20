@@ -89,9 +89,8 @@ export default function ReviewPage() {
     <AppShell>
       <div className="mx-auto max-w-6xl p-4 sm:p-6 lg:p-8">
         <PageHeader
-          eyebrow="Quality"
           title="Review queue"
-          description="Most-uncertain damage detections across all inspections. Confirming or rejecting these trains the next model."
+          description="The detections the model is least sure about. Confirm or reject — this feeds the next training run."
         >
           <Button variant="outline" onClick={load} disabled={loading} className="gap-2">
             <RefreshCcw className={cn("h-4 w-4", loading && "animate-spin")} /> Refresh

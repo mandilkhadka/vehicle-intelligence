@@ -395,6 +395,49 @@ describe("InspectionPage", () => {
     });
   });
 
+  it("prefers routed review images and avoids repeating the raw extracted gallery", async () => {
+    (getInspection as jest.Mock).mockResolvedValue({
+      ...mockInspectionData,
+      extracted_frames: JSON.stringify([
+        "frames/test/frame_0001.jpg",
+        "frames/test/frame_0002.jpg",
+      ]),
+      inspection_report: JSON.stringify({
+        summary: "Dashboard crop routed for review.",
+        frame_analysis: {
+          angle_shots: {},
+          dashboard_candidates: [
+            {
+              view: "dashboard",
+              frame: "frames/test/frame_0002.jpg",
+              crop_path: "frames/test/organized/dashboard_crop.jpg",
+              preview_path: "frames/test/organized/dashboard_preview.jpg",
+              score: 0.91,
+            },
+          ],
+          coverage: {
+            required_views: ["dashboard"],
+            present_views: ["dashboard"],
+            missing_views: [],
+            ratio: 1,
+          },
+          frames_analyzed: 12,
+        },
+      }),
+    });
+
+    render(<InspectionPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Interactive 360 Inspection Viewer")).toBeInTheDocument();
+      expect(screen.queryByText("Extracted Frames")).not.toBeInTheDocument();
+      expect(screen.getByTestId("active-360-image")).toHaveAttribute(
+        "src",
+        expect.stringContaining("dashboard_crop.jpg"),
+      );
+    });
+  });
+
   it("renders structured visual damage and modification findings", async () => {
     (getInspection as jest.Mock).mockResolvedValue({
       ...mockInspectionData,
