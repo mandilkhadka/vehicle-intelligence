@@ -2,7 +2,6 @@
 @config "../tailwind.config.ts";
 
 :root {
-  /* Light theme - inspection console aesthetic */
   --background: oklch(0.985 0.003 95);
   --foreground: oklch(0.18 0.014 250);
   --card: oklch(1 0 0);

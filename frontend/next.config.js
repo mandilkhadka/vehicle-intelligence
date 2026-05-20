@@ -29,6 +29,24 @@ const nextConfig = {
       { source: "/uploads/:path*", destination: `${BACKEND_URL}/uploads/:path*` },
     ];
   },
+  async headers() {
+    return [
+      {
+        source: "/(.*)",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          {
+            // Allow camera on same-origin so the /capture guided walkaround
+            // can prompt for it; everything else stays denied.
+            key: "Permissions-Policy",
+            value: "camera=(self), microphone=(), geolocation=(), payment=()",
+          },
+        ],
+      },
+    ];
+  },
 };
 
 module.exports = nextConfig;

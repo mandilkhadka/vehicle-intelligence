@@ -10,6 +10,12 @@ MODELS = {
 }
 
 # Detection Thresholds
+FRAME_EXTRACTION = {
+    "fps": 2,
+    "min_blur_threshold": 15.0,
+    "jpeg_quality": 98,
+}
+
 DAMAGE_DETECTION = {
     "min_confidence": 0.3,
     "max_frames": 15,

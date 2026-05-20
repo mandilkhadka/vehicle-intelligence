@@ -34,11 +34,34 @@ export async function uploadVideo(
   file: File,
   odometerImage?: File | null,
   onProgress?: (progress: number) => void,
-): Promise<{ jobId: string; fileId: string }> {
+  vehicleIdentity?: {
+    vehicle_identity_source?: string;
+    vehicle_brand?: string;
+    vehicle_model?: string;
+    vehicle_year?: string;
+    vehicle_variant?: string;
+    vehicle_type?: string;
+    vehicle_category?: string;
+    vin?: string;
+    registration?: string;
+  },
+): Promise<{
+  jobId: string;
+  fileId: string;
+  odometerImageUploaded?: boolean;
+  vehicleIdentityEvidenceUploaded?: boolean;
+}> {
   const formData = new FormData();
   formData.append("video", file);
   if (odometerImage) {
     formData.append("odometer_image", odometerImage);
+  }
+  if (vehicleIdentity) {
+    Object.entries(vehicleIdentity).forEach(([key, value]) => {
+      if (value && value.trim()) {
+        formData.append(key, value.trim());
+      }
+    });
   }
 
   const response = await apiClient.post("/upload", formData, {
@@ -56,6 +79,132 @@ export async function uploadVideo(
   });
 
   return response.data;
+}
+
+export interface PreflightResult {
+  ok: boolean;
+  can_proceed: boolean;
+  duration_sec?: number | null;
+  sampled_frames?: number;
+  coverage_estimate?: number;
+  blur_score?: number | null;
+  brightness_score?: number | null;
+  vehicle_visible_ratio?: number;
+  issues: string[];
+  warnings: string[];
+  elapsed_sec?: number;
+}
+
+export type FeedbackVerdict =
+  | "confirmed"
+  | "wrong_type"
+  | "false_positive"
+  | "missed_severity";
+
+export interface DamageFeedbackRecord {
+  id: string;
+  inspection_id: string;
+  location_index: number;
+  verdict: FeedbackVerdict;
+  corrected_type?: string;
+  corrected_severity?: string;
+  note?: string;
+  reviewer?: string;
+  created_at: string;
+}
+
+export interface MissingDamageRecord {
+  id: string;
+  inspection_id: string;
+  frame_path?: string;
+  bbox?: string;
+  type?: string;
+  severity?: string;
+  part?: string;
+  note?: string;
+  reviewer?: string;
+  created_at: string;
+}
+
+export async function submitDamageFeedback(
+  inspectionId: string,
+  body: {
+    location_index: number;
+    verdict: FeedbackVerdict;
+    corrected_type?: string;
+    corrected_severity?: string;
+    note?: string;
+    reviewer?: string;
+  },
+): Promise<DamageFeedbackRecord> {
+  const response = await apiClient.post(
+    `/inspections/${inspectionId}/feedback`,
+    body,
+  );
+  return response.data;
+}
+
+export async function listDamageFeedback(
+  inspectionId: string,
+): Promise<DamageFeedbackRecord[]> {
+  const response = await apiClient.get(`/inspections/${inspectionId}/feedback`);
+  return response.data;
+}
+
+export async function submitMissingDamage(
+  inspectionId: string,
+  body: {
+    frame_path?: string;
+    bbox?: number[];
+    type?: string;
+    severity?: string;
+    part?: string;
+    note?: string;
+    reviewer?: string;
+  },
+): Promise<MissingDamageRecord> {
+  const response = await apiClient.post(
+    `/inspections/${inspectionId}/missing-damage`,
+    body,
+  );
+  return response.data;
+}
+
+export interface UncertainDetection {
+  inspection_id: string;
+  location_index: number;
+  type?: string;
+  part?: string;
+  part_label?: string;
+  severity?: string;
+  confidence: number;
+  uncertainty: number;
+  snapshot?: string;
+  frame?: string;
+  has_feedback: boolean;
+  created_at: string;
+}
+
+export async function getReviewQueue(limit = 100): Promise<UncertainDetection[]> {
+  const response = await apiClient.get(`/feedback/review`, { params: { limit } });
+  return response.data.items as UncertainDetection[];
+}
+
+/**
+ * Run the cheap pre-flight quality check before the heavy upload.
+ * Returns a verdict + actionable issue list. The route fails open if the
+ * ML service is down, so a returned `can_proceed: true` does not guarantee
+ * the pipeline will succeed — it only guarantees no blocking issue was
+ * detected.
+ */
+export async function runPreflight(file: File): Promise<PreflightResult> {
+  const formData = new FormData();
+  formData.append("video", file);
+  const response = await apiClient.post("/upload/preflight", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 60000,
+  });
+  return response.data as PreflightResult;
 }
 
 /**
@@ -86,10 +235,34 @@ export interface InspectionRecord {
   vehicle_type?: string;
   vehicle_brand?: string;
   vehicle_model?: string;
+  vehicle_year?: string;
+  vehicle_variant?: string;
   vehicle_confidence?: number;
+  vehicle_info?: string | Record<string, unknown>;
   odometer_value?: number;
   odometer_confidence?: number;
   speedometer_image_path?: string;
+  odometer_info?: {
+    value?: number | null;
+    confidence?: number;
+    speedometer_image_path?: string | null;
+    source_frame_index?: number | null;
+    timestamp_seconds?: number | null;
+    source_frame_path?: string | null;
+    organized_frame_path?: string | null;
+    crop_path?: string | null;
+    readout_crop_path?: string | null;
+    notes?: string | null;
+    reason?: string | null;
+    reasoning?: string | null;
+    alternatives?: Array<{
+      value?: number | null;
+      confidence?: number;
+      occurrences?: number;
+      digit_count?: number;
+      preprocessing?: string[];
+    }>;
+  } | string;
   damage_summary?: string | Record<string, unknown>;
   scratches_detected?: number;
   dents_detected?: number;
@@ -98,10 +271,131 @@ export interface InspectionRecord {
   exhaust_type?: string;
   exhaust_confidence?: number;
   exhaust_image_path?: string;
-  inspection_report?: string | Record<string, unknown>;
+  inspection_report?: string | (Record<string, unknown> & {
+    pipeline_audit?: PipelineAudit;
+    frame_analysis?: FrameAnalysis;
+    inspection_analysis?: InspectionAnalysis;
+    local_modification_analysis?: {
+      available: boolean;
+      method?: string;
+      reason?: string;
+      summary?: string;
+      items: Array<{
+        part: string;
+        status: "stock" | "modified" | "unknown";
+        confidence?: number;
+        source?: string;
+        frame?: string | null;
+        view?: string;
+        frame_index?: number;
+        source_frame_index?: number;
+        timestamp_seconds?: number;
+        notes?: string;
+      }>;
+    };
+  });
   extracted_frames?: string | string[];
   created_at: string;
   updated_at: string;
+}
+
+export interface PipelineAuditCheck {
+  id: string;
+  requirement: string;
+  passed: boolean;
+  evidence: Record<string, unknown>;
+}
+
+export interface PipelineAudit {
+  status: "complete" | "incomplete";
+  passed: boolean;
+  source?: string;
+  thresholds?: Record<string, number>;
+  checks: PipelineAuditCheck[];
+  missing: string[];
+}
+
+export interface FrameAnalysisItem {
+  view: string;
+  frame: string;
+  frame_index?: number;
+  extracted_index?: number;
+  source_frame_index?: number;
+  timestamp_seconds?: number;
+  organized_path?: string;
+  crop_path?: string;
+  readout_crop_path?: string;
+  score?: number;
+  quality_score?: number;
+  vehicle_ratio?: number;
+  dashboard_score?: number;
+  clip_score?: number;
+  temporal_score?: number;
+  high_confidence?: boolean;
+  semantic_source?: string;
+  candidate_role?: string;
+}
+
+export interface FrameAnalysis {
+  angle_shots: Record<string, FrameAnalysisItem>;
+  dashboard_candidates: FrameAnalysisItem[];
+  representative_frames: FrameAnalysisItem[];
+  coverage: {
+    required_views: string[];
+    present_views: string[];
+    high_confidence_views?: string[];
+    low_confidence_views?: string[];
+    missing_views: string[];
+    ratio: number;
+    high_confidence_ratio?: number;
+  };
+  frames_analyzed: number;
+  frames_total: number;
+  extraction_metadata?: {
+    video_fps?: number | null;
+    total_source_frames?: number | null;
+    video_duration_seconds?: number | null;
+    first_timestamp_seconds?: number | null;
+    last_timestamp_seconds?: number | null;
+    temporal_coverage_ratio?: number | null;
+    frames_extracted?: number;
+    skipped_blurry?: number;
+    skipped_duplicate?: number;
+    frame_interval?: number;
+  };
+  method: string;
+}
+
+export interface InspectionAnalysisImage {
+  id: string;
+  frame: string;
+  preview_path?: string;
+  section: string;
+  group: "exterior" | "interior" | "closeup" | "review";
+  source_view?: string;
+  confidence?: number;
+  quality_score?: number;
+  vehicle_ratio?: number;
+  foreground_bbox?: number[] | null;
+  dashboard_score?: number;
+  timestamp_seconds?: number;
+  high_confidence?: boolean;
+  tags?: string[];
+}
+
+export interface InspectionAnalysis {
+  available: boolean;
+  generated_at?: string;
+  provider?: string;
+  section_order: string[];
+  sections: Record<string, InspectionAnalysisImage[]>;
+  images: InspectionAnalysisImage[];
+  rejected_images: InspectionAnalysisImage[];
+  vehicle?: Record<string, unknown>;
+  damage_detections?: Array<Record<string, unknown>>;
+  consistency?: Record<string, unknown>;
+  stages?: Record<string, unknown>;
+  raw_model_responses?: Record<string, unknown>;
 }
 
 /**
@@ -114,6 +408,79 @@ export async function getInspection(
 ): Promise<InspectionRecord> {
   const response = await apiClient.get(`/inspections/${inspectionId}`);
   return response.data;
+}
+
+export interface VehicleIdentityEvidence {
+  source?: string;
+  vehicle_identity_source?: string;
+  brand?: string;
+  vehicle_brand?: string;
+  model?: string;
+  vehicle_model?: string;
+  year?: string;
+  vehicle_year?: string;
+  variant?: string;
+  vehicle_variant?: string;
+  type?: string;
+  vehicle_type?: string;
+  vehicle_category?: string;
+  category?: string;
+  color?: string;
+  vehicle_color?: string;
+  vin?: string;
+  registration?: string;
+  confidence?: number;
+}
+
+/**
+ * Merge trusted identity evidence into an existing inspection.
+ */
+export async function updateInspectionIdentity(
+  inspectionId: string,
+  evidence: VehicleIdentityEvidence,
+): Promise<InspectionRecord> {
+  const response = await apiClient.put(
+    `/inspections/${inspectionId}/identity`,
+    evidence,
+  );
+  return response.data.data;
+}
+
+export interface VlmEvidence {
+  available: boolean;
+  provider?: string;
+  reason?: string;
+  vehicle?: Record<string, unknown>;
+  overall_condition?: string;
+  damage_items?: Array<Record<string, unknown>>;
+  modification_items?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+}
+
+/**
+ * Merge externally generated VLM evidence into an existing inspection.
+ */
+export async function updateInspectionVlmEvidence(
+  inspectionId: string,
+  evidence: VlmEvidence,
+): Promise<InspectionRecord> {
+  const response = await apiClient.put(
+    `/inspections/${inspectionId}/vlm`,
+    evidence,
+  );
+  return response.data.data;
+}
+
+/**
+ * Rerun live VLM analysis for an existing inspection after provider keys/quota are available.
+ */
+export async function retryInspectionVlmAnalysis(
+  inspectionId: string,
+): Promise<InspectionRecord> {
+  const response = await apiClient.post(
+    `/inspections/${inspectionId}/retry-vlm`,
+  );
+  return response.data.data;
 }
 
 /**
@@ -144,6 +511,12 @@ export interface MetricsResponse {
     scratches: number;
     dents: number;
     rust: number;
+    cracks: number;
+    paint_damage: number;
+    wheel_damage?: number;
+    broken_lights?: number;
+    missing_parts?: number;
+    panel_misalignment?: number;
   };
   vehicleBreakdown: Array<{
     brand: string;

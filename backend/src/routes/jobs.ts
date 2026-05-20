@@ -13,6 +13,14 @@ import logger from "../utils/logger";
 const router = Router();
 
 /**
+ * GET /api/jobs/health-check
+ * Lightweight health endpoint used by local service startup checks.
+ */
+router.get("/health-check", (_req: Request, res: Response) => {
+  res.json({ status: "ok" });
+});
+
+/**
  * GET /api/jobs/:id
  * Get job status by ID
  */

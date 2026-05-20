@@ -1,6 +1,6 @@
 """
 Damage detection service
-Detects scratches, dents, and rust using YOLOv8 and computer vision
+Detects scratches, dents, rust, cracks, and paint damage using YOLOv8 and computer vision
 """
 
 import asyncio
@@ -15,13 +15,47 @@ from src.utils.frame_utils import select_frames
 
 logger = logging.getLogger(__name__)
 
-# Maximum frames to process for damage detection
-# Using evenly-spaced selection for 360-degree coverage
-MAX_FRAMES = 15
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return float(default)
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+        return float(default)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return int(default)
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+        return int(default)
+
+
+# Maximum frames to process for damage detection. Evenly-spaced for 360-degree
+# coverage. Override with ML_DAMAGE_MAX_FRAMES.
+MAX_FRAMES = _env_int("ML_DAMAGE_MAX_FRAMES", 15)
+
+# Low sensitivity mode: require stronger evidence before surfacing a local
+# computer-vision damage finding. Reduces noisy scratches/paint/dent hits.
+# Override with ML_DAMAGE_CONFIDENCE_THRESHOLD.
+DAMAGE_CONFIDENCE_THRESHOLD = _env_float("ML_DAMAGE_CONFIDENCE_THRESHOLD", 0.55)
+
+# Dedup tuning: how far (px) and how many frames apart we still treat a hit as
+# the same physical damage seen from another angle. Override with
+# ML_DAMAGE_DEDUP_RADIUS_PX and ML_DAMAGE_DEDUP_FRAME_WINDOW.
+DEDUP_RADIUS_PX = _env_int("ML_DAMAGE_DEDUP_RADIUS_PX", 80)
+DEDUP_FRAME_WINDOW = _env_int("ML_DAMAGE_DEDUP_FRAME_WINDOW", 5)
 
 
 class DamageDetector:
-    """Detects vehicle damage (scratches, dents, rust)"""
+    """Detects vehicle damage (scratches, dents, rust, cracks, paint damage)"""
 
     def __init__(self, yolo_model: Optional[YOLO] = None):
         """
@@ -63,6 +97,12 @@ class DamageDetector:
         scratches_count = 0
         dents_count = 0
         rust_count = 0
+        cracks_count = 0
+        paint_damage_count = 0
+        wheel_damage_count = 0
+        broken_lights_count = 0
+        missing_parts_count = 0
+        panel_misalignment_count = 0
         damage_locations = []
 
         # Apply frame limiting for performance (Phase 2 optimization)
@@ -79,11 +119,27 @@ class DamageDetector:
             os.makedirs(snapshots_dir, exist_ok=True)
 
         # Process frames to detect damage with improved filtering
-        snapshot_counter = {"scratch": 0, "dent": 0, "rust": 0}
+        snapshot_counter = {
+            "scratch": 0,
+            "dent": 0,
+            "rust": 0,
+            "crack": 0,
+            "paint_damage": 0,
+        }
 
         # Track detected regions to avoid duplicates
-        detected_regions = {"scratch": [], "dent": [], "rust": []}
-        MIN_CONFIDENCE_THRESHOLD = 0.3  # Filter out detections below 30% confidence
+        detected_regions = {
+            "scratch": [],
+            "dent": [],
+            "rust": [],
+            "crack": [],
+            "paint_damage": [],
+        }
+
+        # Batch vehicle-region detection for all selected frames in a single
+        # YOLO call. This avoids per-frame Python overhead and lets ultralytics
+        # internally batch across the GPU/CPU.
+        vehicle_regions_by_path: Dict[str, Optional[tuple]] = self._batch_vehicle_regions(selected_frames)
 
         for frame_idx, frame_path in enumerate(selected_frames):
             try:
@@ -95,7 +151,7 @@ class DamageDetector:
                 h, w = image.shape[:2]
 
                 # Detect vehicle region first to focus on vehicle area
-                vehicle_region = self._get_vehicle_region(image, frame_path)
+                vehicle_region = vehicle_regions_by_path.get(frame_path)
                 if vehicle_region is None:
                     vehicle_region = (0, 0, w, h)  # Use full image if vehicle not detected
                 
@@ -160,22 +216,32 @@ class DamageDetector:
                         region_edges = cv2.Canny(region_gray, lower, upper)
                         edge_density = np.sum(region_edges > 0) / max(region_edges.size, 1)
                         
-                        # Calculate confidence (0-1 scale)
-                        # Higher contrast and edge density = higher confidence
-                        confidence = min(0.95, 0.4 + (contrast * 0.4) + (edge_density * 0.2))
+                        # Calculate confidence (0-1 scale). Higher contrast and
+                        # edge density = higher confidence. Very dark elongated
+                        # regions are classified as cracks rather than scratches.
+                        is_crack = (
+                            aspect_ratio >= 3.0
+                            and region_mean < surrounding_mean - 18
+                            and edge_density > 0.08
+                        )
+                        damage_type = "crack" if is_crack else "scratch"
+                        confidence = min(
+                            0.95,
+                            0.4 + (contrast * 0.4) + (edge_density * 0.2) + (0.08 if is_crack else 0.0),
+                        )
                         
                         # Filter low confidence detections
-                        if confidence < MIN_CONFIDENCE_THRESHOLD:
+                        if confidence < DAMAGE_CONFIDENCE_THRESHOLD:
                             continue
                         
                         # Check for duplicates (same location in nearby frames)
                         center_x = vx1 + x + w_contour // 2
                         center_y = vy1 + y + h_contour // 2
                         is_duplicate = False
-                        for prev_region in detected_regions["scratch"]:
+                        for prev_region in detected_regions[damage_type]:
                             prev_x, prev_y, prev_frame = prev_region
                             # If same location within 50 pixels and within 3 frames, consider duplicate
-                            if abs(prev_x - center_x) < 50 and abs(prev_y - center_y) < 50 and abs(prev_frame - frame_idx) < 3:
+                            if abs(prev_x - center_x) < DEDUP_RADIUS_PX and abs(prev_y - center_y) < DEDUP_RADIUS_PX and abs(prev_frame - frame_idx) < DEDUP_FRAME_WINDOW:
                                 is_duplicate = True
                                 break
                         
@@ -192,14 +258,17 @@ class DamageDetector:
                         damage_crop = vehicle_image[y_expanded:y_expanded+h_expanded, x_expanded:x_expanded+w_expanded]
                         
                         if damage_crop.size > 0:
-                            scratches_count += 1
-                            snapshot_counter["scratch"] += 1
-                            detected_regions["scratch"].append((center_x, center_y, frame_idx))
+                            if damage_type == "crack":
+                                cracks_count += 1
+                            else:
+                                scratches_count += 1
+                            snapshot_counter[damage_type] += 1
+                            detected_regions[damage_type].append((center_x, center_y, frame_idx))
                             
                             # Save snapshot if directory is available
                             snapshot_path = None
                             if snapshots_dir:
-                                snapshot_filename = f"scratch_{snapshot_counter['scratch']:03d}_frame_{frame_idx:04d}.jpg"
+                                snapshot_filename = f"{damage_type}_{snapshot_counter[damage_type]:03d}_frame_{frame_idx:04d}.jpg"
                                 snapshot_path_full = os.path.join(snapshots_dir, snapshot_filename)
                                 cv2.imwrite(snapshot_path_full, damage_crop)
                                 
@@ -211,10 +280,11 @@ class DamageDetector:
                                     snapshot_path = snapshot_path_full
                             
                             damage_locations.append({
-                                "type": "scratch",
+                                "type": damage_type,
                                 "frame": frame_path,
                                 "snapshot": snapshot_path,
                                 "confidence": confidence,
+                                "severity": "medium" if confidence >= 0.65 else "low",
                                 "bbox": [vx1 + x_expanded, vy1 + y_expanded, vx1 + x_expanded + w_expanded, vy1 + y_expanded + h_expanded],
                             })
 
@@ -254,7 +324,7 @@ class DamageDetector:
                         area_confidence = min(0.9, area / 50000.0)
                         confidence = (color_confidence + area_confidence) / 2.0
                         
-                        if confidence < MIN_CONFIDENCE_THRESHOLD:
+                        if confidence < DAMAGE_CONFIDENCE_THRESHOLD:
                             continue
                         
                         # Check for duplicates
@@ -263,7 +333,7 @@ class DamageDetector:
                         is_duplicate = False
                         for prev_region in detected_regions["rust"]:
                             prev_x, prev_y, prev_frame = prev_region
-                            if abs(prev_x - center_x) < 80 and abs(prev_y - center_y) < 80 and abs(prev_frame - frame_idx) < 3:
+                            if abs(prev_x - center_x) < DEDUP_RADIUS_PX and abs(prev_y - center_y) < DEDUP_RADIUS_PX and abs(prev_frame - frame_idx) < DEDUP_FRAME_WINDOW:
                                 is_duplicate = True
                                 break
                         
@@ -303,8 +373,99 @@ class DamageDetector:
                                 "frame": frame_path,
                                 "snapshot": snapshot_path,
                                 "confidence": confidence,
+                                "severity": "high" if confidence >= 0.7 else "medium",
                                 "bbox": [vx1 + x_expanded, vy1 + y_expanded, vx1 + x_expanded + w_expanded, vy1 + y_expanded + h_expanded],
                             })
+
+                # Paint damage / scuff detection: irregular non-rust regions
+                # with local contrast and edge texture. This is intentionally
+                # conservative and complements Gemini's VLM assessment.
+                paint_mask = cv2.bitwise_and(edges, cv2.bitwise_not(rust_mask))
+                paint_kernel = np.ones((5, 5), np.uint8)
+                paint_mask = cv2.morphologyEx(paint_mask, cv2.MORPH_CLOSE, paint_kernel)
+                paint_contours, _ = cv2.findContours(paint_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+                for contour in paint_contours:
+                    area = cv2.contourArea(contour)
+                    if not (800 < area < 30000):
+                        continue
+
+                    x, y, w_contour, h_contour = cv2.boundingRect(contour)
+                    aspect_ratio = max(w_contour, h_contour) / max(min(w_contour, h_contour), 1)
+                    if aspect_ratio > 4.5:
+                        continue
+
+                    region = vehicle_image[y:y+h_contour, x:x+w_contour]
+                    if region.size == 0:
+                        continue
+
+                    padding = 25
+                    x_pad = max(0, x - padding)
+                    y_pad = max(0, y - padding)
+                    w_pad = min(vehicle_image.shape[1] - x_pad, w_contour + 2 * padding)
+                    h_pad = min(vehicle_image.shape[0] - y_pad, h_contour + 2 * padding)
+                    surrounding = vehicle_image[y_pad:y_pad+h_pad, x_pad:x_pad+w_pad]
+                    if surrounding.size == 0:
+                        continue
+
+                    region_gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
+                    surrounding_gray = cv2.cvtColor(surrounding, cv2.COLOR_BGR2GRAY)
+                    local_contrast = abs(float(np.mean(region_gray)) - float(np.mean(surrounding_gray))) / 255.0
+                    region_edges = cv2.Canny(region_gray, lower, upper)
+                    edge_density = float(np.sum(region_edges > 0) / max(region_edges.size, 1))
+
+                    if local_contrast < 0.08 or edge_density < 0.035:
+                        continue
+
+                    center_x = vx1 + x + w_contour // 2
+                    center_y = vy1 + y + h_contour // 2
+                    is_duplicate = False
+                    for damage_type in ("paint_damage", "scratch", "crack", "rust"):
+                        for prev_x, prev_y, prev_frame in detected_regions[damage_type]:
+                            if abs(prev_x - center_x) < DEDUP_RADIUS_PX and abs(prev_y - center_y) < DEDUP_RADIUS_PX and abs(prev_frame - frame_idx) < DEDUP_FRAME_WINDOW:
+                                is_duplicate = True
+                                break
+                        if is_duplicate:
+                            break
+                    if is_duplicate:
+                        continue
+
+                    confidence = min(0.9, 0.35 + (local_contrast * 0.4) + (edge_density * 0.4))
+                    if confidence < DAMAGE_CONFIDENCE_THRESHOLD:
+                        continue
+
+                    x_expanded = max(0, x - padding)
+                    y_expanded = max(0, y - padding)
+                    w_expanded = min(vehicle_image.shape[1] - x_expanded, w_contour + 2 * padding)
+                    h_expanded = min(vehicle_image.shape[0] - y_expanded, h_contour + 2 * padding)
+                    paint_crop = vehicle_image[y_expanded:y_expanded+h_expanded, x_expanded:x_expanded+w_expanded]
+                    if paint_crop.size == 0:
+                        continue
+
+                    paint_damage_count += 1
+                    snapshot_counter["paint_damage"] += 1
+                    detected_regions["paint_damage"].append((center_x, center_y, frame_idx))
+
+                    snapshot_path = None
+                    if snapshots_dir:
+                        snapshot_filename = f"paint_damage_{snapshot_counter['paint_damage']:03d}_frame_{frame_idx:04d}.jpg"
+                        snapshot_path_full = os.path.join(snapshots_dir, snapshot_filename)
+                        cv2.imwrite(snapshot_path_full, paint_crop)
+
+                        if backend_uploads_path:
+                            rel_path = os.path.relpath(snapshot_path_full, backend_uploads_path)
+                            snapshot_path = rel_path.replace("\\", "/")
+                        else:
+                            snapshot_path = snapshot_path_full
+
+                    damage_locations.append({
+                        "type": "paint_damage",
+                        "frame": frame_path,
+                        "snapshot": snapshot_path,
+                        "confidence": confidence,
+                        "severity": "medium" if confidence >= 0.6 else "low",
+                        "bbox": [vx1 + x_expanded, vy1 + y_expanded, vx1 + x_expanded + w_expanded, vy1 + y_expanded + h_expanded],
+                    })
 
                 # Improved dent detection using depth/shadow analysis
                 gray_blur = cv2.GaussianBlur(gray, (15, 15), 0)
@@ -357,7 +518,7 @@ class DamageDetector:
                                 shadow_confidence = min(0.6, shadow_contrast * 2)
                                 confidence = (area_confidence * 0.3 + circularity_confidence * 0.3 + shadow_confidence * 0.4)
                                 
-                                if confidence < MIN_CONFIDENCE_THRESHOLD:
+                                if confidence < DAMAGE_CONFIDENCE_THRESHOLD:
                                     continue
                                 
                                 # Check for duplicates
@@ -366,7 +527,7 @@ class DamageDetector:
                                 is_duplicate = False
                                 for prev_region in detected_regions["dent"]:
                                     prev_x, prev_y, prev_frame = prev_region
-                                    if abs(prev_x - center_x) < 60 and abs(prev_y - center_y) < 60 and abs(prev_frame - frame_idx) < 3:
+                                    if abs(prev_x - center_x) < DEDUP_RADIUS_PX and abs(prev_y - center_y) < DEDUP_RADIUS_PX and abs(prev_frame - frame_idx) < DEDUP_FRAME_WINDOW:
                                         is_duplicate = True
                                         break
                                 
@@ -406,6 +567,7 @@ class DamageDetector:
                                         "frame": frame_path,
                                         "snapshot": snapshot_path,
                                         "confidence": confidence,
+                                        "severity": "high" if confidence >= 0.65 else "medium",
                                         "bbox": [vx1 + x_expanded, vy1 + y_expanded, vx1 + x_expanded + w_expanded, vy1 + y_expanded + h_expanded],
                                     })
 
@@ -417,7 +579,17 @@ class DamageDetector:
         damage_locations.sort(key=lambda x: x.get("confidence", 0), reverse=True)
         
         # Determine severity based on damage count and quality
-        total_damage = scratches_count + dents_count + rust_count
+        total_damage = (
+            scratches_count
+            + dents_count
+            + rust_count
+            + cracks_count
+            + paint_damage_count
+            + wheel_damage_count
+            + broken_lights_count
+            + missing_parts_count
+            + panel_misalignment_count
+        )
         avg_confidence = np.mean([loc.get("confidence", 0) for loc in damage_locations]) if damage_locations else 0
         
         # Severity calculation: consider both count and confidence
@@ -443,7 +615,34 @@ class DamageDetector:
                 "count": rust_count,
                 "detected": rust_count > 0,
             },
+            "cracks": {
+                "count": cracks_count,
+                "detected": cracks_count > 0,
+            },
+            "paint_damage": {
+                "count": paint_damage_count,
+                "detected": paint_damage_count > 0,
+            },
+            "wheel_damage": {
+                "count": wheel_damage_count,
+                "detected": wheel_damage_count > 0,
+            },
+            "broken_lights": {
+                "count": broken_lights_count,
+                "detected": broken_lights_count > 0,
+            },
+            "missing_parts": {
+                "count": missing_parts_count,
+                "detected": missing_parts_count > 0,
+            },
+            "panel_misalignment": {
+                "count": panel_misalignment_count,
+                "detected": panel_misalignment_count > 0,
+            },
             "severity": severity,
+            "total_count": int(total_damage),
+            "average_confidence": float(round(avg_confidence, 3)) if total_damage else 0.0,
+            "confidence_threshold": DAMAGE_CONFIDENCE_THRESHOLD,
             "locations": damage_locations[:20],  # Limit to top 20 locations by confidence
         }
 
@@ -454,17 +653,60 @@ class DamageDetector:
         """
         try:
             results = self.yolo_model(frame_path)
-            
-            for result in results:
-                boxes = result.boxes
-                if boxes is not None:
-                    for box in boxes:
-                        class_id = int(box.cls[0])
-                        # YOLO COCO classes: 2=car, 3=motorcycle, 7=truck
-                        if class_id in [2, 3, 7]:
-                            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                            return (int(x1), int(y1), int(x2), int(y2))
+            return self._largest_vehicle_box(results)
         except Exception as e:
             logger.warning(f"Vehicle region detection error: {e}")
 
         return None
+
+    def _batch_vehicle_regions(self, frame_paths: List[str]) -> Dict[str, Optional[tuple]]:
+        """
+        Run YOLO once across all frames and return a {frame_path: bbox} map.
+
+        ultralytics accepts a list of paths and internally batches inference,
+        which is much faster than calling the model once per frame in Python.
+        """
+        regions: Dict[str, Optional[tuple]] = {p: None for p in frame_paths}
+        if not frame_paths:
+            return regions
+        try:
+            results = self.yolo_model(frame_paths)
+        except Exception as e:
+            logger.warning(f"Batch vehicle region detection error: {e}")
+            return regions
+
+        # ultralytics returns a list of Results aligned with the input list.
+        for path, result in zip(frame_paths, results):
+            try:
+                regions[path] = self._largest_vehicle_box([result])
+            except Exception as e:
+                logger.debug(f"Failed to extract vehicle box for {path}: {e}")
+                regions[path] = None
+        return regions
+
+    @staticmethod
+    def _largest_vehicle_box(results) -> Optional[tuple]:
+        """Pick the largest vehicle bounding box from a Results iterable."""
+        best: Optional[tuple] = None
+        best_area = 0
+        for result in results:
+            boxes = getattr(result, "boxes", None)
+            if boxes is None:
+                continue
+            for box in boxes:
+                try:
+                    class_id = int(box.cls[0])
+                except Exception:
+                    continue
+                # YOLO COCO classes: 2=car, 3=motorcycle, 7=truck
+                if class_id not in (2, 3, 7):
+                    continue
+                try:
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                except Exception:
+                    continue
+                area = max(0, int(x2) - int(x1)) * max(0, int(y2) - int(y1))
+                if area > best_area:
+                    best_area = area
+                    best = (int(x1), int(y1), int(x2), int(y2))
+        return best

@@ -8,6 +8,8 @@ interface DamageChartProps {
     scratches: number;
     dents: number;
     rust: number;
+    cracks?: number;
+    paint_damage?: number;
   };
   isLoading?: boolean;
 }
@@ -16,15 +18,21 @@ const COLORS = [
   "hsl(var(--chart-1))",
   "hsl(var(--chart-2))",
   "hsl(var(--chart-3))",
+  "hsl(var(--chart-4))",
+  "hsl(var(--chart-5))",
 ];
 
 export function DamageChart({ data, isLoading }: DamageChartProps) {
-  const total = data.scratches + data.dents + data.rust;
+  const cracks = data.cracks || 0;
+  const paintDamage = data.paint_damage || 0;
+  const total = data.scratches + data.dents + data.rust + cracks + paintDamage;
 
   const chartData = [
     { name: "Scratches", value: data.scratches, color: COLORS[0] },
     { name: "Dents", value: data.dents, color: COLORS[1] },
     { name: "Rust", value: data.rust, color: COLORS[2] },
+    { name: "Cracks", value: cracks, color: COLORS[3] },
+    { name: "Paint damage", value: paintDamage, color: COLORS[4] },
   ].filter((item) => item.value > 0);
 
   if (isLoading) {

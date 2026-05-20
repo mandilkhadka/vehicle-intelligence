@@ -68,6 +68,30 @@ export function initDatabase(): Database.Database {
         logger.info("Adding exhaust_image_path column to inspections table");
         db.exec("ALTER TABLE inspections ADD COLUMN exhaust_image_path TEXT");
       }
+      if (!columnNames.includes("vehicle_year")) {
+        logger.info("Adding vehicle_year column to inspections table");
+        db.exec("ALTER TABLE inspections ADD COLUMN vehicle_year TEXT");
+      }
+      if (!columnNames.includes("vehicle_variant")) {
+        logger.info("Adding vehicle_variant column to inspections table");
+        db.exec("ALTER TABLE inspections ADD COLUMN vehicle_variant TEXT");
+      }
+      if (!columnNames.includes("vehicle_info")) {
+        logger.info("Adding vehicle_info column to inspections table");
+        db.exec("ALTER TABLE inspections ADD COLUMN vehicle_info TEXT");
+      }
+      if (!columnNames.includes("odometer_info")) {
+        logger.info("Adding odometer_info column to inspections table");
+        db.exec("ALTER TABLE inspections ADD COLUMN odometer_info TEXT");
+      }
+      if (!columnNames.includes("cracks_detected")) {
+        logger.info("Adding cracks_detected column to inspections table");
+        db.exec("ALTER TABLE inspections ADD COLUMN cracks_detected INTEGER DEFAULT 0");
+      }
+      if (!columnNames.includes("paint_damage_detected")) {
+        logger.info("Adding paint_damage_detected column to inspections table");
+        db.exec("ALTER TABLE inspections ADD COLUMN paint_damage_detected INTEGER DEFAULT 0");
+      }
     } catch (error) {
       logger.warn({ error }, "Migration error (non-critical)");
     }
@@ -79,6 +103,46 @@ export function initDatabase(): Database.Database {
       logger.info("Database indexes created/verified");
     } catch (error) {
       logger.warn({ error }, "Index creation error (non-critical)");
+    }
+
+    // Migration: feedback tables for HITL labeling. The schema is also in
+    // schema.sql with IF NOT EXISTS guards, but we run it here too so
+    // installations that pre-date Sprint 3 pick up the tables without
+    // a manual migration step.
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS damage_feedback (
+          id TEXT PRIMARY KEY,
+          inspection_id TEXT NOT NULL,
+          location_index INTEGER NOT NULL,
+          verdict TEXT NOT NULL,
+          corrected_type TEXT,
+          corrected_severity TEXT,
+          note TEXT,
+          reviewer TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (inspection_id) REFERENCES inspections(id)
+        );
+        CREATE TABLE IF NOT EXISTS damage_missing_reports (
+          id TEXT PRIMARY KEY,
+          inspection_id TEXT NOT NULL,
+          frame_path TEXT,
+          bbox TEXT,
+          type TEXT,
+          severity TEXT,
+          part TEXT,
+          note TEXT,
+          reviewer TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (inspection_id) REFERENCES inspections(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_damage_feedback_inspection ON damage_feedback(inspection_id);
+        CREATE INDEX IF NOT EXISTS idx_damage_feedback_created_at ON damage_feedback(created_at);
+        CREATE INDEX IF NOT EXISTS idx_damage_missing_inspection ON damage_missing_reports(inspection_id);
+        CREATE INDEX IF NOT EXISTS idx_damage_missing_created_at ON damage_missing_reports(created_at);
+      `);
+    } catch (error) {
+      logger.warn({ error }, "Feedback table creation error (non-critical)");
     }
 
     logger.info({ dbPath }, "Database initialized successfully");

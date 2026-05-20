@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { CheckCircle2, Circle, Loader2, XCircle } from "lucide-react";
@@ -9,6 +10,12 @@ import { getJobStatus } from "@/lib/api";
 import { PROGRESS } from "@/lib/constants";
 import { showError } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+
+// Exponential backoff for polling. Successful polls reset to BASE_INTERVAL_MS;
+// each consecutive fetch failure doubles the wait up to MAX_INTERVAL_MS so a
+// flaky network or slow ML service doesn't burn ~30 reqs/min for no reason.
+const BASE_INTERVAL_MS = 2000;
+const MAX_INTERVAL_MS = 30000;
 
 const T = PROGRESS.THRESHOLDS;
 
@@ -31,43 +38,79 @@ export default function JobStatus({ jobId }: JobStatusProps) {
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
   const stoppedRef = useRef(false);
+  const fetchErrorShownRef = useRef(false);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const consecutiveFailuresRef = useRef(0);
+  const runPollRef = useRef<() => void>(() => {});
+  const [retryNonce, setRetryNonce] = useState(0);
+
+  const scheduleNext = useCallback((delay: number) => {
+    if (stoppedRef.current) return;
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    timeoutRef.current = setTimeout(() => runPollRef.current(), delay);
+  }, []);
+
+  const runPoll = useCallback(async () => {
+    if (stoppedRef.current) return;
+    try {
+      const data = await getJobStatus(jobId);
+      fetchErrorShownRef.current = false;
+      consecutiveFailuresRef.current = 0;
+      setError(null);
+      setStatus(data.status);
+      setProgress(data.progress ?? 0);
+
+      if (data.status === "completed") {
+        stoppedRef.current = true;
+        const inspectionId = data.inspectionId || data.inspection_id;
+        if (inspectionId) {
+          setTimeout(() => router.push(`/inspection/${inspectionId}`), 800);
+        }
+        return;
+      }
+      if (data.status === "failed") {
+        stoppedRef.current = true;
+        setError(data.error_message || data.error || "Processing failed");
+        return;
+      }
+      scheduleNext(BASE_INTERVAL_MS);
+    } catch (err) {
+      consecutiveFailuresRef.current += 1;
+      const delay = Math.min(
+        BASE_INTERVAL_MS * Math.pow(2, consecutiveFailuresRef.current),
+        MAX_INTERVAL_MS,
+      );
+      setError(`Unable to refresh job status. Retrying in ${Math.round(delay / 1000)}s…`);
+      if (!fetchErrorShownRef.current) {
+        showError("Failed to fetch job status", err);
+        fetchErrorShownRef.current = true;
+      }
+      scheduleNext(delay);
+    }
+  }, [jobId, router, scheduleNext]);
+
+  useEffect(() => {
+    runPollRef.current = runPoll;
+  }, [runPoll]);
 
   useEffect(() => {
     stoppedRef.current = false;
-
-    const poll = async () => {
-      if (stoppedRef.current) return;
-      try {
-        const data = await getJobStatus(jobId);
-        setStatus(data.status);
-        setProgress(data.progress ?? 0);
-
-        if (data.status === "completed") {
-          stoppedRef.current = true;
-          const inspectionId = data.inspectionId || data.inspection_id;
-          if (inspectionId) {
-            setTimeout(() => router.push(`/inspection/${inspectionId}`), 800);
-          }
-        } else if (data.status === "failed") {
-          stoppedRef.current = true;
-          setError(data.error_message || data.error || "Processing failed");
-        }
-      } catch (err) {
-        setError("Failed to fetch job status");
-        showError("Failed to fetch job status", err);
-      }
-    };
-
-    poll();
-    const interval = setInterval(() => {
-      if (!stoppedRef.current) poll();
-    }, 2000);
-
+    fetchErrorShownRef.current = false;
+    consecutiveFailuresRef.current = 0;
+    runPoll();
     return () => {
       stoppedRef.current = true;
-      clearInterval(interval);
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
-  }, [jobId, router]);
+  }, [jobId, runPoll, retryNonce]);
+
+  const handleManualRetry = () => {
+    if (stoppedRef.current && status !== "failed") return;
+    stoppedRef.current = false;
+    consecutiveFailuresRef.current = 0;
+    setError(null);
+    setRetryNonce((n) => n + 1);
+  };
 
   const isFailed = status === "failed";
   const isDone = status === "completed";
@@ -113,6 +156,15 @@ export default function JobStatus({ jobId }: JobStatusProps) {
           <p className="text-xs text-muted-foreground">
             Initializing AI models — this may take 30–60s on the first run.
           </p>
+        )}
+
+        {error && !isFailed && !isDone && (
+          <div className="flex items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-300">
+            <span>{error}</span>
+            <Button type="button" size="sm" variant="outline" onClick={handleManualRetry}>
+              Retry now
+            </Button>
+          </div>
         )}
 
         {isDone && (

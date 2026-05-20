@@ -33,14 +33,20 @@ export interface InspectionRecord {
   vehicle_type?: string;
   vehicle_brand?: string;
   vehicle_model?: string;
+  vehicle_year?: string;
+  vehicle_variant?: string;
   vehicle_confidence?: number;
+  vehicle_info?: string;
   odometer_value?: number;
   odometer_confidence?: number;
   speedometer_image_path?: string;
+  odometer_info?: string;
   damage_summary?: string;
   scratches_detected?: number;
   dents_detected?: number;
   rust_detected?: number;
+  cracks_detected?: number;
+  paint_damage_detected?: number;
   damage_severity?: string;
   exhaust_type?: string;
   exhaust_confidence?: number;
@@ -131,7 +137,7 @@ export function updateJobStatus(
 ): JobRecord {
   const db = getDatabase();
   const updatesList: string[] = [];
-  const values: any[] = [];
+  const values: Array<string | number> = [];
 
   if (updates.status !== undefined) {
     updatesList.push("status = ?");
@@ -198,21 +204,27 @@ export function updateInspection(
 ): InspectionRecord {
   const db = getDatabase();
   const updatesList: string[] = [];
-  const values: any[] = [];
+  const values: Array<string | number | null> = [];
 
   // Build update statement dynamically
   const fields: (keyof InspectionRecord)[] = [
     "vehicle_type",
     "vehicle_brand",
     "vehicle_model",
+    "vehicle_year",
+    "vehicle_variant",
     "vehicle_confidence",
+    "vehicle_info",
     "odometer_value",
     "odometer_confidence",
     "speedometer_image_path",
+    "odometer_info",
     "damage_summary",
     "scratches_detected",
     "dents_detected",
     "rust_detected",
+    "cracks_detected",
+    "paint_damage_detected",
     "damage_severity",
     "exhaust_type",
     "exhaust_confidence",
@@ -237,6 +249,57 @@ export function updateInspection(
   stmt.run(...values);
 
   return getInspectionById(id);
+}
+
+/**
+ * Return uploaded video paths for completed jobs whose inspection finished
+ * more than `retentionDays` ago. The caller is expected to remove these files
+ * from disk. Frames and snapshots under uploads/frames are kept so users can
+ * still revisit their inspection report.
+ */
+export function listVideosEligibleForCleanup(retentionDays: number): Array<{ jobId: string; filePath: string }> {
+  const db = getDatabase();
+  const stmt = db.prepare(`
+    SELECT j.id AS jobId, f.file_path AS filePath
+      FROM jobs j
+      INNER JOIN inspections i ON j.id = i.job_id
+      INNER JOIN files f ON i.file_id = f.id
+     WHERE j.status = 'completed'
+       AND (julianday(CURRENT_TIMESTAMP) - julianday(i.updated_at)) > ?
+       AND f.file_path IS NOT NULL
+       AND f.file_path != ''
+  `);
+  return stmt.all(retentionDays) as Array<{ jobId: string; filePath: string }>;
+}
+
+/**
+ * Mark long-stuck jobs as failed.
+ *
+ * Job processing runs in-process; if the backend crashes mid-job, rows stay
+ * in `pending` or `processing` forever and the frontend polls them
+ * indefinitely. On startup (and optionally on a schedule) call this to flip
+ * stale rows to `failed` with a recognizable error message so the UI moves on.
+ */
+export function reapStuckJobs(opts?: { processingMaxAgeMinutes?: number; pendingMaxAgeMinutes?: number }): number {
+  const db = getDatabase();
+  const processingMax = opts?.processingMaxAgeMinutes ?? 30;
+  const pendingMax = opts?.pendingMaxAgeMinutes ?? 60;
+
+  // SQLite's CURRENT_TIMESTAMP is UTC; updated_at is set on every status update.
+  const stmt = db.prepare(`
+    UPDATE jobs
+       SET status = 'failed',
+           error_message = COALESCE(error_message, ?),
+           updated_at = CURRENT_TIMESTAMP
+     WHERE (status = 'processing' AND (julianday(CURRENT_TIMESTAMP) - julianday(updated_at)) * 24 * 60 > ?)
+        OR (status = 'pending'    AND (julianday(CURRENT_TIMESTAMP) - julianday(created_at)) * 24 * 60 > ?)
+  `);
+  const result = stmt.run(
+    "Job abandoned (backend restarted while processing or never picked up)",
+    processingMax,
+    pendingMax,
+  );
+  return Number(result.changes) || 0;
 }
 
 /**
@@ -271,6 +334,8 @@ export interface MetricsResponse {
     scratches: number;
     dents: number;
     rust: number;
+    cracks: number;
+    paint_damage: number;
   };
   vehicleBreakdown: Array<{
     brand: string;
@@ -292,7 +357,8 @@ export function getInspectionMetrics(
     SELECT
       COUNT(*) as totalInspections,
       COUNT(DISTINCT vehicle_brand || '-' || COALESCE(vehicle_model, '')) as uniqueVehicles,
-      COALESCE(SUM(scratches_detected), 0) + COALESCE(SUM(dents_detected), 0) + COALESCE(SUM(rust_detected), 0) as totalIssues
+      COALESCE(SUM(scratches_detected), 0) + COALESCE(SUM(dents_detected), 0) + COALESCE(SUM(rust_detected), 0) +
+      COALESCE(SUM(cracks_detected), 0) + COALESCE(SUM(paint_damage_detected), 0) as totalIssues
     FROM inspections
     WHERE created_at >= ? AND created_at < datetime(?, '+1 day')
   `);
@@ -306,7 +372,8 @@ export function getInspectionMetrics(
   const trendStmt = db.prepare(`
     SELECT
       DATE(created_at) as date,
-      COALESCE(SUM(scratches_detected), 0) + COALESCE(SUM(dents_detected), 0) + COALESCE(SUM(rust_detected), 0) as issues
+      COALESCE(SUM(scratches_detected), 0) + COALESCE(SUM(dents_detected), 0) + COALESCE(SUM(rust_detected), 0) +
+      COALESCE(SUM(cracks_detected), 0) + COALESCE(SUM(paint_damage_detected), 0) as issues
     FROM inspections
     WHERE created_at >= ? AND created_at < datetime(?, '+1 day')
     GROUP BY DATE(created_at)
@@ -325,7 +392,9 @@ export function getInspectionMetrics(
     SELECT
       COALESCE(SUM(scratches_detected), 0) as scratches,
       COALESCE(SUM(dents_detected), 0) as dents,
-      COALESCE(SUM(rust_detected), 0) as rust
+      COALESCE(SUM(rust_detected), 0) as rust,
+      COALESCE(SUM(cracks_detected), 0) as cracks,
+      COALESCE(SUM(paint_damage_detected), 0) as paint_damage
     FROM inspections
     WHERE created_at >= ? AND created_at < datetime(?, '+1 day')
   `);
@@ -333,6 +402,8 @@ export function getInspectionMetrics(
     scratches: number;
     dents: number;
     rust: number;
+    cracks: number;
+    paint_damage: number;
   };
 
   // Vehicle breakdown (top 5 + Other)
@@ -388,6 +459,8 @@ export function getInspectionMetrics(
       scratches: damageRow.scratches || 0,
       dents: damageRow.dents || 0,
       rust: damageRow.rust || 0,
+      cracks: damageRow.cracks || 0,
+      paint_damage: damageRow.paint_damage || 0,
     },
     vehicleBreakdown,
   };

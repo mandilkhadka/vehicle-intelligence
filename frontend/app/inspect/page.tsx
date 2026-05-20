@@ -1,19 +1,20 @@
 "use client"
 
 import { useState, type ComponentType } from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { AppShell } from "@/components/app-shell"
 import { PageHeader } from "@/components/page-header"
 import { UploadDropzone } from "@/components/inspect/upload-dropzone"
 import { Button } from "@/components/ui/button"
-import { ArrowRight, CheckCircle2, Film, Gauge, Loader2 } from "lucide-react"
+import { ArrowRight, Camera, CheckCircle2, Film, Gauge, Loader2 } from "lucide-react"
 
 interface UploadedFile {
   id: string
   name: string
   size: number
   progress: number
-  status: "uploading" | "processing" | "complete" | "error"
+  status: "preflight" | "preflight_blocked" | "uploading" | "processing" | "complete" | "error"
   jobId?: string
 }
 
@@ -35,10 +36,16 @@ export default function InspectPage() {
     <AppShell>
       <div className="mx-auto max-w-5xl p-4 sm:p-6 lg:p-8">
         <PageHeader
-          eyebrow="Capture"
-          title="New Inspection"
-          description="Upload a 360 degree walkaround video and, when available, a clear odometer photo for a stronger report."
-        />
+          title="New inspection"
+          description="Upload a 360° walkaround video. An odometer photo is optional."
+        >
+          <Button variant="outline" asChild className="gap-2">
+            <Link href="/capture">
+              <Camera className="h-4 w-4" />
+              Record guided walkaround
+            </Link>
+          </Button>
+        </PageHeader>
 
         <div className="grid gap-6 lg:grid-cols-[1fr_280px]">
           <div>

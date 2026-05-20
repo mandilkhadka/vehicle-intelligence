@@ -12,6 +12,26 @@ from ultralytics import YOLO
 logger = logging.getLogger(__name__)
 
 
+def _resolve_device() -> str:
+    """
+    Pick the inference device.
+
+    Honors ML_DEVICE if set ("cuda", "cpu", "mps"). Otherwise auto-detects CUDA
+    and falls back to CPU. Apple Silicon users can opt into "mps" explicitly —
+    we don't auto-pick it because ultralytics/MPS support is still uneven.
+    """
+    explicit = os.getenv("ML_DEVICE", "").strip().lower()
+    if explicit in ("cuda", "cpu", "mps"):
+        return explicit
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
+
 # Brand catalog used for CLIP zero-shot identification.
 # Kept in the registry so the precomputed text embeddings stay aligned with this list.
 VEHICLE_BRANDS: List[str] = [
@@ -33,6 +53,15 @@ BRAND_PROMPT_TEMPLATES: List[str] = [
 ]
 
 
+def clip_features_to_tensor(features):
+    """Return the projected CLIP embedding tensor across Transformers versions."""
+    if hasattr(features, "pooler_output"):
+        return features.pooler_output
+    if isinstance(features, (tuple, list)):
+        return features[0]
+    return features
+
+
 class ModelRegistry:
     """
     Singleton registry for ML models.
@@ -47,6 +76,7 @@ class ModelRegistry:
         self._brand_text_embeddings = None
         self._brand_names: List[str] = list(VEHICLE_BRANDS)
         self._initialized = False
+        self._device: str = _resolve_device()
 
     @property
     def is_initialized(self) -> bool:
@@ -84,10 +114,19 @@ class ModelRegistry:
 
     def _load_yolo_model(self) -> None:
         """Load YOLOv8 nano model for object detection."""
-        logger.info("Loading YOLOv8 model...")
+        logger.info(f"Loading YOLOv8 model (device={self._device})...")
         start_time = time.time()
         try:
             self._yolo_model = YOLO("yolov8n.pt")
+            # ultralytics lazy-moves to device on first call; doing it now
+            # surfaces device errors at startup rather than mid-request.
+            if self._device != "cpu":
+                try:
+                    self._yolo_model.to(self._device)
+                    logger.info(f"YOLOv8 moved to device={self._device}")
+                except Exception as e:
+                    logger.warning(f"Failed to move YOLOv8 to {self._device}, staying on CPU: {e}")
+                    self._device = "cpu"
             logger.info(f"YOLOv8 model loaded in {time.time() - start_time:.2f}s")
         except Exception as e:
             logger.error(f"Failed to load YOLOv8 model: {e}", exc_info=True)
@@ -110,8 +149,14 @@ class ModelRegistry:
             self._clip_model = CLIPModel.from_pretrained(
                 model_name,
                 local_files_only=False,
-                resume_download=True
             )
+            if self._device != "cpu":
+                try:
+                    self._clip_model = self._clip_model.to(self._device)
+                    logger.info(f"CLIP model moved to device={self._device}")
+                except Exception as e:
+                    logger.warning(f"Failed to move CLIP to {self._device}, staying on CPU: {e}")
+                    self._device = "cpu"
             logger.info(f"CLIP model loaded in {time.time() - start_time:.2f}s")
 
             logger.info("Loading CLIP processor...")
@@ -119,7 +164,6 @@ class ModelRegistry:
             self._clip_processor = CLIPProcessor.from_pretrained(
                 model_name,
                 local_files_only=False,
-                resume_download=True
             )
             logger.info(f"CLIP processor loaded in {time.time() - processor_start:.2f}s")
             logger.info(f"Total CLIP initialization: {time.time() - start_time:.2f}s")
@@ -153,7 +197,9 @@ class ModelRegistry:
                 inputs = self._clip_processor(
                     text=prompts, return_tensors="pt", padding=True, truncation=True
                 )
-                text_features = self._clip_model.get_text_features(**inputs)
+                if self._device != "cpu":
+                    inputs = {k: v.to(self._device) for k, v in inputs.items()}
+                text_features = clip_features_to_tensor(self._clip_model.get_text_features(**inputs))
                 # L2-normalize each prompt embedding, then average across templates,
                 # then L2-normalize again — this is the standard prompt-ensemble recipe.
                 text_features = text_features / text_features.norm(dim=-1, keepdim=True)
@@ -195,6 +241,10 @@ class ModelRegistry:
     def get_brand_names(self) -> List[str]:
         """Get the brand list aligned with the precomputed text embeddings."""
         return list(self._brand_names)
+
+    def get_device(self) -> str:
+        """Return the resolved inference device (cuda/mps/cpu)."""
+        return self._device
 
 
 # Global singleton instance

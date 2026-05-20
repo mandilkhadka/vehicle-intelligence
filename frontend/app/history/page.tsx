@@ -30,12 +30,16 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Search, Filter, Eye, Loader2 } from "lucide-react";
+import { Search, Filter, Eye, Loader2, AlertTriangle, ShieldCheck } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import Loading from "./loading";
 import { getInspections, BACKEND_BASE_URL } from "@/lib/api";
 import { safeParseJsonOrValue } from "@/lib/utils/safe-json";
+import {
+  getAuditBadgeState,
+  getInspectionPipelineAudit,
+} from "@/lib/inspection-audit";
 
 function getStatusBadge(status: string) {
   switch (status) {
@@ -69,6 +73,31 @@ function getScoreColor(score: number) {
   return "text-muted-foreground";
 }
 
+function getVerificationBadge(state: ReturnType<typeof getAuditBadgeState>) {
+  if (state.status === "verified") {
+    return (
+      <Badge className="gap-1 bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20">
+        <ShieldCheck className="h-3 w-3" />
+        {state.label}
+      </Badge>
+    );
+  }
+
+  if (state.status === "review") {
+    return (
+      <div className="flex flex-col items-start gap-1">
+        <Badge variant="outline" className="gap-1 border-accent/40 text-accent">
+          <AlertTriangle className="h-3 w-3" />
+          {state.label}
+        </Badge>
+        <span className="text-xs text-muted-foreground">{state.detail}</span>
+      </div>
+    );
+  }
+
+  return <span className="text-sm text-muted-foreground">-</span>;
+}
+
 function HistoryPageContent() {
   const [searchQuery, setSearchQuery] = useState("");
   const [inspections, setInspections] = useState<any[]>([]);
@@ -94,7 +123,9 @@ function HistoryPageContent() {
           const issues =
             (damage.scratches?.count || 0) +
             (damage.dents?.count || 0) +
-            (damage.rust?.count || 0);
+            (damage.rust?.count || 0) +
+            (damage.cracks?.count || 0) +
+            (damage.paint_damage?.count || 0);
 
           const frames = safeParseJsonOrValue<string[]>(
             insp.extracted_frames as any,
@@ -105,13 +136,19 @@ function HistoryPageContent() {
             typeof v === "string" && v.trim() !== "" && v !== "Unknown";
           const brand = (isReal(vehicleInfo.brand) && vehicleInfo.brand) || (isReal(insp.vehicle_brand) && insp.vehicle_brand) || "";
           const model = (isReal(vehicleInfo.model) && vehicleInfo.model) || (isReal(insp.vehicle_model) && insp.vehicle_model) || "";
-          const year = vehicleInfo.year ? String(vehicleInfo.year) : "";
-          const vehicle = [year, brand, model].filter(Boolean).join(" ").trim() || "Unidentified";
+          const year =
+            vehicleInfo.year ? String(vehicleInfo.year) :
+            (isReal(insp.vehicle_year) && insp.vehicle_year) || "";
+          const variant =
+            vehicleInfo.variant ? String(vehicleInfo.variant) :
+            (isReal(insp.vehicle_variant) && insp.vehicle_variant) || "";
+          const vehicle = [year, brand, model, variant].filter(Boolean).join(" ").trim() || "Unidentified";
 
           const confidence =
             (typeof vehicleInfo.confidence === "number" && vehicleInfo.confidence) ||
             (typeof insp.vehicle_confidence === "number" && insp.vehicle_confidence) ||
             0;
+          const audit = getInspectionPipelineAudit(insp);
 
           return {
             id: insp.id,
@@ -121,6 +158,7 @@ function HistoryPageContent() {
               ? new Date(insp.created_at).toLocaleDateString()
               : "",
             status: insp.job_status || "completed",
+            auditState: getAuditBadgeState(audit),
             issues,
             score: Math.round(confidence * 100),
             image: (() => {
@@ -209,13 +247,14 @@ function HistoryPageContent() {
                         <TableHead>Status</TableHead>
                         <TableHead className="text-center">Issues</TableHead>
                         <TableHead className="text-center">Score</TableHead>
+                        <TableHead>Verification</TableHead>
                         <TableHead className="w-20"></TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {loading ? (
                         <TableRow>
-                          <TableCell colSpan={7} className="text-center py-8">
+                          <TableCell colSpan={8} className="text-center py-8">
                             <Loader2 className="h-6 w-6 animate-spin mx-auto text-primary mb-2" />
                             <p className="text-muted-foreground">
                               Loading inspections...
@@ -225,7 +264,7 @@ function HistoryPageContent() {
                       ) : filteredInspections.length === 0 ? (
                         <TableRow>
                           <TableCell
-                            colSpan={7}
+                            colSpan={8}
                             className="text-center py-8 text-muted-foreground"
                           >
                             No inspections found
@@ -282,6 +321,9 @@ function HistoryPageContent() {
                               >
                                 {inspection.score > 0 ? inspection.score : "-"}
                               </span>
+                            </TableCell>
+                            <TableCell>
+                              {getVerificationBadge(inspection.auditState)}
                             </TableCell>
                             <TableCell>
                               <Button variant="ghost" size="icon" asChild>

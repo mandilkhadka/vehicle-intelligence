@@ -1,0 +1,213 @@
+Improve the existing repository by building a production-grade LLM/VLM post-processing pipeline specifically for CAR inspection workflows only. The image extraction pipeline is already significantly improved. Now implement the intelligent analysis layer that analyzes extracted inspection images, validates them, classifies them correctly, detects damage, and automatically organizes them into the correct UI sections.
+
+Current issues:
+
+* dashboard images appear under wheels
+* tyre images appear under interior
+* road/background dominates classification
+* wrong vehicle sections are grouped together
+* angle classification confidence is weak
+* damage categorization is inconsistent
+* irrelevant objects affect predictions
+
+The system must deeply understand:
+
+* car structure
+* car parts
+* vehicle inspection angles
+* interiors
+* closeups
+* damage locations
+
+and properly separate the actual vehicle from:
+
+* roads
+* sky
+* buildings
+* reflections
+* people
+* background cars
+* garage environments
+* shadows
+* irrelevant objects
+
+Accuracy is the highest priority.
+
+Build a complete end-to-end vehicle inspection analysis workflow that:
+
+1. collects extracted inspection images
+2. sends them to an LLM/VLM pipeline
+3. validates image usability
+4. isolates the vehicle/car-part region from background
+5. detects:
+
+   * manufacturer
+   * model
+   * body type
+   * approximate year
+6. detects:
+
+   * scratches
+   * dents
+   * rust
+   * cracks
+   * broken lights
+   * bumper damage
+   * paint damage
+7. determines what section of the car each image belongs to
+8. automatically places images into the correct UI section
+9. validates classification consistency
+10. self-tests the entire pipeline end-to-end
+
+Do NOT use naive single-pass classification. Implement a multi-stage pipeline:
+
+Stage 1:
+
+* vehicle existence validation
+* image usability scoring
+* foreground isolation / segmentation
+* reject blurry/background-dominant frames
+
+Stage 2:
+
+* exterior vs interior vs closeup
+* major angle detection
+
+Stage 3:
+
+* exact car section classification
+
+Required sections:
+
+* front
+* front-left
+* left
+* rear-left
+* rear
+* rear-right
+* right
+* dashboard
+* steering wheel
+* odometer
+* infotainment
+* seats
+* trunk
+* engine bay
+* wheels
+* tyres
+* exhaust
+* damage closeups
+
+Stage 4:
+
+* manufacturer
+* model
+* body type
+* approximate year range
+
+Stage 5:
+
+* damage detection and localization
+
+Implement strong validation logic:
+
+* dashboard cannot classify as wheel
+* tyre cannot classify as interior
+* exhaust should correlate with lower rear
+* odometer must correlate with dashboard/interior
+* steering wheel must correlate with interior
+* reject low-confidence or background-heavy images
+
+Use:
+
+* confidence thresholds
+* hierarchical classification
+* multi-pass validation
+* conflict resolution
+* fallback labels
+* duplicate resolution
+* best-category selection
+* vehicle segmentation / foreground isolation
+
+The AI must focus on the actual car region instead of the environment.
+
+The frontend should automatically organize and display images correctly using generated tags with:
+
+* reliable grouping
+* confidence-aware sorting
+* stable ordering
+* consistent section rendering
+* professional inspection UX
+
+Architecture requirements:
+
+* modular pipeline
+* separate extraction / analysis / classification / UI mapping layers
+* provider abstraction
+* future support for OpenAI, Gemini, Claude, local VLMs
+* `.env`-based API configuration
+* no hardcoded keys
+
+I will add the API key later. Build the full architecture now so everything works immediately after key insertion.
+
+Store:
+
+* detected vehicle info
+* classification labels
+* confidence scores
+* damage detections
+* image categories
+* timestamps
+* raw model responses
+
+This will run through `/goal` in Codex, so the feature must work end-to-end and self-test properly.
+
+Implement:
+
+* automated pipeline tests
+* mock VLM responses
+* integration tests
+* classification validation tests
+* incorrect-placement tests
+* image routing tests
+* frontend placement verification
+* failure handling tests
+
+Use sample car inspection images and validate:
+
+* images are correctly grouped
+* backgrounds are ignored
+* car parts are detected accurately
+* damage detection is reasonable
+* UI placement is correct
+
+Avoid incomplete scaffolding or placeholder-only implementations.
+
+Deliver:
+
+* complete multimodal analysis pipeline
+* intelligent car-part classification
+* vehicle/background separation
+* smart UI image routing
+* damage detection workflow
+* confidence validation layer
+* provider abstraction system
+* frontend integration
+* database integration
+* `.env` configuration support
+* automated testing suite
+* e2e validation workflow
+* architecture recommendations
+
+Priority order:
+
+1. car-part classification accuracy
+2. separating car vs background
+3. correct UI placement
+4. reliable vehicle detection
+5. damage detection quality
+6. end-to-end reliability
+7. frontend consistency
+8. maintainable architecture
+
+Properly test evrything through mcp whetehr the result is correct or not. Decide through codex as well what part of the car is this and all

@@ -1,5 +1,5 @@
 # ML Service Dockerfile
-FROM python:3.9-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -20,7 +20,6 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # Copy application code
 COPY src ./src
-COPY yolov8n.pt ./
 
 # Create non-root user
 RUN useradd -m -u 1001 mlservice && \

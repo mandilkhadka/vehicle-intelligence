@@ -3,7 +3,7 @@
  * Production-ready Express server with security, logging, and error handling
  */
 
-import express, { Express } from "express";
+import express, { Express, Request } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import compression from "compression";
@@ -12,13 +12,17 @@ import pinoHttp from "pino-http";
 import path from "path";
 import { config } from "./config/env";
 import logger from "./utils/logger";
+import * as fs from "fs";
 import { initDatabase, getDatabase } from "./db/init";
+import { reapStuckJobs, listVideosEligibleForCleanup } from "./models/inspection";
 import { requestIdMiddleware } from "./middleware/requestId";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 import uploadRouter from "./routes/upload";
+import preflightRouter from "./routes/preflight";
 import jobsRouter from "./routes/jobs";
 import inspectionsRouter from "./routes/inspections";
 import metricsRouter from "./routes/metrics";
+import feedbackRouter from "./routes/feedback";
 
 // Initialize database
 try {
@@ -29,11 +33,68 @@ try {
   process.exit(1);
 }
 
+// Reap orphaned jobs left behind by a previous crash so the frontend isn't
+// stuck polling rows that nobody is processing.
+try {
+  const reaped = reapStuckJobs();
+  if (reaped > 0) {
+    logger.warn({ reaped }, "Marked stuck jobs as failed on startup");
+  }
+} catch (error) {
+  logger.warn({ error }, "Failed to reap stuck jobs on startup (non-fatal)");
+}
+
+// Periodic reaper so jobs that get stuck mid-run (e.g. ML service hang past
+// its timeout) eventually surface as failed.
+const REAP_INTERVAL_MS = 5 * 60 * 1000;
+setInterval(() => {
+  try {
+    const reaped = reapStuckJobs();
+    if (reaped > 0) {
+      logger.warn({ reaped }, "Periodic reaper marked stuck jobs as failed");
+    }
+  } catch (error) {
+    logger.warn({ error }, "Periodic reaper failed (non-fatal)");
+  }
+}, REAP_INTERVAL_MS).unref();
+
+// Periodic disk cleanup: delete uploaded videos for completed jobs older than
+// VIDEO_RETENTION_DAYS so the uploads directory doesn't grow unbounded.
+const VIDEO_RETENTION_DAYS = Number(process.env.VIDEO_RETENTION_DAYS ?? "30");
+const CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+function sweepOldVideos(): void {
+  if (!Number.isFinite(VIDEO_RETENTION_DAYS) || VIDEO_RETENTION_DAYS <= 0) {
+    return;
+  }
+  let removed = 0;
+  try {
+    const candidates = listVideosEligibleForCleanup(VIDEO_RETENTION_DAYS);
+    for (const { jobId, filePath } of candidates) {
+      try {
+        if (filePath && fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+          removed += 1;
+          logger.info({ jobId, filePath }, "Removed expired video file");
+        }
+      } catch (error) {
+        logger.warn({ jobId, filePath, error }, "Failed to remove expired video");
+      }
+    }
+  } catch (error) {
+    logger.warn({ error }, "Video retention sweep failed (non-fatal)");
+  }
+  if (removed > 0) {
+    logger.info({ removed, retentionDays: VIDEO_RETENTION_DAYS }, "Video retention sweep complete");
+  }
+}
+sweepOldVideos();
+setInterval(sweepOldVideos, CLEANUP_INTERVAL_MS).unref();
+
 // Create Express app
 const app: Express = express();
 
-// Trust proxy for accurate IP addresses behind reverse proxy
-app.set("trust proxy", 1);
+// Enable only when a trusted reverse proxy terminates client traffic.
+app.set("trust proxy", config.trustProxy ? 1 : false);
 
 // Security middleware
 app.use(
@@ -61,15 +122,15 @@ app.use(requestIdMiddleware);
 app.use(
   pinoHttp({
     logger,
-    customLogLevel: (req, res, err) => {
+    customLogLevel: (_req, res, _err) => {
       if (res.statusCode >= 500) return "error";
       if (res.statusCode >= 400) return "warn";
       return "info";
     },
-    customSuccessMessage: (req, res) => {
+    customSuccessMessage: (req, _res) => {
       return `${req.method} ${req.url} completed`;
     },
-    customErrorMessage: (req, res, err) => {
+    customErrorMessage: (req, _res, _err) => {
       return `${req.method} ${req.url} failed`;
     },
   }),
@@ -91,14 +152,23 @@ app.use(
   }),
 );
 
-// Body parsing middleware
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+// Body parsing middleware. File uploads are handled by multer on /api/upload.
+app.use(express.json({ limit: config.body.jsonLimit }));
+app.use(express.urlencoded({ extended: true, limit: config.body.jsonLimit }));
+
+const JOB_STATUS_OR_HEALTH_PATH =
+  /^\/api\/jobs\/(?:health-check|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+
+function isJobStatusPollingRequest(req: Request): boolean {
+  const pathWithoutQuery = req.originalUrl.split("?")[0];
+  return req.method === "GET" && JOB_STATUS_OR_HEALTH_PATH.test(pathWithoutQuery);
+}
 
 // Rate limiting
 const limiter = rateLimit({
   windowMs: config.rateLimit.windowMs,
   max: config.rateLimit.maxRequests,
+  skip: isJobStatusPollingRequest,
   message: {
     error: "TOO_MANY_REQUESTS",
     message: "Too many requests from this IP, please try again later",
@@ -160,10 +230,12 @@ app.use(
 );
 
 // API routes
+app.use("/api/upload/preflight", preflightRouter);
 app.use("/api/upload", uploadRouter);
 app.use("/api/jobs", jobsRouter);
 app.use("/api/metrics", metricsRouter);
 app.use("/api/inspections", inspectionsRouter);
+app.use("/api", feedbackRouter);
 
 // 404 handler
 app.use(notFoundHandler);
@@ -206,7 +278,7 @@ process.on("uncaughtException", (error) => {
 });
 
 // Start server
-const server = app.listen(config.port, () => {
+const _server = app.listen(config.port, () => {
   logger.info(
     {
       port: config.port,

@@ -72,7 +72,7 @@ def test_video_path() -> Generator[str, None, None]:
         video_path.unlink()
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def mock_ml_services(monkeypatch):
     """
     Mock ML service components to return predictable results.

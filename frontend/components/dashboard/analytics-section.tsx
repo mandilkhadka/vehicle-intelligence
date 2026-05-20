@@ -11,7 +11,7 @@ interface AnalyticsSectionProps {
 }
 
 export function AnalyticsSection({ metrics, isLoading }: AnalyticsSectionProps) {
-  const emptyDamage = { scratches: 0, dents: 0, rust: 0 };
+  const emptyDamage = { scratches: 0, dents: 0, rust: 0, cracks: 0, paint_damage: 0 };
   const emptyTrend: Array<{ date: string; issues: number }> = [];
   const emptyVehicles: Array<{ brand: string; count: number }> = [];
 

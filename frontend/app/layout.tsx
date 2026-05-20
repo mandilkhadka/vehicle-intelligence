@@ -9,9 +9,11 @@ import './globals.css'
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 
 export const metadata: Metadata = {
-  title: 'VIP - Vehicle Intelligence Platform',
-  description: 'AI-powered vehicle inspection system for 360-degree video analysis',
-  generator: 'v0.app',
+  title: {
+    default: "Vehicle Intelligence",
+    template: "%s — Vehicle Intelligence",
+  },
+  description: "360° video inspection: vehicle ID, odometer, damage, exhaust.",
 }
 
 export default function RootLayout({

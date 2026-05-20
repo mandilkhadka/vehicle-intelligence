@@ -7,8 +7,8 @@ import os
 import sys
 import signal
 import logging
+from secrets import compare_digest
 from contextlib import asynccontextmanager
-from dotenv import load_dotenv
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -24,11 +24,15 @@ parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-from src.api.process import router as process_router, initialize_ml_services
-from src.services.model_registry import get_model_registry
+# Load environment variables before importing service modules that may read env.
+from src.config.env import load_ml_environment
 
-# Load environment variables
-load_dotenv()
+load_ml_environment()
+
+from src.api.process import router as process_router, initialize_ml_services
+from src.api.preflight import router as preflight_router
+from src.services.model_registry import get_model_registry
+from src.services.pipeline_readiness import build_pipeline_readiness
 
 # Configure logging
 logging.basicConfig(
@@ -44,6 +48,8 @@ PORT = int(os.getenv("PORT", "8000"))
 CORS_ALLOWED_ORIGINS = os.getenv(
     "CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001"
 ).split(",")
+ML_SERVICE_API_KEY = os.getenv("ML_SERVICE_API_KEY", "").strip()
+PROTECTED_API_PATHS = {"/api/process", "/api/retry-vlm"}
 
 
 @asynccontextmanager
@@ -53,6 +59,8 @@ async def lifespan(app: FastAPI):
     logger.info("Starting ML Service...")
     logger.info(f"Environment: {NODE_ENV}")
     logger.info(f"Port: {PORT}")
+    if NODE_ENV == "production" and len(ML_SERVICE_API_KEY) < 32:
+        raise RuntimeError("ML_SERVICE_API_KEY must be set to at least 32 characters in production")
 
     # Initialize ML models at startup (singleton pattern)
     logger.info("Initializing ML models at startup...")
@@ -93,6 +101,24 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def require_internal_api_key(request: Request, call_next):
+    """Require a shared internal token for backend-to-ML processing calls."""
+    if request.url.path in PROTECTED_API_PATHS and ML_SERVICE_API_KEY:
+        supplied = request.headers.get("X-Internal-API-Key", "")
+        if not compare_digest(supplied, ML_SERVICE_API_KEY):
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={
+                    "error": {
+                        "code": "UNAUTHORIZED",
+                        "message": "Invalid internal API key",
+                    }
+                },
+            )
+    return await call_next(request)
 
 
 # Global exception handlers
@@ -164,6 +190,7 @@ async def log_requests(request: Request, call_next):
 
 # Include routers
 app.include_router(process_router, prefix="/api", tags=["processing"])
+app.include_router(preflight_router, prefix="/api", tags=["preflight"])
 
 
 @app.get("/health")
@@ -178,16 +205,14 @@ async def health_check():
 
 
 @app.get("/ready")
-async def readiness_check():
-    """Readiness check endpoint"""
-    # Verify ML models are loaded
-    try:
-        model_registry = app.state.model_registry
-        if not model_registry.is_initialized:
-            return {"status": "not_ready", "reason": "ML models not initialized"}
-        return {"status": "ready", "models_loaded": True}
-    except AttributeError:
-        return {"status": "not_ready", "reason": "Model registry not available"}
+async def readiness_check(live_gemini: bool = False, live_openai: bool = False):
+    """Readiness check endpoint for video-understanding dependencies."""
+    return build_pipeline_readiness(
+        model_registry=getattr(app.state, "model_registry", None),
+        require_loaded_models=True,
+        live_gemini=live_gemini,
+        live_openai=live_openai,
+    )
 
 
 @app.get("/")
