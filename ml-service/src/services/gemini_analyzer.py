@@ -18,6 +18,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
@@ -45,6 +46,22 @@ _GEMINI_MAX_RETRIES = 2
 
 _OPENAI_TIMEOUT_SECONDS = 90
 _OPENAI_MAX_RETRIES = 1
+
+# Cap for a single Ollama analysis call. OLLAMA_TIMEOUT_SECONDS defaults to
+# 120s, which equals the ML_STAGE_TIMEOUT_GEMINI stage budget — without a
+# lower per-call cap a hung Ollama would consume the whole stage budget and
+# the Gemini/OpenAI fallbacks would never run. Override with
+# OLLAMA_ANALYZE_TIMEOUT_SECONDS.
+_OLLAMA_ANALYZE_TIMEOUT_CAP = 60.0
+
+
+def _ollama_call_timeout(client: Any, cap: float = _OLLAMA_ANALYZE_TIMEOUT_CAP) -> float:
+    """Per-call Ollama timeout that leaves room for cloud fallbacks."""
+    try:
+        base = float(getattr(client, "timeout_seconds", cap) or cap)
+    except (TypeError, ValueError):
+        base = cap
+    return _env_float("OLLAMA_ANALYZE_TIMEOUT_SECONDS", min(base, cap))
 
 
 def _env_float(name: str, default: float) -> float:
@@ -246,6 +263,7 @@ class GeminiAnalyzer:
             prompt,
             image_paths=image_paths,
             model=self.ollama.vision_model,
+            timeout_seconds=_ollama_call_timeout(self.ollama),
         )
         if not text:
             self._last_ollama_error = self.ollama.last_error or "Ollama VLM unavailable"
@@ -268,7 +286,12 @@ class GeminiAnalyzer:
 
         ollama = getattr(self, "ollama", None)
         if ollama and ollama.available:
-            text = ollama.chat_json(prompt, image_paths=image_paths, model=ollama.vision_model)
+            text = ollama.chat_json(
+                prompt,
+                image_paths=image_paths,
+                model=ollama.vision_model,
+                timeout_seconds=_ollama_call_timeout(ollama),
+            )
             if text:
                 return text
 
@@ -713,6 +736,18 @@ class GeminiAnalyzer:
         # Attach the actual frame path to each per-frame entry so the frontend
         # can show the image alongside Gemini's note.
         per_frame_in = parsed.get("per_frame") or []
+        # Prefer matching entries by their explicit 1-based "index" field —
+        # smaller local models routinely skip frames or reorder entries, and
+        # positional pairing then attributes observations to the wrong frames.
+        # Fall back to positional pairing only when no entry carries a usable
+        # index (preserves behavior for legacy responses).
+        entries_by_index: Dict[int, Dict[str, Any]] = {}
+        for raw_entry in per_frame_in:
+            if not isinstance(raw_entry, dict):
+                continue
+            entry_index = _safe_int(raw_entry.get("index"))
+            if entry_index is not None and entry_index not in entries_by_index:
+                entries_by_index[entry_index] = raw_entry
         per_frame_out: List[Dict[str, Any]] = []
         for i, selection in enumerate(used_selection):
             if isinstance(selection, dict):
@@ -721,7 +756,12 @@ class GeminiAnalyzer:
             else:
                 path = selection
                 selected_view = None
-            entry = per_frame_in[i] if i < len(per_frame_in) else {}
+            if entries_by_index:
+                entry = entries_by_index.get(i + 1) or {}
+            else:
+                entry = per_frame_in[i] if i < len(per_frame_in) else {}
+                if not isinstance(entry, dict):
+                    entry = {}
             out = {
                 "index": i + 1,
                 "frame": path,
@@ -873,7 +913,10 @@ class GeminiAnalyzer:
             "panel_misalignment",
             "other",
         }
-        allowed_severity = {"low", "moderate", "high"}
+        # Canonical severity set is the shared DamageSeverity contract
+        # (low|medium|high). The prompt schema says "moderate" (which the
+        # models emit reliably), so convert on ingest.
+        allowed_severity = {"low", "medium", "high"}
 
         min_confidence = _env_float("ML_DAMAGE_VLM_MIN_CONFIDENCE", 0.55)
         high_confidence = _env_float("ML_DAMAGE_VLM_HIGH_CONFIDENCE", 0.85)
@@ -893,6 +936,7 @@ class GeminiAnalyzer:
 
             damage_type = str(item.get("type") or "other").strip().lower()
             severity = str(item.get("severity") or "low").strip().lower()
+            severity = {"moderate": "medium"}.get(severity, severity)
             frame_index = _safe_int(item.get("frame_index"))
             out: Dict[str, Any] = {
                 "type": damage_type if damage_type in allowed_types else "other",
@@ -928,15 +972,23 @@ class GeminiAnalyzer:
 
     @staticmethod
     def _normalize_region(region: Any) -> Optional[List[float]]:
-        """Validate a VLM region as 4 finite numbers [ymin, xmin, ymax, xmax]."""
+        """Validate a VLM region as 4 finite numbers [ymin, xmin, ymax, xmax].
+
+        NaN/inf are rejected outright; small negative values (models sometimes
+        report damage touching the frame edge as slightly negative) are clamped
+        to 0 so downstream grounding sees a consistent non-negative box.
+        """
         if not isinstance(region, (list, tuple)) or len(region) != 4:
             return None
         out: List[float] = []
         for value in region:
             try:
-                out.append(float(value))
+                number = float(value)
             except (TypeError, ValueError):
                 return None
+            if not math.isfinite(number):
+                return None
+            out.append(max(0.0, number))
         return out
 
     @staticmethod

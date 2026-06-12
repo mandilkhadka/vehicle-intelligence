@@ -9,7 +9,7 @@ import asyncio
 import time
 import re
 from fastapi import APIRouter, HTTPException, status, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
 
@@ -249,6 +249,36 @@ async def extract_video_frames(frame_extractor: FrameExtractor, video_path: str,
     return frames_relative
 
 
+def prepare_photo_frames(image_paths: List[str], inspection_id: str, backend_root: str) -> List[str]:
+    """Photo flow: normalize uploaded photos (EXIF orientation, JPEG) into the
+    frames dir so the rest of the pipeline treats them exactly like extracted
+    video frames. Returns relative paths. Runs synchronously — call via
+    asyncio.to_thread."""
+    frames_dir = os.path.join(get_uploads_root(backend_root), "frames", inspection_id)
+    os.makedirs(frames_dir, exist_ok=True)
+
+    frames: List[str] = []
+    for index, source_path in enumerate(image_paths):
+        image = read_image_with_orientation(source_path)
+        if image is None:
+            logger.warning(f"Skipping unreadable photo: {source_path}")
+            continue
+        dest_path = os.path.join(frames_dir, f"frame_{index:04d}.jpg")
+        if write_jpeg(Path(dest_path), image, 95):
+            frames.append(dest_path)
+        else:
+            logger.warning(f"Failed to write normalized photo frame for: {source_path}")
+
+    if not frames:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="None of the uploaded photos could be decoded as images"
+        )
+
+    logger.info(f"Prepared {len(frames)} photo frames from {len(image_paths)} uploaded photos")
+    return [convert_to_relative_path(f, backend_root) for f in frames]
+
+
 async def read_odometer_from_image(odometer_reader: OdometerReader, odometer_image_path: str,
                                     backend_root: str) -> Dict[str, Any]:
     """Read odometer from provided image."""
@@ -334,9 +364,17 @@ async def test_endpoint():
     }
 
 
+MAX_PHOTO_COUNT = 40
+
+
 class ProcessRequest(BaseModel):
-    """Request model for video processing with validation"""
-    video_path: str = Field(..., description="Path to the video file")
+    """Request model for video or photo-set processing with validation"""
+    video_path: Optional[str] = Field(None, description="Path to the video file (video flow)")
+    image_paths: Optional[List[str]] = Field(
+        None,
+        description="Photo flow: uploaded image paths used directly as frames (skips frame extraction)",
+        max_length=MAX_PHOTO_COUNT,
+    )
     inspection_id: str = Field(..., description="Unique inspection identifier")
     odometer_image_path: Optional[str] = Field(None, description="Optional path to odometer image")
     vehicle_identity_override: Optional[Dict[str, Any]] = Field(
@@ -350,6 +388,14 @@ class ProcessRequest(BaseModel):
         if not SAFE_INSPECTION_ID_RE.fullmatch(value):
             raise ValueError("inspection_id must be a safe identifier")
         return value
+
+    @model_validator(mode="after")
+    def validate_exactly_one_media_source(self) -> "ProcessRequest":
+        has_video = bool(self.video_path)
+        has_images = bool(self.image_paths)
+        if has_video == has_images:
+            raise ValueError("Provide exactly one of video_path or image_paths")
+        return self
 
 
 class ProcessResponse(BaseModel):
@@ -477,7 +523,10 @@ async def process_video(request: ProcessRequest, http_request: Request):
     # Log request arrival
     logger.info("=" * 80)
     logger.info(f"RECEIVED PROCESS REQUEST - Inspection ID: {request.inspection_id}")
-    logger.info(f"Video path: {request.video_path}")
+    if request.image_paths:
+        logger.info(f"Photo flow: {len(request.image_paths)} uploaded photos")
+    else:
+        logger.info(f"Video path: {request.video_path}")
     logger.info(f"Odometer image path: {request.odometer_image_path or 'None'}")
     logger.info("=" * 80)
 
@@ -517,11 +566,17 @@ async def process_video(request: ProcessRequest, http_request: Request):
 
         backend_root = get_backend_root()
 
-        # Step 1: Extract frames (must complete before parallel processing)
-        logger.info(f"Step 1/4: Extracting frames from video: {request.video_path}")
-        _log_video_size(request.video_path)
-        frames = await extract_video_frames(frame_extractor, request.video_path,
-                                             request.inspection_id, backend_root)
+        # Step 1: Extract frames (must complete before parallel processing).
+        # Photo flow skips extraction — uploaded photos ARE the frames.
+        if request.image_paths:
+            logger.info(f"Step 1/4: Preparing {len(request.image_paths)} uploaded photos as frames")
+            frames = await asyncio.to_thread(
+                prepare_photo_frames, request.image_paths, request.inspection_id, backend_root)
+        else:
+            logger.info(f"Step 1/4: Extracting frames from video: {request.video_path}")
+            _log_video_size(request.video_path)
+            frames = await extract_video_frames(frame_extractor, request.video_path,
+                                                 request.inspection_id, backend_root)
 
         # Prepare absolute paths for processing
         frames_absolute = [upload_path(f, backend_root) for f in frames]
@@ -559,8 +614,16 @@ async def process_video(request: ProcessRequest, http_request: Request):
             stage_start = time.time()
             try:
                 result = await asyncio.wait_for(coro_factory(), timeout=timeout)
-                _record_stage(name, True, time.time() - stage_start)
-                return result if isinstance(result, dict) else fallback
+                if isinstance(result, dict):
+                    _record_stage(name, True, time.time() - stage_start)
+                    return result
+                logger.error(f"  [Parallel] Stage {name} returned a non-dict result: {type(result).__name__}")
+                _record_stage(name, False, time.time() - stage_start,
+                              error=f"non-dict result: {type(result).__name__}")
+                degraded = dict(fallback)
+                degraded.setdefault("available", False)
+                degraded.setdefault("reason", f"{name} returned an invalid result")
+                return degraded
             except asyncio.TimeoutError:
                 logger.error(f"  [Parallel] Stage {name} timed out after {timeout}s")
                 _record_stage(name, False, time.time() - stage_start, error=f"timeout after {timeout}s")
@@ -664,7 +727,9 @@ async def process_video(request: ProcessRequest, http_request: Request):
         # Crop each VLM finding's reported region into a snapshot + pixel bbox so
         # it satisfies the same location contract as the legacy CV detector
         # (part inference, cost lookup, rationale, and the UI snapshot card).
-        _ground_vlm_locations(damage_data, request.inspection_id, backend_root)
+        # Runs in a worker thread: it does cv2.imread/imwrite per location and
+        # would otherwise block the event loop for seconds.
+        await asyncio.to_thread(_ground_vlm_locations, damage_data, request.inspection_id, backend_root)
         # When the dedicated detector found the same physical damage the VLM
         # reported, keep the detector finding (precise box/mask) and drop the
         # VLM duplicate so counts and costs aren't doubled.
@@ -789,6 +854,25 @@ async def process_video(request: ProcessRequest, http_request: Request):
 def _validate_input_files(request: ProcessRequest) -> None:
     """Validate that input files exist, are accessible, and are within allowed directories."""
     # Security: Validate paths are within allowed directories (defense in depth)
+    if request.image_paths:
+        for image_path in request.image_paths:
+            try:
+                path_validator.validate_or_raise(image_path, "photo")
+            except ValueError as e:
+                logger.warning(f"Path validation failed for photo: {image_path}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(e)
+                )
+            if not os.path.isfile(image_path):
+                logger.error(f"Photo file not found: {image_path}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Photo file not found: {image_path}"
+                )
+        _validate_odometer_image(request)
+        return
+
     try:
         path_validator.validate_or_raise(request.video_path, "video")
     except ValueError as e:
@@ -798,15 +882,7 @@ def _validate_input_files(request: ProcessRequest) -> None:
             detail=str(e)
         )
 
-    if request.odometer_image_path:
-        try:
-            path_validator.validate_or_raise(request.odometer_image_path, "odometer image")
-        except ValueError as e:
-            logger.warning(f"Path validation failed for odometer image: {request.odometer_image_path}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=str(e)
-            )
+    _validate_odometer_image(request)
 
     # Check file existence
     if not os.path.exists(request.video_path):
@@ -821,7 +897,19 @@ def _validate_input_files(request: ProcessRequest) -> None:
         logger.error(error_msg)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_msg)
 
-    if request.odometer_image_path and not os.path.exists(request.odometer_image_path):
+def _validate_odometer_image(request: ProcessRequest) -> None:
+    """Validate the optional odometer image path (shared by video and photo flows)."""
+    if not request.odometer_image_path:
+        return
+    try:
+        path_validator.validate_or_raise(request.odometer_image_path, "odometer image")
+    except ValueError as e:
+        logger.warning(f"Path validation failed for odometer image: {request.odometer_image_path}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    if not os.path.exists(request.odometer_image_path):
         logger.warning(f"Odometer image not found: {request.odometer_image_path}, proceeding without it")
         request.odometer_image_path = None
 
@@ -1188,6 +1276,18 @@ _DAMAGE_LOCATION_TYPES = {
 
 _MIN_VISUAL_DAMAGE_CONFIDENCE = 0.55
 
+# Canonical per-location severity values (shared DamageSeverity contract).
+_CANONICAL_SEVERITIES = ("low", "medium", "high")
+
+
+def _canonical_severity(value: Any, default: str = "low") -> str:
+    """Map VLM severity wording onto the low|medium|high location contract."""
+    severity = str(value or "").strip().lower()
+    severity = {"moderate": "medium", "minor": "low", "major": "high", "severe": "high"}.get(
+        severity, severity
+    )
+    return severity if severity in _CANONICAL_SEVERITIES else default
+
 # When VLM verification is unavailable (Gemini failed AND OpenAI VLM failed),
 # YOLO-only damage detections are not cross-checked. To avoid surfacing
 # over-eager false positives (e.g. labelling a clean car as scratched), we
@@ -1327,6 +1427,21 @@ def _apply_vlm_verification_filter(
     damage_data["total_count"] = int(total)
     damage_data["average_confidence"] = float(round(avg_conf, 3))
 
+    # Recompute the top-level severity from the post-filter location list so
+    # VLM-sourced findings (and dropped detector findings) are reflected.
+    # Mirrors damage_model._aggregate. Skip when the damage stage itself failed
+    # (the degraded fallback keeps its explicit unavailable marker).
+    if damage_data.get("available") is not False:
+        kept_total = len(kept)
+        if kept_total == 0:
+            damage_data["severity"] = "low"
+        elif any(_canonical_severity(loc.get("severity")) == "high" for loc in kept) or kept_total > 5:
+            damage_data["severity"] = "high"
+        elif kept_total > 2 or avg_conf >= 0.6:
+            damage_data["severity"] = "medium"
+        else:
+            damage_data["severity"] = "low"
+
     # Recompute repair cost so total_estimated_repair_cost.has_unknowns and
     # the low/high range reflect the post-filter list, not the original one.
     # estimate_repair_costs() mutates in place. Strip any stale total first
@@ -1404,7 +1519,7 @@ def _merge_visual_damage_categories(
         current["detected"] = True
         visual_location = {
             "type": location_type,
-            "severity": item.get("severity") or "low",
+            "severity": _canonical_severity(item.get("severity")),
             "confidence": item.get("confidence"),
             "frame": item.get("frame"),
             "angle": linked_view,
@@ -1480,12 +1595,29 @@ def _ground_vlm_locations(
             ymin, xmin, ymax, xmax = (float(v) for v in region)
         except (TypeError, ValueError):
             continue
-        # 0-1 normalized vs 0-1000 grid.
-        scale = 1.0 if max(ymin, xmin, ymax, xmax) <= 1.0 else 1000.0
-        x1 = int(max(0, min(w - 1, xmin / scale * w)))
-        y1 = int(max(0, min(h - 1, ymin / scale * h)))
-        x2 = int(max(0, min(w, xmax / scale * w)))
-        y2 = int(max(0, min(h, ymax / scale * h)))
+        # Models occasionally emit inverted pairs; swap instead of silently
+        # dropping the finding via the degenerate-size check below.
+        if ymin > ymax:
+            ymin, ymax = ymax, ymin
+        if xmin > xmax:
+            xmin, xmax = xmax, xmin
+        # Coordinate space: 0-1 normalized, the prompt's 0-1000 grid, or raw
+        # pixels (local VLMs such as qwen2.5vl frequently emit pixels despite
+        # the 0-1000 instruction — scaling those by 1000 produces grossly
+        # oversized boxes that poison panel inference and dedupe IoU).
+        max_coord = max(ymin, xmin, ymax, xmax)
+        if max_coord <= 1.0:
+            x1f, x2f = xmin * w, xmax * w
+            y1f, y2f = ymin * h, ymax * h
+        elif max_coord <= 1000.0:
+            x1f, x2f = xmin / 1000.0 * w, xmax / 1000.0 * w
+            y1f, y2f = ymin / 1000.0 * h, ymax / 1000.0 * h
+        else:
+            x1f, x2f, y1f, y2f = xmin, xmax, ymin, ymax
+        x1 = int(max(0.0, min(w - 1, x1f)))
+        y1 = int(max(0.0, min(h - 1, y1f)))
+        x2 = int(max(0.0, min(w, x2f)))
+        y2 = int(max(0.0, min(h, y2f)))
         if x2 - x1 < 4 or y2 - y1 < 4:
             continue  # degenerate region
 

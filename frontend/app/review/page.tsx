@@ -12,25 +12,20 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { Check, ExternalLink, Loader2, RefreshCcw, ThumbsDown, ThumbsUp } from "lucide-react";
+import { ExternalLink, Loader2, RefreshCcw, Tag, ThumbsDown, ThumbsUp } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
-  BACKEND_BASE_URL,
   getReviewQueue,
   submitDamageFeedback,
   type FeedbackVerdict,
   type UncertainDetection,
 } from "@/lib/api";
+import { getApiErrorMessage } from "@/lib/api-error";
+import { uploadSrc } from "@/lib/format";
 import { cn } from "@/lib/utils";
-
-function snapshotSrc(snapshot?: string): string | null {
-  if (!snapshot) return null;
-  const path = snapshot.startsWith("uploads/") ? snapshot : `uploads/${snapshot}`;
-  return `${BACKEND_BASE_URL}/${path}`;
-}
 
 export default function ReviewPage() {
   const [items, setItems] = useState<UncertainDetection[]>([]);
@@ -46,7 +41,7 @@ export default function ReviewPage() {
       const data = await getReviewQueue(150);
       setItems(data);
     } catch (err) {
-      setError((err as Error)?.message || "Failed to load review queue");
+      setError(getApiErrorMessage(err, "Failed to load review queue"));
     } finally {
       setLoading(false);
     }
@@ -71,7 +66,7 @@ export default function ReviewPage() {
           return next;
         });
       } catch (err) {
-        setError((err as Error)?.message || "Failed to submit feedback");
+        setError(getApiErrorMessage(err, "Failed to submit feedback"));
       } finally {
         setPendingKey(null);
       }
@@ -127,7 +122,7 @@ export default function ReviewPage() {
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {visibleItems.map((item) => {
             const key = `${item.inspection_id}:${item.location_index}`;
-            const src = snapshotSrc(item.snapshot);
+            const src = uploadSrc(item.snapshot);
             const pct = Math.round(item.confidence * 100);
             const uncertainty = Math.round(item.uncertainty * 100);
             const isPending = pendingKey === key;
@@ -200,7 +195,7 @@ export default function ReviewPage() {
                       className="gap-1"
                       title="Wrong damage type"
                     >
-                      <Check className="h-4 w-4" />
+                      <Tag className="h-4 w-4" />
                       Wrong type
                     </Button>
                   </div>

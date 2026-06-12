@@ -237,7 +237,16 @@ interface PreparedRow {
   bbox: [number, number, number, number];
 }
 
-function prepareFromConfirmedFeedback(row: FeedbackExportRow, uploadsRoot: string): PreparedRow | null {
+function recordDroppedClass(droppedClasses: Map<string, number>, className: string): void {
+  if (!className) return;
+  droppedClasses.set(className, (droppedClasses.get(className) ?? 0) + 1);
+}
+
+function prepareFromConfirmedFeedback(
+  row: FeedbackExportRow,
+  uploadsRoot: string,
+  droppedClasses: Map<string, number>,
+): PreparedRow | null {
   if (row.verdict !== "confirmed") return null;
   if (!row.damage_summary) return null;
   let summary: any;
@@ -252,7 +261,10 @@ function prepareFromConfirmedFeedback(row: FeedbackExportRow, uploadsRoot: strin
   if (!loc || !Array.isArray(loc.bbox) || loc.bbox.length < 4) return null;
   const className = (row.corrected_type || loc.type || "").toLowerCase();
   const classId = classIdFor(className);
-  if (classId < 0) return null;
+  if (classId < 0) {
+    recordDroppedClass(droppedClasses, className);
+    return null;
+  }
   const framePath = resolveImageOnDisk(loc.frame || loc.snapshot, uploadsRoot);
   if (!framePath) return null;
   return {
@@ -263,7 +275,11 @@ function prepareFromConfirmedFeedback(row: FeedbackExportRow, uploadsRoot: strin
   };
 }
 
-function prepareFromMissing(row: FeedbackExportRow, uploadsRoot: string): PreparedRow | null {
+function prepareFromMissing(
+  row: FeedbackExportRow,
+  uploadsRoot: string,
+  droppedClasses: Map<string, number>,
+): PreparedRow | null {
   if (row.source !== "missing") return null;
   if (!row.bbox) return null;
   let bbox: number[];
@@ -275,7 +291,10 @@ function prepareFromMissing(row: FeedbackExportRow, uploadsRoot: string): Prepar
   if (!Array.isArray(bbox) || bbox.length < 4) return null;
   const className = (row.reported_type || "").toLowerCase();
   const classId = classIdFor(className);
-  if (classId < 0) return null;
+  if (classId < 0) {
+    recordDroppedClass(droppedClasses, className);
+    return null;
+  }
   const framePath = resolveImageOnDisk(row.frame_path, uploadsRoot);
   if (!framePath) return null;
   return {
@@ -304,6 +323,10 @@ function main(): void {
   let added = 0;
   let skipped = 0;
   let failed = 0;
+  // Class names dropped because they are not in TAXONOMY — surfaced in the
+  // summary line so taxonomy drift between the ML pipeline and this script is
+  // detectable from cron output without --verbose.
+  const droppedClasses = new Map<string, number>();
 
   for (const row of rows) {
     if (seen.has(row.feedback_id)) {
@@ -312,8 +335,8 @@ function main(): void {
     }
     const prepared =
       row.source === "feedback"
-        ? prepareFromConfirmedFeedback(row, args.uploadsRoot)
-        : prepareFromMissing(row, args.uploadsRoot);
+        ? prepareFromConfirmedFeedback(row, args.uploadsRoot, droppedClasses)
+        : prepareFromMissing(row, args.uploadsRoot, droppedClasses);
     if (!prepared) {
       failed++;
       if (args.verbose) {
@@ -370,6 +393,17 @@ function main(): void {
   console.log(
     `Training set updated at ${args.out}: +${added}, ${skipped} already exported, ${failed} skipped.`,
   );
+  if (droppedClasses.size > 0) {
+    const breakdown = [...droppedClasses.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, count]) => `${name}(${count})`)
+      .join(", ");
+    const total = [...droppedClasses.values()].reduce((a, b) => a + b, 0);
+    console.log(
+      `WARNING: dropped ${total} row(s) for classes not in TAXONOMY: ${breakdown}. ` +
+        "If these come from the ML pipeline, the taxonomy has drifted — sync TAXONOMY with the ML emitted type strings.",
+    );
+  }
 }
 
 main();

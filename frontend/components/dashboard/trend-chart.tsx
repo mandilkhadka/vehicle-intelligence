@@ -43,6 +43,22 @@ export function TrendChart({ data, isLoading }: TrendChartProps) {
     );
   }
 
+  if (chartData.length === 0) {
+    return (
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">Issues Trend</CardTitle>
+          <CardDescription>Daily issues detected</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex h-[200px] items-center justify-center text-sm text-muted-foreground">
+            No inspections in this period
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card>
       <CardHeader className="pb-2">

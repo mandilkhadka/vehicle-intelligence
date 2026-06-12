@@ -77,7 +77,7 @@ describe("JobStatus", () => {
     render(<JobStatus jobId="job-123" />);
 
     await waitFor(() => {
-      expect(screen.getByText(/Complete/)).toBeInTheDocument();
+      expect(screen.getByText(/Complete — redirecting to results/)).toBeInTheDocument();
     });
   });
 
@@ -104,6 +104,55 @@ describe("JobStatus", () => {
     await waitFor(() => {
       expect(showError).toHaveBeenCalledWith("Failed to fetch job status", expect.anything());
     });
+  });
+
+  it("stops polling and shows a terminal card when the job is gone (404)", async () => {
+    const notFound = Object.assign(new Error("Request failed with status code 404"), {
+      isAxiosError: true,
+      response: { status: 404 },
+    });
+    (getJobStatus as jest.Mock).mockRejectedValue(notFound);
+
+    render(<JobStatus jobId="job-404" />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Job not found")).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Start a new inspection" })).toHaveAttribute(
+        "href",
+        "/inspect",
+      );
+      expect(screen.getByRole("link", { name: "View history" })).toHaveAttribute(
+        "href",
+        "/history",
+      );
+    });
+
+    // No retry toast and no further polling after the terminal state.
+    expect(showError).not.toHaveBeenCalled();
+    const callsAfterTerminal = (getJobStatus as jest.Mock).mock.calls.length;
+    await act(async () => {
+      jest.advanceTimersByTime(60000);
+    });
+    expect((getJobStatus as jest.Mock).mock.calls.length).toBe(callsAfterTerminal);
+  });
+
+  it("offers a history link when completed without an inspection id", async () => {
+    (getJobStatus as jest.Mock).mockResolvedValue({
+      id: "job-123",
+      status: "completed",
+      progress: 100,
+    });
+
+    render(<JobStatus jobId="job-123" />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Complete")).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "View history" })).toHaveAttribute(
+        "href",
+        "/history",
+      );
+    });
+    expect(screen.queryByText(/redirecting to results/)).not.toBeInTheDocument();
   });
 
   it("polls status periodically", async () => {

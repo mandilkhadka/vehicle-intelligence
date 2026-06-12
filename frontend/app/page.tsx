@@ -10,8 +10,10 @@ import { QuickActions } from "@/components/dashboard/quick-actions"
 import { DateFilter } from "@/components/dashboard/date-filter"
 import { AnalyticsSection } from "@/components/dashboard/analytics-section"
 import { getMetrics, MetricsResponse } from "@/lib/api"
+import { getApiErrorMessage } from "@/lib/api-error"
 import { RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Callout } from "@/components/ui/callout"
 
 const AUTO_REFRESH_INTERVAL = 30000 // 30 seconds
 
@@ -24,6 +26,7 @@ export default function DashboardPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
+  const [fetchError, setFetchError] = useState<string | null>(null)
 
   const fetchMetrics = useCallback(async (showRefreshIndicator = false) => {
     if (showRefreshIndicator) {
@@ -36,9 +39,12 @@ export default function DashboardPage() {
       const data = await getMetrics(startDate, endDate)
       setMetrics(data)
       setLastUpdated(new Date())
+      setFetchError(null)
     } catch (error) {
       console.error("Failed to fetch metrics:", error)
-      // Keep existing data on error
+      // Keep existing data on background-refresh errors, but surface the
+      // failure when we have nothing to show yet (first load).
+      setFetchError(getApiErrorMessage(error, "Failed to load metrics"))
     } finally {
       setIsLoading(false)
       setIsRefreshing(false)
@@ -101,19 +107,34 @@ export default function DashboardPage() {
             endDate={dateRange.end}
             onRangeChange={handleRangeChange}
           />
+          {lastUpdated && (
+            <span className="text-xs text-muted-foreground">
+              Updated {format(lastUpdated, "h:mm a")}
+            </span>
+          )}
           <Button
             variant="ghost"
             size="icon"
             onClick={() => fetchMetrics(true)}
             disabled={isRefreshing || isLoading}
-            aria-label={lastUpdated ? `Updated ${format(lastUpdated, "h:mm a")}` : "Refresh"}
-            title={lastUpdated ? `Updated ${format(lastUpdated, "h:mm a")}` : "Refresh"}
+            aria-label="Refresh metrics"
+            title="Refresh metrics"
           >
             <RefreshCw className={isRefreshing ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
           </Button>
         </PageHeader>
 
         <div className="space-y-6">
+          {fetchError && metrics === null && !isLoading && (
+            <Callout variant="destructive">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <span>{fetchError}</span>
+                <Button variant="outline" size="sm" onClick={() => fetchMetrics(true)}>
+                  Retry
+                </Button>
+              </div>
+            </Callout>
+          )}
           <StatsCards metrics={metrics} isLoading={isLoading} />
 
           <div className="grid gap-6 lg:grid-cols-3">

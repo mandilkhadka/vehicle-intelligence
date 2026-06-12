@@ -10,6 +10,7 @@ from ultralytics import YOLO
 import cv2
 import numpy as np
 import os
+from src.services.model_registry import YOLO_INFERENCE_LOCK
 from src.utils.frame_utils import select_frames
 
 logger = logging.getLogger(__name__)
@@ -704,7 +705,8 @@ class DamageDetector:
         Returns: (x1, y1, x2, y2) or None
         """
         try:
-            results = self.yolo_model(frame_path)
+            with YOLO_INFERENCE_LOCK:
+                results = self.yolo_model(frame_path)
             return self._largest_vehicle_box(results)
         except Exception as e:
             logger.warning(f"Vehicle region detection error: {e}")
@@ -722,7 +724,8 @@ class DamageDetector:
         if not frame_paths:
             return regions
         try:
-            results = self.yolo_model(frame_paths)
+            with YOLO_INFERENCE_LOCK:
+                results = self.yolo_model(frame_paths)
         except Exception as e:
             logger.warning(f"Batch vehicle region detection error: {e}")
             return regions

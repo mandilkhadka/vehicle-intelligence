@@ -1,36 +1,28 @@
 "use client"
 
-import { useState, type ComponentType } from "react"
+import { useEffect, useState, type ComponentType } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { AppShell } from "@/components/app-shell"
 import { PageHeader } from "@/components/page-header"
-import { UploadDropzone } from "@/components/inspect/upload-dropzone"
+import { UploadDropzone, type UploadedFile } from "@/components/inspect/upload-dropzone"
 import { Button } from "@/components/ui/button"
-import { ArrowRight, Camera, CheckCircle2, Film, Gauge, Loader2 } from "lucide-react"
-
-interface UploadedFile {
-  id: string
-  name: string
-  size: number
-  progress: number
-  status: "preflight" | "preflight_blocked" | "uploading" | "processing" | "complete" | "error"
-  jobId?: string
-}
+import { ArrowRight, Camera, CheckCircle2, Film, Gauge } from "lucide-react"
 
 export default function InspectPage() {
   const router = useRouter()
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([])
-  const [isStarting, setIsStarting] = useState(false)
 
   const completedFile = uploadedFiles.find((f) => f.status === "complete" && f.jobId)
-  const canStart = Boolean(completedFile?.jobId) && !isStarting
+  const completedJobId = completedFile?.jobId
 
-  const handleStartInspection = () => {
-    if (!completedFile?.jobId) return
-    setIsStarting(true)
-    router.push(`/job/${completedFile.jobId}`)
-  }
+  // Processing starts server-side the moment the upload lands, so take the
+  // user straight to the job progress page instead of making them click.
+  useEffect(() => {
+    if (completedJobId) {
+      router.push(`/job/${completedJobId}`)
+    }
+  }, [completedJobId, router])
 
   return (
     <AppShell>
@@ -51,21 +43,17 @@ export default function InspectPage() {
           <div>
             <UploadDropzone onFilesUploaded={setUploadedFiles} />
 
-            <div className="mt-6 flex justify-end">
-              <Button onClick={handleStartInspection} disabled={!canStart} className="gap-2">
-                {isStarting ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Starting…
-                  </>
-                ) : (
-                  <>
-                    Start Inspection
+            {/* Fallback in case the automatic redirect is interrupted. */}
+            {completedJobId && (
+              <div className="mt-6 flex justify-end">
+                <Button asChild className="gap-2">
+                  <Link href={`/job/${completedJobId}`}>
+                    View progress
                     <ArrowRight className="h-4 w-4" />
-                  </>
-                )}
-              </Button>
-            </div>
+                  </Link>
+                </Button>
+              </div>
+            )}
           </div>
 
           <aside className="space-y-3">

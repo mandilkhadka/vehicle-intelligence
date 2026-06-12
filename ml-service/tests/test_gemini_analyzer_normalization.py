@@ -74,7 +74,9 @@ def test_normalize_includes_structured_damage_and_modifications():
         {
             "type": "paint_damage",
             "location": "front bumper",
-            "severity": "moderate",
+            # The prompt schema says "moderate"; ingest normalizes it to the
+            # shared DamageSeverity contract value "medium".
+            "severity": "medium",
             "frame_index": 1,
             "confidence": 0.9,
             "notes": "scuffing visible",
@@ -112,12 +114,13 @@ class FakeOllamaClient:
         self.available = True
         self.vision_model = "qwen2.5vl"
         self.text_model = "gemma2:9b"
+        self.timeout_seconds = 120.0
         self.last_error = None
         self._text = text
         self.calls = []
 
     def chat_json(self, prompt, *, image_paths=None, model=None, force_json=True, timeout_seconds=None):
-        self.calls.append({"image_paths": image_paths, "model": model})
+        self.calls.append({"image_paths": image_paths, "model": model, "timeout_seconds": timeout_seconds})
         return self._text
 
 
@@ -149,6 +152,85 @@ def test_analyze_prefers_ollama_when_configured(temp_dir):
     # Ollama received the frame path, not a PIL image / OpenAI selection.
     assert analyzer.ollama.calls
     assert analyzer.ollama.calls[0]["image_paths"] == [str(image_path)]
+
+
+def test_analyze_caps_ollama_call_timeout_below_stage_budget(temp_dir, monkeypatch):
+    """A hung Ollama must not consume the whole gemini stage budget (120s);
+    the per-call timeout is capped so cloud fallbacks still get a chance."""
+    monkeypatch.delenv("OLLAMA_ANALYZE_TIMEOUT_SECONDS", raising=False)
+    image_path = temp_dir / "front.jpg"
+    cv2.imwrite(str(image_path), np.zeros((80, 120, 3), dtype=np.uint8))
+
+    analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+    analyzer.ollama = FakeOllamaClient(
+        '{"vehicle": {"type": "car", "brand": "Toyota", "confidence": 0.9},'
+        '"per_frame": [], "damage_items": [], "modification_items": [],'
+        '"reference_image": {}, "summary": "ok"}'
+    )
+    analyzer.model = None
+    analyzer.api_key = None
+    analyzer.openai_client = None
+    analyzer.openai_api_key = None
+    analyzer._last_gemini_error = None
+    analyzer._last_openai_error = None
+
+    analyzer._analyze_sync([str(image_path)])
+
+    timeout = analyzer.ollama.calls[0]["timeout_seconds"]
+    assert timeout is not None
+    assert 0 < timeout <= 60.0
+
+
+def test_normalize_matches_per_frame_entries_by_index_not_position():
+    """Local models skip/reorder per_frame entries; pairing must use the
+    explicit 1-based "index" field, not the list position."""
+    analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+    parsed = {
+        "vehicle": {},
+        "per_frame": [
+            {"index": 3, "view": "left", "observations": "left side", "condition": "good"},
+            {"index": 1, "view": "front", "observations": "front view", "condition": "fair"},
+            # frame 2 skipped entirely by the model
+        ],
+    }
+    used_selection = [
+        {"frame": "f1.jpg", "view": "front"},
+        {"frame": "f2.jpg", "view": "rear"},
+        {"frame": "f3.jpg", "view": "left"},
+    ]
+
+    result = analyzer._normalize(parsed, used_selection, "{}")
+
+    per_frame = result["per_frame"]
+    assert per_frame[0]["frame"] == "f1.jpg"
+    assert per_frame[0]["observations"] == "front view"
+    assert per_frame[1]["frame"] == "f2.jpg"
+    assert per_frame[1]["observations"] is None  # skipped frame stays empty
+    assert per_frame[2]["frame"] == "f3.jpg"
+    assert per_frame[2]["observations"] == "left side"
+
+
+def test_normalize_falls_back_to_positional_pairing_without_index_fields():
+    analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+    parsed = {
+        "vehicle": {},
+        "per_frame": [
+            {"view": "front", "observations": "first"},
+            {"view": "rear", "observations": "second"},
+        ],
+    }
+    used_selection = [{"frame": "f1.jpg", "view": "front"}, {"frame": "f2.jpg", "view": "rear"}]
+
+    result = analyzer._normalize(parsed, used_selection, "{}")
+
+    assert result["per_frame"][0]["observations"] == "first"
+    assert result["per_frame"][1]["observations"] == "second"
+
+
+def test_normalize_region_rejects_non_finite_and_clamps_negatives():
+    assert GeminiAnalyzer._normalize_region([float("nan"), 1, 2, 3]) is None
+    assert GeminiAnalyzer._normalize_region([float("inf"), 1, 2, 3]) is None
+    assert GeminiAnalyzer._normalize_region([-5, 100, 300, 400]) == [0.0, 100.0, 300.0, 400.0]
 
 
 def test_analyze_falls_back_to_gemini_when_ollama_fails(temp_dir):

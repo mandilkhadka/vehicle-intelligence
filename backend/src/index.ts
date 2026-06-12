@@ -14,9 +14,13 @@ import { config } from "./config/env";
 import logger from "./utils/logger";
 import * as fs from "fs";
 import { initDatabase, getDatabase } from "./db/init";
-import { reapStuckJobs, listVideosEligibleForCleanup } from "./models/inspection";
+import {
+  reapStuckJobs,
+  listVideosEligibleForCleanup,
+  listFailedJobVideosEligibleForCleanup,
+} from "./models/inspection";
 import { requestIdMiddleware } from "./middleware/requestId";
-import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
+import { errorHandler, notFoundHandler, CustomError } from "./middleware/errorHandler";
 import uploadRouter from "./routes/upload";
 import preflightRouter from "./routes/preflight";
 import jobsRouter from "./routes/jobs";
@@ -34,9 +38,15 @@ try {
 }
 
 // Reap orphaned jobs left behind by a previous crash so the frontend isn't
-// stuck polling rows that nobody is processing.
+// stuck polling rows that nobody is processing. Thresholds come from
+// STUCK_PROCESSING_MAX_MINUTES / STUCK_PENDING_MAX_MINUTES, defaulting to a
+// value derived from the ML timeout (see config/env.ts).
+const REAPER_OPTS = {
+  processingMaxAgeMinutes: config.reaper.processingMaxMinutes,
+  pendingMaxAgeMinutes: config.reaper.pendingMaxMinutes,
+};
 try {
-  const reaped = reapStuckJobs();
+  const reaped = reapStuckJobs(REAPER_OPTS);
   if (reaped > 0) {
     logger.warn({ reaped }, "Marked stuck jobs as failed on startup");
   }
@@ -49,7 +59,7 @@ try {
 const REAP_INTERVAL_MS = 5 * 60 * 1000;
 setInterval(() => {
   try {
-    const reaped = reapStuckJobs();
+    const reaped = reapStuckJobs(REAPER_OPTS);
     if (reaped > 0) {
       logger.warn({ reaped }, "Periodic reaper marked stuck jobs as failed");
     }
@@ -68,16 +78,35 @@ function sweepOldVideos(): void {
   }
   let removed = 0;
   try {
-    const candidates = listVideosEligibleForCleanup(VIDEO_RETENTION_DAYS);
+    // Completed jobs past retention, plus failed jobs past retention — the
+    // latter covers crashes mid-job, where processVideoJob's own cleanup
+    // never ran and the reaper later flipped the job to failed.
+    const candidates = [
+      ...listVideosEligibleForCleanup(VIDEO_RETENTION_DAYS),
+      ...listFailedJobVideosEligibleForCleanup(VIDEO_RETENTION_DAYS),
+    ];
     for (const { jobId, filePath } of candidates) {
       try {
-        if (filePath && fs.existsSync(filePath)) {
+        if (!filePath) {
+          continue;
+        }
+        // Photo jobs store all their pictures in uploads/photos/<jobId>/ and
+        // the job's files row points at the first one — remove the whole
+        // directory so sibling photos don't leak.
+        const parentDir = path.dirname(filePath);
+        if (path.basename(path.dirname(parentDir)) === "photos") {
+          if (fs.existsSync(parentDir)) {
+            fs.rmSync(parentDir, { recursive: true, force: true });
+            removed += 1;
+            logger.info({ jobId, parentDir }, "Removed expired photo directory");
+          }
+        } else if (fs.existsSync(filePath)) {
           fs.unlinkSync(filePath);
           removed += 1;
           logger.info({ jobId, filePath }, "Removed expired video file");
         }
       } catch (error) {
-        logger.warn({ jobId, filePath, error }, "Failed to remove expired video");
+        logger.warn({ jobId, filePath, error }, "Failed to remove expired media");
       }
     }
   } catch (error) {
@@ -143,7 +172,9 @@ app.use(
       if (!origin || config.cors.allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
-        callback(new Error("Not allowed by CORS"));
+        // 403, not a bare Error — otherwise every disallowed-origin probe
+        // shows up as a 500 in server-error metrics.
+        callback(new CustomError("Not allowed by CORS", 403, "CORS_FORBIDDEN"));
       }
     },
     credentials: true,
@@ -243,10 +274,11 @@ app.use(notFoundHandler);
 // Global error handler (must be last)
 app.use(errorHandler);
 
-// Graceful shutdown handler
-const gracefulShutdown = (signal: string) => {
+// Graceful shutdown handler. exitCode must be non-zero for crash paths so
+// Docker/systemd restart-on-failure policies actually trigger.
+const gracefulShutdown = (signal: string, exitCode = 0) => {
   logger.info(
-    { signal },
+    { signal, exitCode },
     "Received shutdown signal, closing server gracefully",
   );
 
@@ -260,7 +292,7 @@ const gracefulShutdown = (signal: string) => {
     logger.error({ error }, "Error closing database connection");
   }
 
-  process.exit(0);
+  process.exit(exitCode);
 };
 
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
@@ -274,7 +306,7 @@ process.on("unhandledRejection", (reason, promise) => {
 // Uncaught exception handler
 process.on("uncaughtException", (error) => {
   logger.fatal({ error }, "Uncaught exception");
-  gracefulShutdown("uncaughtException");
+  gracefulShutdown("uncaughtException", 1);
 });
 
 // Start server

@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { Badge } from "@/components/ui/badge";
 import {
   Card,
   CardContent,
@@ -12,15 +11,14 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle, ArrowRight, ChevronRight, Loader2, ShieldCheck } from "lucide-react";
-import { getInspections, BACKEND_BASE_URL } from "@/lib/api";
+import { ArrowRight, ChevronRight, Loader2, RefreshCcw } from "lucide-react";
+import { getInspections } from "@/lib/api";
 import { showError } from "@/lib/toast";
-import { safeParseJsonOrValue } from "@/lib/utils/safe-json";
 import {
-  getAuditBadgeState,
-  getInspectionPipelineAudit,
-} from "@/lib/inspection-audit";
-import { StatusBadge } from "@/components/status-badge";
+  toInspectionListItem,
+  type InspectionListItem,
+} from "@/lib/inspection-summary";
+import { StatusBadge, VerificationBadge } from "@/components/status-badge";
 
 function formatTimeAgo(date: Date): string {
   const now = new Date();
@@ -40,108 +38,47 @@ function formatTimeAgo(date: Date): string {
   }
 }
 
-function getVerificationBadge(state: ReturnType<typeof getAuditBadgeState>) {
-  if (state.status === "verified") {
-    return (
-      <Badge className="gap-1 bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20">
-        <ShieldCheck className="h-3 w-3" />
-        Verified
-      </Badge>
-    );
-  }
-
-  if (state.status === "review") {
-    return (
-      <Badge variant="outline" className="gap-1 border-accent/40 text-accent">
-        <AlertTriangle className="h-3 w-3" />
-        Needs review
-      </Badge>
-    );
-  }
-
-  return null;
-}
+type RecentRow = InspectionListItem & { dateString: string };
 
 export function RecentInspections() {
-  const [inspections, setInspections] = useState<any[]>([]);
+  const [inspections, setInspections] = useState<RecentRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+
+  const fetchInspections = useCallback(async () => {
+    setLoading(true);
+    setFailed(false);
+    try {
+      const data = await getInspections();
+      // Transform and sort by date, get most recent 5
+      const transformed = data
+        .map((insp: any): RecentRow => {
+          const item = toInspectionListItem(insp, {
+            fallbackVehicleLabel: "Unidentified vehicle",
+          });
+          return {
+            ...item,
+            dateString: item.date ? formatTimeAgo(item.date) : "—",
+          };
+        })
+        .sort(
+          (a, b) => (b.date?.getTime() ?? 0) - (a.date?.getTime() ?? 0),
+        )
+        .slice(0, 5);
+
+      setInspections(transformed);
+    } catch (err) {
+      showError("Failed to fetch inspections", err);
+      setInspections([]);
+      setFailed(true);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    const fetchInspections = async () => {
-      try {
-        const data = await getInspections();
-        // Transform and sort by date, get most recent 5
-        const transformed = data
-          .map((insp: any) => {
-            const vehicleInfo = safeParseJsonOrValue<Record<string, any>>(
-              insp.vehicle_info as any,
-              {},
-            );
-
-            const damage = safeParseJsonOrValue<Record<string, any>>(
-              insp.damage_summary as any,
-              {},
-            );
-
-            const issues =
-              (damage.scratches?.count || 0) +
-              (damage.dents?.count || 0) +
-              (damage.rust?.count || 0) +
-              (damage.cracks?.count || 0) +
-              (damage.paint_damage?.count || 0);
-
-            const frames = safeParseJsonOrValue<string[]>(
-              insp.extracted_frames as any,
-              [],
-            );
-
-            const isReal = (v: unknown): v is string =>
-              typeof v === "string" && v.trim() !== "" && v !== "Unknown";
-            const brand = (isReal(vehicleInfo.brand) && vehicleInfo.brand) || (isReal(insp.vehicle_brand) && insp.vehicle_brand) || "";
-            const model = (isReal(vehicleInfo.model) && vehicleInfo.model) || (isReal(insp.vehicle_model) && insp.vehicle_model) || "";
-            const year =
-              vehicleInfo.year ? String(vehicleInfo.year) :
-              (isReal(insp.vehicle_year) && insp.vehicle_year) || "";
-            const variant =
-              vehicleInfo.variant ? String(vehicleInfo.variant) :
-              (isReal(insp.vehicle_variant) && insp.vehicle_variant) || "";
-            const vehicle = [year, brand, model, variant].filter(Boolean).join(" ").trim() || "Unidentified vehicle";
-            const audit = getInspectionPipelineAudit(insp);
-
-            return {
-              id: insp.id,
-              vehicle,
-              brand: brand || "—",
-              status: insp.job_status || "completed",
-              auditState: getAuditBadgeState(audit),
-              issues,
-              date: insp.created_at ? new Date(insp.created_at) : new Date(),
-              dateString: insp.created_at
-                ? formatTimeAgo(new Date(insp.created_at))
-                : "—",
-              odometer: insp.odometer_value || "N/A",
-              image: (() => {
-                // Skip known-dead paths from old MOCK_MODE rows.
-                const f = frames[0];
-                if (!f || typeof f !== "string" || f.startsWith("frames/sample/")) return null;
-                return `${BACKEND_BASE_URL}/${f.startsWith("uploads/") ? f : `uploads/${f}`}`;
-              })(),
-            };
-          })
-          .sort((a, b) => b.date.getTime() - a.date.getTime())
-          .slice(0, 5);
-
-        setInspections(transformed);
-      } catch (err) {
-        showError("Failed to fetch inspections", err);
-        setInspections([]);
-      } finally {
-        setLoading(false);
-      }
-    };
-
     fetchInspections();
-  }, []);
+  }, [fetchInspections]);
 
   return (
     <Card className="col-span-2 overflow-hidden">
@@ -161,6 +98,15 @@ export function RecentInspections() {
         {loading ? (
           <div className="flex items-center justify-center py-8">
             <Loader2 className="h-6 w-6 animate-spin text-primary" />
+          </div>
+        ) : failed ? (
+          <div className="py-8 text-center">
+            <p className="mb-3 text-sm text-destructive">
+              Could not load recent inspections.
+            </p>
+            <Button variant="outline" size="sm" onClick={fetchInspections} className="gap-2">
+              <RefreshCcw className="h-4 w-4" /> Retry
+            </Button>
           </div>
         ) : inspections.length === 0 ? (
           <div className="text-center py-8 text-muted-foreground">
@@ -202,7 +148,7 @@ export function RecentInspections() {
                   <div className="text-right">
                     <div className="flex flex-col items-end gap-1">
                       <StatusBadge status={inspection.status} />
-                      {getVerificationBadge(inspection.auditState)}
+                      <VerificationBadge state={inspection.auditState} />
                     </div>
                     {inspection.status === "completed" &&
                       inspection.issues > 0 && (

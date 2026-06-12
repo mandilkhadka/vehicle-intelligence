@@ -115,6 +115,15 @@ export interface DamageInfo {
     detected: boolean;
   };
   severity: DamageSeverity;
+  /** Aggregate repair cost across locations (repair_costs.estimate_repair_costs) */
+  total_estimated_repair_cost?: RepairCostEstimate & {
+    has_unknowns?: boolean;
+    counted_locations?: number;
+    unknown_locations?: number;
+  };
+  /** Whether VLM rationales were attached (damage_rationale, best-effort) */
+  rationale_available?: boolean;
+  rationale_count?: number;
   locations?: Array<{
     type: string;
     frame: string;
@@ -129,12 +138,30 @@ export interface DamageInfo {
     /** "detector" (dedicated damage model) or "vlm" */
     source?: string;
     severity?: DamageSeverity;
+    /** Vehicle panel from panel_inference.attach_parts_to_locations */
+    part?: string;
+    part_label?: string;
+    part_confidence?: number;
+    estimated_cost?: RepairCostEstimate;
+    /** VLM-generated explanation from damage_rationale.attach_rationales */
+    rationale?: string;
+    rationale_likely_real?: boolean;
     angle?: string;
     linked_view?: string;
     frame_index?: number;
     source_frame_index?: number;
     timestamp_seconds?: number;
   }>;
+}
+
+/**
+ * Per-location and aggregate repair cost range (ml-service repair_costs.py)
+ */
+export interface RepairCostEstimate {
+  low: number;
+  high: number;
+  midpoint: number;
+  currency: string;
 }
 
 /**

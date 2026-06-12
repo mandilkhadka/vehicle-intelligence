@@ -149,12 +149,18 @@ class DamageDetectionModel:
                 imgsz=MODEL_IMGSZ,
                 verbose=False,
             )
-        except TypeError:
-            # Stub/legacy models without ultralytics kwargs (used in tests).
-            predictions = self.model(frame_paths)
+        except TypeError as exc:
+            # Stub/legacy models without ultralytics kwargs (used in tests)
+            # raise "unexpected keyword argument"; a genuine TypeError from
+            # inside inference must NOT be silently retried without tuning.
+            if "unexpected keyword" not in str(exc):
+                return self._failure_result(exc)
+            try:
+                predictions = self.model(frame_paths)
+            except Exception as retry_exc:
+                return self._failure_result(retry_exc)
         except Exception as exc:
-            logger.error("Damage model inference failed: %s", exc, exc_info=True)
-            return result
+            return self._failure_result(exc)
 
         snapshots_dir = self._snapshots_dir(inspection_id)
         locations: List[Dict[str, Any]] = []
@@ -339,6 +345,20 @@ class DamageDetectionModel:
         result["severity"] = severity
         result["total_count"] = total
         result["average_confidence"] = float(round(avg_confidence, 3))
+        return result
+
+    def _failure_result(self, exc: Exception) -> Dict[str, Any]:
+        """Empty result that surfaces an inference failure instead of masking
+        it as a clean zero-findings run. The damage stage still degrades
+        gracefully to VLM-only, but the pipeline audit and frontend can see
+        ``detector.available == False`` plus the error."""
+        logger.error("Damage model inference failed: %s", exc, exc_info=True)
+        result = self._empty_result()
+        result["detector"] = {
+            "available": False,
+            "model": os.path.basename(str(self.model_name)),
+            "error": str(exc),
+        }
         return result
 
     def _empty_result(self) -> Dict[str, Any]:

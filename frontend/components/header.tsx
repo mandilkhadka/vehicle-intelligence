@@ -1,7 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { History as HistoryIcon, LayoutDashboard, Menu, Upload as UploadIcon } from "lucide-react";
+import {
+  Camera,
+  ClipboardCheck,
+  History as HistoryIcon,
+  Images,
+  LayoutDashboard,
+  Menu,
+  Upload as UploadIcon,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -31,6 +39,21 @@ export function Header() {
             <DropdownMenuItem asChild>
               <Link href="/inspect" className="flex items-center gap-2">
                 <UploadIcon className="h-4 w-4" /> New inspection
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <Link href="/photos" className="flex items-center gap-2">
+                <Images className="h-4 w-4" /> Photo inspection
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <Link href="/capture" className="flex items-center gap-2">
+                <Camera className="h-4 w-4" /> Guided capture
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <Link href="/review" className="flex items-center gap-2">
+                <ClipboardCheck className="h-4 w-4" /> Review queue
               </Link>
             </DropdownMenuItem>
             <DropdownMenuItem asChild>

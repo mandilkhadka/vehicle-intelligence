@@ -127,13 +127,27 @@ describe("HistoryPage", () => {
     });
   });
 
-  it("handles API error gracefully", async () => {
-    (getInspections as jest.Mock).mockRejectedValue(new Error("Network error"));
+  it("shows an error row with retry on API failure instead of a fake empty state", async () => {
+    const consoleErrorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    (getInspections as jest.Mock)
+      .mockRejectedValueOnce(new Error("Network error"))
+      .mockResolvedValueOnce(mockInspections);
 
-    render(<HistoryPage />);
+    try {
+      render(<HistoryPage />);
 
-    await waitFor(() => {
-      expect(screen.getByText("No inspections found")).toBeInTheDocument();
-    });
+      await waitFor(() => {
+        expect(screen.getByText("Network error")).toBeInTheDocument();
+        expect(screen.queryByText("No inspections found")).not.toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/2024 Toyota Camry Hybrid XLE/)).toBeInTheDocument();
+      });
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 });

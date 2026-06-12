@@ -29,6 +29,7 @@ from collections import Counter
 from src.services.model_registry import (
     VEHICLE_BRANDS,
     BRAND_PROMPT_TEMPLATES,
+    YOLO_INFERENCE_LOCK,
     clip_features_to_tensor,
 )
 
@@ -178,7 +179,10 @@ class VehicleIdentifier:
         logger.info(f"VehicleIdentifier: Caching YOLO results for {len(sample_frames)} frames")
         yolo_cache: Dict[str, Any] = {}
         try:
-            batch_results = self.yolo_model(list(sample_frames))
+            # The shared ultralytics model is not thread-safe across the
+            # concurrently-running pipeline stages; serialize inference.
+            with YOLO_INFERENCE_LOCK:
+                batch_results = self.yolo_model(list(sample_frames))
         except Exception as e:
             logger.warning(f"Batch YOLO inference failed, falling back to per-frame: {e}")
             batch_results = None
@@ -191,7 +195,8 @@ class VehicleIdentifier:
         else:
             for frame_path in sample_frames:
                 try:
-                    yolo_cache[frame_path] = self.yolo_model(frame_path)
+                    with YOLO_INFERENCE_LOCK:
+                        yolo_cache[frame_path] = self.yolo_model(frame_path)
                 except Exception as e:
                     logger.warning(f"YOLO inference failed for {frame_path}: {e}")
                     yolo_cache[frame_path] = None

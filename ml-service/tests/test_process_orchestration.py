@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from src.api.process import (
     ProcessRequest,
     RetryVlmRequest,
+    _apply_vlm_verification_filter,
     _build_process_pipeline_audit,
     _ground_vlm_locations,
     _merge_visual_damage_categories,
@@ -429,6 +430,57 @@ def test_process_video_routes_absolute_paths_to_ml_and_relative_paths_to_respons
     assert response.reference_image["search_query"] == "Gemini Vision 2024 Touring"
 
 
+class NonDictVehicleIdentifier:
+    """Simulates a regressed service returning the wrong type."""
+
+    async def identify(self, frames):
+        return ["not", "a", "dict"]
+
+
+def test_process_video_records_stage_failure_for_non_dict_results():
+    repo_root = Path(__file__).resolve().parents[2]
+    uploads = repo_root / "backend" / "uploads"
+    inspection_id = "codex-non-dict-stage-test"
+    video = uploads / "videos" / f"{inspection_id}.mov"
+    video.parent.mkdir(parents=True, exist_ok=True)
+    video.write_bytes(b"video")
+
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            ml_services=(
+                FakeFrameExtractor(),
+                FakeFrameOrganizer(),
+                NonDictVehicleIdentifier(),
+                FakeDashboardDetector(),
+                FakeOdometerReader(),
+                FakeDamageDetector(),
+                FakeExhaustClassifier(),
+                FakeModificationDetector(),
+                FakeReportGenerator(),
+                FakeGeminiAnalyzer(),
+            )
+        )
+    )
+
+    try:
+        response = asyncio.run(
+            process_video(
+                ProcessRequest(video_path=str(video), inspection_id=inspection_id),
+                SimpleNamespace(app=app),
+            )
+        )
+    finally:
+        video.unlink(missing_ok=True)
+        shutil.rmtree(uploads / "frames" / inspection_id, ignore_errors=True)
+
+    stage = response.report["stage_status"]["vehicle_id"]
+    assert stage["ok"] is False
+    assert stage["error"]
+    assert response.report["partial"] is True
+    # The stage degraded to its fallback, then the Gemini identity merge still applied.
+    assert response.vehicle_info["brand"] == "Gemini"
+
+
 def test_process_pipeline_audit_surfaces_low_confidence_and_unavailable_evidence():
     audit = _build_process_pipeline_audit(
         frame_analysis={
@@ -775,6 +827,117 @@ def test_ground_vlm_locations_crops_region_to_bbox_and_snapshot(tmp_path, monkey
     assert (uploads / loc["snapshot"]).exists()
 
 
+def test_merge_visual_damage_categories_normalizes_moderate_severity():
+    """VLM items say "moderate" (per the prompt schema); the merged location
+    must use the shared DamageSeverity contract value "medium"."""
+    damage = {"locations": []}
+    gemini = {
+        "damage_items": [
+            {
+                "type": "dent",
+                "severity": "moderate",
+                "confidence": 0.8,
+                "frame": "frames/t/organized/front.jpg",
+                "view": "front",
+            }
+        ]
+    }
+
+    _merge_visual_damage_categories(damage, gemini)
+
+    assert damage["locations"][0]["severity"] == "medium"
+
+
+def test_vlm_filter_recomputes_overall_severity_from_kept_locations():
+    """With no dedicated detector, severity comes from the empty-result "low";
+    a high-severity VLM finding must raise the top-level severity."""
+    damage = {
+        "severity": "low",
+        "locations": [
+            {"type": "dent", "source": "vlm", "severity": "high", "confidence": 0.9},
+        ],
+    }
+
+    _apply_vlm_verification_filter(damage, {"available": True})
+
+    assert damage["severity"] == "high"
+    assert damage["total_count"] == 1
+    assert damage["locations"][0]["vlm_verified"] is True
+
+
+def test_vlm_filter_resets_severity_when_all_locations_dropped():
+    damage = {
+        "severity": "high",
+        "locations": [
+            {"type": "scratch", "source": "yolo", "confidence": 0.2},
+        ],
+    }
+
+    _apply_vlm_verification_filter(damage, {"available": False})
+
+    assert damage["locations"] == []
+    assert damage["severity"] == "low"
+    assert damage["total_count"] == 0
+
+
+def test_vlm_filter_keeps_degraded_stage_severity_marker():
+    """When the damage stage itself failed, the degraded fallback keeps its
+    explicit severity marker instead of being recomputed to "low"."""
+    damage = {"severity": "unknown", "available": False, "locations": []}
+
+    _apply_vlm_verification_filter(damage, {"available": False})
+
+    assert damage["severity"] == "unknown"
+
+
+def test_ground_vlm_locations_handles_pixel_regions_and_inverted_pairs(tmp_path, monkeypatch):
+    """Local VLMs often emit raw pixel coordinates (max > 1000) despite the
+    0-1000 grid instruction, and occasionally inverted min/max pairs."""
+    import cv2
+    import numpy as np
+
+    uploads = tmp_path / "uploads"
+    monkeypatch.setenv("UPLOADS_ROOT", str(uploads))
+
+    inspection_id = "insp-pixel"
+    frame_rel = f"frames/{inspection_id}/organized/front.jpg"
+    frame_abs = uploads / frame_rel
+    frame_abs.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(frame_abs), np.full((1080, 1920, 3), 128, dtype=np.uint8))
+
+    damage_data = {
+        "locations": [
+            {
+                "source": "vlm",
+                "type": "scratch",
+                "frame": frame_rel,
+                # raw pixels: [ymin, xmin, ymax, xmax] for a 1920x1080 frame
+                "region": [100, 200, 300, 1500],
+                "confidence": 0.9,
+            },
+            {
+                "source": "vlm",
+                "type": "dent",
+                "frame": frame_rel,
+                # inverted pairs on the 0-1000 grid -> swapped, not dropped
+                "region": [300, 400, 100, 200],
+                "confidence": 0.9,
+            },
+        ]
+    }
+
+    _ground_vlm_locations(damage_data, inspection_id, backend_root=str(tmp_path))
+
+    pixel_loc = damage_data["locations"][0]
+    assert pixel_loc["bbox"] == [200, 100, 1500, 300]
+    assert pixel_loc["frame_width"] == 1920
+    assert pixel_loc["frame_height"] == 1080
+
+    inverted_loc = damage_data["locations"][1]
+    # After swapping: ymin=100, xmin=200, ymax=300, xmax=400 on the 0-1000 grid.
+    assert inverted_loc["bbox"] == [384, 108, 768, 324]
+
+
 def test_ground_vlm_locations_skips_when_no_region(tmp_path, monkeypatch):
     monkeypatch.setenv("UPLOADS_ROOT", str(tmp_path / "uploads"))
     damage_data = {
@@ -785,3 +948,119 @@ def test_ground_vlm_locations_skips_when_no_region(tmp_path, monkeypatch):
     _ground_vlm_locations(damage_data, "x", backend_root=str(tmp_path))
     loc = damage_data["locations"][0]
     assert "bbox" not in loc and "snapshot" not in loc  # UI falls back to frame
+
+
+def test_process_request_requires_exactly_one_media_source():
+    import pytest
+
+    with pytest.raises(ValueError):
+        ProcessRequest(inspection_id="media-source-test")
+    with pytest.raises(ValueError):
+        ProcessRequest(
+            video_path="/tmp/a.mov",
+            image_paths=["/tmp/b.jpg"],
+            inspection_id="media-source-test",
+        )
+    assert ProcessRequest(image_paths=["/tmp/b.jpg"], inspection_id="media-source-test").video_path is None
+    assert ProcessRequest(video_path="/tmp/a.mov", inspection_id="media-source-test").image_paths is None
+
+
+def test_prepare_photo_frames_normalizes_and_skips_unreadable(tmp_path):
+    import cv2
+    import numpy as np
+
+    from src.api.process import prepare_photo_frames
+
+    repo_root = Path(__file__).resolve().parents[2]
+    backend_root = str(repo_root)
+    inspection_id = "photo-frames-unit-test"
+
+    good = tmp_path / "good.jpg"
+    cv2.imwrite(str(good), np.full((32, 48, 3), 128, dtype=np.uint8))
+    unreadable = tmp_path / "unreadable.jpg"
+    unreadable.write_bytes(b"not an image")
+
+    frames_dir = repo_root / "backend" / "uploads" / "frames" / inspection_id
+    try:
+        frames = prepare_photo_frames([str(good), str(unreadable)], inspection_id, backend_root)
+        assert frames == [f"frames/{inspection_id}/frame_0000.jpg"]
+        assert (frames_dir / "frame_0000.jpg").exists()
+    finally:
+        shutil.rmtree(frames_dir, ignore_errors=True)
+
+
+def test_prepare_photo_frames_raises_400_when_no_photo_decodes(tmp_path):
+    import pytest
+    from fastapi import HTTPException
+
+    from src.api.process import prepare_photo_frames
+
+    repo_root = Path(__file__).resolve().parents[2]
+    backend_root = str(repo_root)
+    inspection_id = "photo-frames-none-test"
+
+    unreadable = tmp_path / "unreadable.jpg"
+    unreadable.write_bytes(b"not an image")
+
+    frames_dir = repo_root / "backend" / "uploads" / "frames" / inspection_id
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            prepare_photo_frames([str(unreadable)], inspection_id, backend_root)
+        assert exc_info.value.status_code == 400
+    finally:
+        shutil.rmtree(frames_dir, ignore_errors=True)
+
+
+def test_process_photo_flow_uses_uploaded_photos_as_frames():
+    import cv2
+    import numpy as np
+
+    repo_root = Path(__file__).resolve().parents[2]
+    uploads = repo_root / "backend" / "uploads"
+    inspection_id = "photo-flow-orchestration-test"
+    photo_dir = uploads / "photos" / inspection_id
+    photo_dir.mkdir(parents=True, exist_ok=True)
+
+    photo_one = photo_dir / "front.jpg"
+    photo_two = photo_dir / "rear.png"
+    cv2.imwrite(str(photo_one), np.full((32, 48, 3), 100, dtype=np.uint8))
+    cv2.imwrite(str(photo_two), np.full((32, 48, 3), 180, dtype=np.uint8))
+
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            ml_services=(
+                FakeFrameExtractor(),
+                FakeFrameOrganizer(),
+                FakeVehicleIdentifier(),
+                FakeDashboardDetector(),
+                FakeOdometerReader(),
+                FakeDamageDetector(),
+                FakeExhaustClassifier(),
+                FakeModificationDetector(),
+                FakeReportGenerator(),
+                FakeGeminiAnalyzer(),
+            )
+        )
+    )
+
+    try:
+        response = asyncio.run(
+            process_video(
+                ProcessRequest(
+                    image_paths=[str(photo_one), str(photo_two)],
+                    inspection_id=inspection_id,
+                ),
+                SimpleNamespace(app=app),
+            )
+        )
+    finally:
+        shutil.rmtree(photo_dir, ignore_errors=True)
+        shutil.rmtree(uploads / "frames" / inspection_id, ignore_errors=True)
+
+    # Photos became the frames — no FrameExtractor involvement.
+    assert response.frames == [
+        f"frames/{inspection_id}/frame_0000.jpg",
+        f"frames/{inspection_id}/frame_0001.jpg",
+    ]
+    assert response.vehicle_info["brand"] == "Gemini"
+    assert response.frame_analysis["angle_shots"]["front"]["frame"].startswith("frames/")

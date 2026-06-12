@@ -6,6 +6,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import multer from "multer";
 import * as fs from "fs";
+import * as path from "path";
 import { v4 as uuidv4 } from "uuid";
 import { createFile, createJob, updateJobStatus } from "../models/inspection";
 import {
@@ -16,7 +17,7 @@ import {
   isValidImageFormat,
   getUploadPath,
 } from "../utils/fileUtils";
-import { processVideoJob } from "../services/job_processor";
+import { processVideoJob, processPhotoJob } from "../services/job_processor";
 import { asyncHandler } from "../middleware/errorHandler";
 import { CustomError } from "../middleware/errorHandler";
 import { config } from "../config/env";
@@ -391,40 +392,40 @@ router.post(
     const fileId = uuidv4();
     const jobId = uuidv4();
 
-    // Create file record in database
-    const fileRecord = createFile({
-      id: fileId,
-      filename: videoFile.filename,
-      original_filename: videoFile.originalname,
-      file_path: videoFile.path,
-      file_size: videoFile.size,
-      mime_type: videoFile.mimetype,
-    });
+    // Create file + job records. If either insert fails (e.g. SQLITE_BUSY)
+    // the multer-written files would have no DB record and no sweeper would
+    // ever find them — remove them from disk before rethrowing.
+    let fileRecord;
+    let jobRecord;
+    try {
+      fileRecord = createFile({
+        id: fileId,
+        filename: videoFile.filename,
+        original_filename: videoFile.originalname,
+        file_path: videoFile.path,
+        file_size: videoFile.size,
+        mime_type: videoFile.mimetype,
+      });
 
-    // Create job record
-    const jobRecord = createJob({
-      id: jobId,
-      file_id: fileId,
-      status: "pending",
-    });
+      jobRecord = createJob({
+        id: jobId,
+        file_id: fileId,
+        status: "pending",
+      });
+    } catch (dbError) {
+      cleanupUploadedFiles(files);
+      throw dbError;
+    }
 
     logger.info({ jobId, fileId }, "Created job for video processing");
 
-    // Start processing job asynchronously with odometer image path if provided
+    // Start processing job asynchronously with odometer image path if provided.
+    // The job stays `pending` until processVideoJob flips it to `processing` —
+    // job_processor owns all status/progress updates.
     const odometerImagePath = odometerImageFile
       ? odometerImageFile.path
       : undefined;
     const vehicleIdentityOverride = vehicleIdentityOverrideFromBody(req);
-
-    // Update status to processing — job_processor owns all progress updates
-    updateJobStatus(jobId, {
-      status: "processing",
-    });
-
-    logger.debug(
-      { jobId },
-      "Job status updated to processing, starting async processing",
-    );
 
     // Wrap in immediate async function to catch any synchronous errors
     (async () => {
@@ -463,6 +464,255 @@ router.post(
       jobId: jobRecord.id,
       fileId: fileRecord.id,
       message: "Video uploaded successfully. Processing started.",
+      odometerImageUploaded: !!odometerImageFile,
+      vehicleIdentityEvidenceUploaded: !!vehicleIdentityOverride,
+    });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Photo flow — upload a set of pictures instead of a video. The ML service
+// uses the photos directly as frames (no frame extraction).
+// ---------------------------------------------------------------------------
+
+export const MAX_PHOTOS_PER_UPLOAD = 24;
+
+// HEIC is deliberately excluded: the ML pipeline decodes frames with OpenCV,
+// which can't read HEIC. The capture/convert step belongs on the client.
+const PHOTO_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp"];
+
+function isValidPhotoFormat(filename: string): boolean {
+  return PHOTO_EXTENSIONS.includes(getFileExtension(filename));
+}
+
+type PhotoBatchRequest = Request & { photoBatchId?: string };
+
+// All photos of one upload land in uploads/photos/<jobId>/ so failure cleanup
+// and the retention sweeper can remove the whole directory at once.
+const photoStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const batchReq = req as PhotoBatchRequest;
+    if (!batchReq.photoBatchId) {
+      batchReq.photoBatchId = uuidv4();
+    }
+    if (file.fieldname === "odometer_image") {
+      const uploadPath = getUploadPath("odometer_images");
+      ensureDirectoryExists(uploadPath);
+      cb(null, uploadPath);
+    } else {
+      const uploadPath = path.join(getUploadPath("photos"), batchReq.photoBatchId);
+      ensureDirectoryExists(uploadPath);
+      cb(null, uploadPath);
+    }
+  },
+  filename: (req, file, cb) => {
+    cb(null, generateUniqueFilename(file.originalname));
+  },
+});
+
+const photoFileFilter = (
+  req: Request,
+  file: Express.Multer.File,
+  cb: multer.FileFilterCallback,
+) => {
+  if (file.fieldname === "odometer_image") {
+    imageFileFilter(req, file, cb);
+  } else if (file.fieldname === "photos") {
+    if (isValidPhotoFormat(file.originalname)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Invalid photo format. Supported: JPG, PNG, WEBP"));
+    }
+  } else {
+    cb(new Error(`Unexpected field name: ${file.fieldname}`));
+  }
+};
+
+const uploadPhotos = multer({
+  storage: photoStorage,
+  fileFilter: photoFileFilter,
+  limits: {
+    fileSize: config.upload.maxSize,
+  },
+}).fields([
+  { name: "photos", maxCount: MAX_PHOTOS_PER_UPLOAD },
+  { name: "odometer_image", maxCount: 1 },
+]);
+
+function removePhotoBatchDir(req: PhotoBatchRequest): void {
+  if (!req.photoBatchId) {
+    return;
+  }
+  const batchDir = path.join(getUploadPath("photos"), req.photoBatchId);
+  try {
+    fs.rmSync(batchDir, { recursive: true, force: true });
+  } catch (error) {
+    logger.warn({ error, batchDir }, "Failed to remove rejected photo batch dir");
+  }
+}
+
+/**
+ * POST /api/upload/photos
+ * Upload 1-24 vehicle photos (plus optional odometer image) and create a
+ * processing job. Same response contract as POST /api/upload.
+ */
+router.post(
+  "/photos",
+  (req: Request, res: Response, next: NextFunction) => {
+    uploadPhotos(req, res, (err) => {
+      if (err) {
+        cleanupUploadedFiles(
+          req.files as { [fieldname: string]: Express.Multer.File[] },
+        );
+        removePhotoBatchDir(req as PhotoBatchRequest);
+        if (err instanceof multer.MulterError) {
+          if (err.code === "LIMIT_FILE_SIZE") {
+            return next(
+              new CustomError(
+                `File size exceeds maximum allowed size of ${config.upload.maxSize / 1024 / 1024}MB`,
+                400,
+                "FILE_TOO_LARGE",
+              ),
+            );
+          }
+          if (err.code === "LIMIT_UNEXPECTED_FILE") {
+            return next(
+              new CustomError(
+                `Too many photos or invalid file field (max ${MAX_PHOTOS_PER_UPLOAD} photos)`,
+                400,
+                "INVALID_FILE_FIELD",
+              ),
+            );
+          }
+          return next(
+            new CustomError(`Upload error: ${err.message}`, 400, "UPLOAD_ERROR"),
+          );
+        }
+        return next(
+          new CustomError(
+            err.message || "Invalid file format",
+            400,
+            "FILE_VALIDATION_ERROR",
+          ),
+        );
+      }
+      next();
+    });
+  },
+  asyncHandler(async (req: Request, res: Response) => {
+    const files = req.files as { [fieldname: string]: Express.Multer.File[] };
+    const photoFiles = files?.photos ?? [];
+    const odometerImageFile = files?.odometer_image?.[0];
+
+    const rejectUpload = (error: CustomError): never => {
+      cleanupUploadedFiles(files);
+      removePhotoBatchDir(req as PhotoBatchRequest);
+      throw error;
+    };
+
+    if (photoFiles.length === 0) {
+      rejectUpload(new CustomError("No photo files uploaded", 400, "NO_PHOTO_FILES"));
+    }
+
+    logger.info(
+      {
+        photoCount: photoFiles.length,
+        totalSize: photoFiles.reduce((sum, f) => sum + f.size, 0),
+        hasOdometerImage: !!odometerImageFile,
+      },
+      "Processing photo upload",
+    );
+
+    for (const photo of photoFiles) {
+      if (!isValidImageContent(photo.path, photo.originalname)) {
+        rejectUpload(
+          new CustomError(
+            `Invalid photo content: ${photo.originalname}`,
+            400,
+            "INVALID_PHOTO_CONTENT",
+          ),
+        );
+      }
+    }
+
+    if (
+      odometerImageFile &&
+      !isValidImageContent(odometerImageFile.path, odometerImageFile.originalname)
+    ) {
+      rejectUpload(
+        new CustomError("Invalid odometer image content", 400, "INVALID_IMAGE_CONTENT"),
+      );
+    }
+
+    // The batch dir name doubles as the job id so cleanup can find it.
+    const jobId = (req as PhotoBatchRequest).photoBatchId ?? uuidv4();
+
+    // One files row per photo; the job references the first photo.
+    let firstFileId = "";
+    try {
+      for (const photo of photoFiles) {
+        const fileRecord = createFile({
+          id: uuidv4(),
+          filename: photo.filename,
+          original_filename: photo.originalname,
+          file_path: photo.path,
+          file_size: photo.size,
+          mime_type: photo.mimetype,
+        });
+        if (!firstFileId) {
+          firstFileId = fileRecord.id;
+        }
+      }
+      createJob({
+        id: jobId,
+        file_id: firstFileId,
+        status: "pending",
+      });
+    } catch (dbError) {
+      cleanupUploadedFiles(files);
+      removePhotoBatchDir(req as PhotoBatchRequest);
+      throw dbError;
+    }
+
+    logger.info(
+      { jobId, fileId: firstFileId, photoCount: photoFiles.length },
+      "Created job for photo processing",
+    );
+
+    const photoPaths = photoFiles.map((photo) => photo.path);
+    const odometerImagePath = odometerImageFile ? odometerImageFile.path : undefined;
+    const vehicleIdentityOverride = vehicleIdentityOverrideFromBody(req);
+
+    (async () => {
+      try {
+        await processPhotoJob(
+          jobId,
+          firstFileId,
+          photoPaths,
+          odometerImagePath,
+          vehicleIdentityOverride,
+        );
+      } catch (error) {
+        logger.error({ jobId, error }, "Photo job processing failed with unhandled error");
+        try {
+          updateJobStatus(jobId, {
+            status: "failed",
+            error_message: error instanceof Error ? error.message : String(error),
+          });
+        } catch (updateError) {
+          logger.error(
+            { jobId, updateError },
+            "Failed to update job status after error",
+          );
+        }
+      }
+    })();
+
+    res.status(202).json({
+      jobId,
+      fileId: firstFileId,
+      photoCount: photoFiles.length,
+      message: "Photos uploaded successfully. Processing started.",
       odometerImageUploaded: !!odometerImageFile,
       vehicleIdentityEvidenceUploaded: !!vehicleIdentityOverride,
     });

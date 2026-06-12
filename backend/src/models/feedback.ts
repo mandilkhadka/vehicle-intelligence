@@ -53,10 +53,20 @@ export function createDamageFeedback(input: {
 }): DamageFeedbackRecord {
   const db = getDatabase();
   const id = uuidv4();
+  // (inspection_id, location_index) is the documented feedback key — a
+  // re-review of the same location updates the existing verdict in place
+  // instead of accumulating duplicate rows that would skew training exports.
   db.prepare(
     `INSERT INTO damage_feedback
         (id, inspection_id, location_index, verdict, corrected_type, corrected_severity, note, reviewer)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(inspection_id, location_index) DO UPDATE SET
+        verdict = excluded.verdict,
+        corrected_type = excluded.corrected_type,
+        corrected_severity = excluded.corrected_severity,
+        note = excluded.note,
+        reviewer = excluded.reviewer,
+        created_at = CURRENT_TIMESTAMP`,
   ).run(
     id,
     input.inspectionId,
@@ -67,14 +77,27 @@ export function createDamageFeedback(input: {
     input.note ?? null,
     input.reviewer ?? null,
   );
-  return getDamageFeedbackById(id);
+  // On conflict the existing row keeps its original id, so fetch by key.
+  const record = db
+    .prepare(
+      "SELECT * FROM damage_feedback WHERE inspection_id = ? AND location_index = ?",
+    )
+    .get(input.inspectionId, input.locationIndex) as
+    | DamageFeedbackRecord
+    | undefined;
+  if (!record) {
+    throw new Error(
+      `Damage feedback for ${input.inspectionId}:${input.locationIndex} missing after upsert`,
+    );
+  }
+  return record;
 }
 
-export function getDamageFeedbackById(id: string): DamageFeedbackRecord {
+export function getDamageFeedbackById(id: string): DamageFeedbackRecord | undefined {
   const db = getDatabase();
   return db
     .prepare("SELECT * FROM damage_feedback WHERE id = ?")
-    .get(id) as DamageFeedbackRecord;
+    .get(id) as DamageFeedbackRecord | undefined;
 }
 
 export function listFeedbackForInspection(inspectionId: string): DamageFeedbackRecord[] {
@@ -119,14 +142,18 @@ export function createMissingDamage(input: {
     input.note ?? null,
     input.reviewer ?? null,
   );
-  return getMissingDamageById(id);
+  const record = getMissingDamageById(id);
+  if (!record) {
+    throw new Error(`Missing-damage report ${id} missing immediately after insert`);
+  }
+  return record;
 }
 
-export function getMissingDamageById(id: string): MissingDamageRecord {
+export function getMissingDamageById(id: string): MissingDamageRecord | undefined {
   const db = getDatabase();
   return db
     .prepare("SELECT * FROM damage_missing_reports WHERE id = ?")
-    .get(id) as MissingDamageRecord;
+    .get(id) as MissingDamageRecord | undefined;
 }
 
 export function listMissingForInspection(inspectionId: string): MissingDamageRecord[] {
@@ -165,7 +192,16 @@ export interface FeedbackExportRow {
   damage_summary?: string;
 }
 
-/** Joined export for the training-set builder. */
+/**
+ * Joined export for the training-set builder.
+ *
+ * `since` is compared via datetime(?): created_at is SQLite's
+ * 'YYYY-MM-DD HH:MM:SS' space format while callers pass ISO 'T'/'Z'
+ * timestamps — a raw string compare would silently drop every row created on
+ * the since-date itself ('T' sorts after ' '). datetime() normalizes ISO
+ * input to space format, and datetime(NULL) is NULL so the `? IS NULL OR`
+ * guard still short-circuits.
+ */
 export function exportFeedbackSince(sinceISO?: string): FeedbackExportRow[] {
   const db = getDatabase();
   const params: (string | null)[] = [sinceISO ?? null, sinceISO ?? null];
@@ -190,7 +226,7 @@ export function exportFeedbackSince(sinceISO?: string): FeedbackExportRow[] {
           i.damage_summary AS damage_summary
        FROM damage_feedback df
        LEFT JOIN inspections i ON i.id = df.inspection_id
-       WHERE ? IS NULL OR df.created_at >= ?`,
+       WHERE ? IS NULL OR df.created_at >= datetime(?)`,
     )
     .all(params[0], params[1]) as FeedbackExportRow[];
 
@@ -215,7 +251,7 @@ export function exportFeedbackSince(sinceISO?: string): FeedbackExportRow[] {
           i.damage_summary AS damage_summary
        FROM damage_missing_reports dm
        LEFT JOIN inspections i ON i.id = dm.inspection_id
-       WHERE ? IS NULL OR dm.created_at >= ?`,
+       WHERE ? IS NULL OR dm.created_at >= datetime(?)`,
     )
     .all(params[0], params[1]) as FeedbackExportRow[];
 
@@ -266,30 +302,52 @@ export function listUncertainDetections(limit = 100): UncertainDetection[] {
     ).map((r) => `${r.inspection_id}:${r.location_index}`),
   );
 
+  interface ParsedLocation {
+    type?: string;
+    part?: string;
+    part_label?: string;
+    severity?: string;
+    confidence?: number;
+    snapshot?: string;
+    frame?: string;
+  }
+
+  const stringOrUndefined = (v: unknown): string | undefined =>
+    typeof v === "string" ? v : undefined;
+
   const out: UncertainDetection[] = [];
   for (const row of inspections) {
-    let summary: any;
+    let summary: unknown;
     try {
       summary = JSON.parse(row.damage_summary);
     } catch {
       continue;
     }
-    const locations = Array.isArray(summary?.locations) ? summary.locations : [];
-    locations.forEach((loc: any, idx: number) => {
-      const conf = typeof loc?.confidence === "number" ? loc.confidence : 0;
+    const locations: unknown[] =
+      summary &&
+      typeof summary === "object" &&
+      Array.isArray((summary as { locations?: unknown }).locations)
+        ? (summary as { locations: unknown[] }).locations
+        : [];
+    locations.forEach((rawLoc: unknown, idx: number) => {
+      const loc: Partial<ParsedLocation> =
+        typeof rawLoc === "object" && rawLoc !== null
+          ? (rawLoc as Partial<ParsedLocation>)
+          : {};
+      const conf = typeof loc.confidence === "number" ? loc.confidence : 0;
       const key = `${row.id}:${idx}`;
       const hasFeedback = feedbackKeys.has(key);
       out.push({
         inspection_id: row.id,
         location_index: idx,
-        type: loc?.type,
-        part: loc?.part,
-        part_label: loc?.part_label,
-        severity: loc?.severity,
+        type: stringOrUndefined(loc.type),
+        part: stringOrUndefined(loc.part),
+        part_label: stringOrUndefined(loc.part_label),
+        severity: stringOrUndefined(loc.severity),
         confidence: conf,
         uncertainty: Math.abs(conf - 0.5),
-        snapshot: loc?.snapshot ?? undefined,
-        frame: loc?.frame ?? undefined,
+        snapshot: stringOrUndefined(loc.snapshot),
+        frame: stringOrUndefined(loc.frame),
         has_feedback: hasFeedback,
         created_at: row.created_at,
       });

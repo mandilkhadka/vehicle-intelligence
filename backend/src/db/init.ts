@@ -145,6 +145,31 @@ export function initDatabase(): Database.Database {
       logger.warn({ error }, "Feedback table creation error (non-critical)");
     }
 
+    // Migration: enforce one feedback row per (inspection_id, location_index).
+    // Pre-existing installs may already hold duplicates from repeated POSTs,
+    // so dedupe first (keep the newest created_at per key) or the unique
+    // index creation would fail.
+    try {
+      db.exec(`
+        DELETE FROM damage_feedback
+         WHERE rowid NOT IN (
+           SELECT rowid FROM (
+             SELECT rowid,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY inspection_id, location_index
+                      ORDER BY created_at DESC, rowid DESC
+                    ) AS rn
+               FROM damage_feedback
+           ) WHERE rn = 1
+         )
+      `);
+      db.exec(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_damage_feedback_key ON damage_feedback(inspection_id, location_index)",
+      );
+    } catch (error) {
+      logger.warn({ error }, "Feedback unique-key migration error (non-critical)");
+    }
+
     logger.info({ dbPath }, "Database initialized successfully");
 
     return db;

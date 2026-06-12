@@ -4,49 +4,35 @@
  */
 
 import { Router, Request, Response } from "express";
-import { query } from "express-validator";
+import { z } from "zod";
 import { getInspectionMetrics } from "../models/inspection";
-import { asyncHandler, assertValid, CustomError } from "../middleware/errorHandler";
+import { asyncHandler, CustomError } from "../middleware/errorHandler";
+import { parseQuery } from "../utils/validate";
 import logger from "../utils/logger";
 
 const router = Router();
 
-/**
- * Validate date format (YYYY-MM-DD)
- */
-const isValidDateFormat = (value: string) => {
-  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-  if (!dateRegex.test(value)) {
-    throw new Error("Date must be in YYYY-MM-DD format");
-  }
-  const date = new Date(value);
-  if (isNaN(date.getTime())) {
-    throw new Error("Invalid date");
-  }
-  return true;
-};
+const dateSchema = z
+  .string({ required_error: "is required" })
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be in YYYY-MM-DD format")
+  .refine((value) => !Number.isNaN(new Date(value).getTime()), "Invalid date");
+
+const metricsQuery = z.object({
+  startDate: dateSchema,
+  endDate: dateSchema,
+});
 
 /**
- * GET /api/inspections/metrics
- * Get aggregated metrics for dashboard
+ * GET /api/metrics
+ * Get aggregated metrics for dashboard (router is mounted at /api/metrics).
+ *
+ * Note: metrics aggregate all inspection rows in range, including those from
+ * failed/incomplete jobs — there is deliberately no join on job status.
  */
 router.get(
   "/",
-  [
-    query("startDate")
-      .exists()
-      .withMessage("startDate is required")
-      .custom(isValidDateFormat),
-    query("endDate")
-      .exists()
-      .withMessage("endDate is required")
-      .custom(isValidDateFormat),
-  ],
   asyncHandler(async (req: Request, res: Response) => {
-    assertValid(req);
-
-    const startDate = req.query.startDate as string;
-    const endDate = req.query.endDate as string;
+    const { startDate, endDate } = parseQuery(metricsQuery, req.query);
 
     // Validate date range
     const start = new Date(startDate);

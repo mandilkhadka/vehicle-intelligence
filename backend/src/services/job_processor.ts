@@ -10,6 +10,8 @@ import * as path from "path";
 import { z } from "zod";
 import {
   updateJobStatus,
+  touchJobIfProcessing,
+  completeJobIfProcessing,
   createInspection,
   updateInspection,
 } from "../models/inspection";
@@ -35,6 +37,23 @@ const countSchema = z
     if (typeof v !== "number" || Number.isNaN(v) || v < 0) return 0;
     return Math.floor(v);
   });
+
+// Repair-cost objects are cosmetic metadata; a single NaN or missing field
+// must never fail the whole job (the failure path deletes the user's video).
+// Coerce malformed cost objects to undefined instead of rejecting.
+function coerceCostObject(value: unknown): Record<string, unknown> | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) return undefined;
+  const obj = value as Record<string, unknown>;
+  for (const key of ["low", "high", "midpoint"]) {
+    const n = obj[key];
+    if (typeof n !== "number" || !Number.isFinite(n)) return undefined;
+  }
+  if (typeof obj.currency !== "string") return undefined;
+  return obj;
+}
+
+const costSchema = z.unknown().optional().transform(coerceCostObject);
 
 const mlResponseSchema = z
   .object({
@@ -77,7 +96,7 @@ const mlResponseSchema = z
                 type: z.string().optional(),
                 part: z.string().optional(),
                 part_label: z.string().optional(),
-                part_confidence: z.number().min(0).max(1).optional(),
+                part_confidence: confidenceSchema,
                 confidence: confidenceSchema,
                 severity: z.string().optional(),
                 frame: z.string().nullable().optional(),
@@ -89,30 +108,14 @@ const mlResponseSchema = z
                 source: z.string().optional(),
                 rationale: z.string().nullable().optional(),
                 rationale_likely_real: z.boolean().nullable().optional(),
-                estimated_cost: z
-                  .object({
-                    low: z.number(),
-                    high: z.number(),
-                    midpoint: z.number(),
-                    currency: z.string(),
-                  })
-                  .nullable()
-                  .optional(),
+                estimated_cost: costSchema,
               })
               .passthrough(),
           )
           .optional(),
-        total_estimated_repair_cost: z
-          .object({
-            low: z.number(),
-            high: z.number(),
-            midpoint: z.number(),
-            currency: z.string(),
-            has_unknowns: z.boolean().optional(),
-            counted_locations: z.number().optional(),
-            unknown_locations: z.number().optional(),
-          })
-          .optional(),
+        // has_unknowns / counted_locations / unknown_locations ride along
+        // untouched — coerceCostObject returns the full object.
+        total_estimated_repair_cost: costSchema,
         rationale_available: z.boolean().optional(),
         rationale_count: z.number().optional(),
       })
@@ -205,10 +208,54 @@ export async function processVideoJob(
   odometerImagePath?: string,
   vehicleIdentityOverride?: Record<string, unknown>,
 ): Promise<void> {
+  return processInspectionJob(
+    jobId,
+    fileId,
+    { videoPath },
+    odometerImagePath,
+    vehicleIdentityOverride,
+  );
+}
+
+/**
+ * Process a photo-set job. Same pipeline as video, but the ML service uses
+ * the uploaded photos directly as frames (no frame extraction).
+ */
+export async function processPhotoJob(
+  jobId: string,
+  fileId: string,
+  photoPaths: string[],
+  odometerImagePath?: string,
+  vehicleIdentityOverride?: Record<string, unknown>,
+): Promise<void> {
+  return processInspectionJob(
+    jobId,
+    fileId,
+    { photoPaths },
+    odometerImagePath,
+    vehicleIdentityOverride,
+  );
+}
+
+interface InspectionJobMedia {
+  videoPath?: string;
+  photoPaths?: string[];
+}
+
+async function processInspectionJob(
+  jobId: string,
+  fileId: string,
+  media: InspectionJobMedia,
+  odometerImagePath?: string,
+  vehicleIdentityOverride?: Record<string, unknown>,
+): Promise<void> {
   const startTime = Date.now();
 
   try {
-    logger.info({ jobId, fileId, videoPath }, "Starting video processing job");
+    logger.info(
+      { jobId, fileId, videoPath: media.videoPath, photoCount: media.photoPaths?.length },
+      "Starting inspection processing job",
+    );
 
     // Update job status to processing
     updateJobStatus(jobId, {
@@ -226,24 +273,43 @@ export async function processVideoJob(
 
     logger.debug({ jobId, inspectionId }, "Created inspection record");
 
-    // Verify video file exists
-    const absoluteVideoPath = path.isAbsolute(videoPath)
-      ? videoPath
-      : path.join(process.cwd(), videoPath);
+    // Verify media files exist
+    let absoluteVideoPath: string | undefined;
+    let absolutePhotoPaths: string[] | undefined;
+    if (media.photoPaths) {
+      absolutePhotoPaths = media.photoPaths
+        .map((p) => (path.isAbsolute(p) ? p : path.join(process.cwd(), p)))
+        .filter((p) => {
+          if (fs.existsSync(p)) {
+            return true;
+          }
+          logger.warn({ jobId, path: p }, "Photo not found on disk, skipping");
+          return false;
+        });
+      if (absolutePhotoPaths.length === 0) {
+        throw new Error("None of the uploaded photos were found on disk");
+      }
+      logger.debug(
+        { jobId, photoCount: absolutePhotoPaths.length },
+        "Photo files verified",
+      );
+    } else {
+      const videoPath = media.videoPath ?? "";
+      absoluteVideoPath = path.isAbsolute(videoPath)
+        ? videoPath
+        : path.join(process.cwd(), videoPath);
 
-    if (!fs.existsSync(absoluteVideoPath)) {
-      throw new Error(`Video file not found: ${absoluteVideoPath}`);
+      if (!fs.existsSync(absoluteVideoPath)) {
+        throw new Error(`Video file not found: ${absoluteVideoPath}`);
+      }
+
+      logger.debug(
+        { jobId, videoPath: absoluteVideoPath },
+        "Video file verified",
+      );
     }
 
-    logger.debug(
-      { jobId, videoPath: absoluteVideoPath },
-      "Video file verified",
-    );
-
-    updateJobStatus(jobId, {
-      status: "processing",
-      progress: 10,
-    });
+    touchJobIfProcessing(jobId, 10);
 
     // Check ML service health before processing
     const mlServiceHealthUrl = `${config.mlService.url}/health`;
@@ -265,16 +331,10 @@ export async function processVideoJob(
       );
     }
 
-    updateJobStatus(jobId, {
-      status: "processing",
-      progress: 15,
-    });
+    touchJobIfProcessing(jobId, 15);
 
     // Call ML service to process video
-    updateJobStatus(jobId, {
-      status: "processing",
-      progress: 20,
-    });
+    touchJobIfProcessing(jobId, 20);
 
     const mlServiceUrl = `${config.mlService.url}/api/process`;
 
@@ -320,12 +380,10 @@ export async function processVideoJob(
     const startProgressSimulation = () => {
       progressInterval = setInterval(() => {
         if (currentProgress < PROGRESS_SIMULATION.MAX_PROGRESS) {
-          // Cap at 85% during simulation
+          // Cap at 85% during simulation. Guarded update: never resurrect a
+          // job the reaper already marked failed.
           currentProgress += progressIncrement;
-          updateJobStatus(jobId, {
-            status: "processing",
-            progress: currentProgress,
-          });
+          touchJobIfProcessing(jobId, currentProgress);
           logger.debug(
             { jobId, progress: currentProgress },
             "Progress update during ML processing",
@@ -352,10 +410,7 @@ export async function processVideoJob(
       startProgressSimulation();
 
       // Update progress to indicate ML service is initializing
-      updateJobStatus(jobId, {
-        status: "processing",
-        progress: 25,
-      });
+      touchJobIfProcessing(jobId, 25);
       logger.debug(
         { jobId },
         "ML service initializing models (this may take 30-60 seconds)...",
@@ -378,16 +433,14 @@ export async function processVideoJob(
             await sleep(delay);
 
             // Update job status to indicate retry
-            updateJobStatus(jobId, {
-              status: "processing",
-              progress: 20 + retryAttempt * 2,
-            });
+            touchJobIfProcessing(jobId, 20 + retryAttempt * 2);
           }
 
           response = await axios.post(
             mlServiceUrl,
             {
               video_path: absoluteVideoPath,
+              image_paths: absolutePhotoPaths,
               inspection_id: inspectionId,
               odometer_image_path: absoluteOdometerPath,
               vehicle_identity_override: vehicleIdentityOverride,
@@ -475,10 +528,7 @@ export async function processVideoJob(
     logger.info({ jobId, inspectionId }, "ML service processing completed");
 
     // Update progress to show we're processing results
-    updateJobStatus(jobId, {
-      status: "processing",
-      progress: 90,
-    });
+    touchJobIfProcessing(jobId, 90);
 
     // Validate ML response shape before persisting. We don't reject on extra
     // fields — passthrough() preserves them — but we coerce confidences into
@@ -521,12 +571,17 @@ export async function processVideoJob(
       extracted_frames: JSON.stringify(results.frames || []),
     });
 
-    // Update job status to completed
-    updateJobStatus(jobId, {
-      status: "completed",
-      progress: 100,
-      inspection_id: inspectionId,
-    });
+    // Update job status to completed — but only if the job is still
+    // `processing`. If the reaper marked it failed while the ML call was in
+    // flight, leave it failed instead of flipping failed -> completed.
+    const completed = completeJobIfProcessing(jobId, inspectionId);
+    if (!completed) {
+      logger.warn(
+        { jobId, inspectionId },
+        "Job was no longer in 'processing' when ML results arrived (likely reaped); leaving status unchanged",
+      );
+      return;
+    }
 
     const duration = Date.now() - startTime;
     logger.info(
@@ -623,23 +678,57 @@ export async function processVideoJob(
       error_message: errorMessage,
     });
 
-    // Clean up the uploaded video on permanent failure so we don't accumulate
+    // Clean up the uploaded media on permanent failure so we don't accumulate
     // multi-hundred-MB files for jobs that will never succeed. Frames and
     // snapshots are kept for debugging.
     try {
-      const absoluteVideoPath = path.isAbsolute(videoPath)
-        ? videoPath
-        : path.join(process.cwd(), videoPath);
-      if (fs.existsSync(absoluteVideoPath)) {
-        fs.unlinkSync(absoluteVideoPath);
-        logger.info({ jobId, absoluteVideoPath }, "Removed video for failed job");
+      if (media.photoPaths) {
+        removePhotoUploads(jobId, media.photoPaths);
+      } else if (media.videoPath) {
+        const absoluteVideoPath = path.isAbsolute(media.videoPath)
+          ? media.videoPath
+          : path.join(process.cwd(), media.videoPath);
+        if (fs.existsSync(absoluteVideoPath)) {
+          fs.unlinkSync(absoluteVideoPath);
+          logger.info({ jobId, absoluteVideoPath }, "Removed video for failed job");
+        }
       }
     } catch (cleanupError) {
-      logger.warn({ jobId, cleanupError }, "Failed to remove video after job failure");
+      logger.warn({ jobId, cleanupError }, "Failed to remove media after job failure");
     }
 
     throw error;
   }
+}
+
+/**
+ * Remove uploaded photos for a failed job. Photos for a job live together in
+ * uploads/photos/<jobId>/ — remove the whole directory when that's the case,
+ * otherwise fall back to unlinking each file.
+ */
+function removePhotoUploads(jobId: string, photoPaths: string[]): void {
+  if (photoPaths.length === 0) {
+    return;
+  }
+  const first = photoPaths[0];
+  const firstAbsolute = path.isAbsolute(first)
+    ? first
+    : path.join(process.cwd(), first);
+  const photoDir = path.dirname(firstAbsolute);
+  if (path.basename(path.dirname(photoDir)) === "photos") {
+    fs.rmSync(photoDir, { recursive: true, force: true });
+    logger.info({ jobId, photoDir }, "Removed photo directory for failed job");
+    return;
+  }
+  for (const photoPath of photoPaths) {
+    const absolutePath = path.isAbsolute(photoPath)
+      ? photoPath
+      : path.join(process.cwd(), photoPath);
+    if (fs.existsSync(absolutePath)) {
+      fs.unlinkSync(absolutePath);
+    }
+  }
+  logger.info({ jobId, count: photoPaths.length }, "Removed photos for failed job");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

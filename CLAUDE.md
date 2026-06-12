@@ -80,6 +80,9 @@ running jobs; the reaper picks up the pieces on next boot.
 
 Inspection lifecycle:
 - `POST /api/upload/preflight`, `POST /api/upload`, `GET /api/jobs/:id`
+- `POST /api/upload/photos` — photo flow: 1–24 pictures (`photos` field,
+  JPG/PNG/WEBP only — no HEIC, OpenCV can't decode it) stored in
+  `uploads/photos/<jobId>/`; ML uses them directly as frames (no extraction)
 - `GET /api/inspections`, `GET /api/inspections/:id`
 - `PUT /api/inspections/:id/identity`, `PUT /api/inspections/:id/vlm`,
   `POST /api/inspections/:id/retry-vlm`
@@ -99,7 +102,9 @@ Other:
 
 - `POST /api/preflight` — 12-frame sample, returns blur + brightness +
   vehicle-presence diagnostics.
-- `POST /api/process` — full inspection pipeline.
+- `POST /api/process` — full inspection pipeline. Takes exactly one of
+  `video_path` (frames extracted) or `image_paths` (photo flow: uploaded
+  pictures are normalized into the frames dir and used as-is).
 - `POST /api/retry-vlm` — VLM-only rerun from saved organized frames.
 - `GET /health`, `GET /ready` (pass
   `?live_gemini=true&live_openai=true&live_ollama=true` for VLM provider

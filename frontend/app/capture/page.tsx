@@ -10,9 +10,10 @@
  * advancing. While recording we sample the live video frame every 500ms to
  * compute brightness + a cheap blur proxy and warn the user in real time.
  *
- * On stop we hand the resulting Blob to the existing upload flow via
- * localStorage (so /inspect can pick it up) — keeping this page self-contained
- * means we don't have to touch the rest of the upload chain.
+ * On stop we run the recorded Blob through the pre-flight check, upload it
+ * directly via uploadVideo(), and navigate to the job progress page —
+ * keeping this page self-contained means we don't have to touch the rest of
+ * the upload chain.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -25,6 +26,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import { runPreflight, uploadVideo } from "@/lib/api";
+import { getApiErrorMessage } from "@/lib/api-error";
 
 const STAGES = [
   { key: "front", label: "Front", hint: "Stand square to the front of the vehicle." },
@@ -253,7 +255,7 @@ export default function CapturePage() {
       const result = await uploadVideo(file);
       router.push(`/job/${result.jobId}`);
     } catch (err) {
-      setError((err as Error)?.message || "Upload failed");
+      setError(getApiErrorMessage(err, "Upload failed"));
       setBusyMessage(null);
     }
   }, [resultBlob, router]);

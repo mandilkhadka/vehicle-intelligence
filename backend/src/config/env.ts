@@ -29,6 +29,16 @@ const envSchema = z.object({
     .transform(Number)
     .pipe(z.number().int().positive())
     .default("600000"),
+  STUCK_PROCESSING_MAX_MINUTES: z
+    .string()
+    .transform(Number)
+    .pipe(z.number().int().positive())
+    .optional(),
+  STUCK_PENDING_MAX_MINUTES: z
+    .string()
+    .transform(Number)
+    .pipe(z.number().int().positive())
+    .optional(),
 });
 
 type EnvConfig = z.infer<typeof envSchema>;
@@ -96,6 +106,16 @@ export const config = {
   rateLimit: {
     windowMs: env.RATE_LIMIT_WINDOW_MS,
     maxRequests: env.RATE_LIMIT_MAX_REQUESTS,
+  },
+  reaper: {
+    // A job legitimately stays in `processing` for as long as the ML request
+    // runs, and simulated progress stops touching updated_at at 85%. Derive
+    // the default threshold from the ML timeout so raising
+    // ML_SERVICE_TIMEOUT_MS can never make the reaper kill in-flight jobs.
+    processingMaxMinutes:
+      env.STUCK_PROCESSING_MAX_MINUTES ??
+      Math.max(30, Math.ceil(env.ML_SERVICE_TIMEOUT_MS / 60000) + 5),
+    pendingMaxMinutes: env.STUCK_PENDING_MAX_MINUTES ?? 60,
   },
   trustProxy: env.TRUST_PROXY,
   logging: {

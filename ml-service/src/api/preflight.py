@@ -13,6 +13,7 @@ app.state.model_registry.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -23,6 +24,7 @@ import numpy as np
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 
+from src.services.model_registry import YOLO_INFERENCE_LOCK
 from src.utils.path_validator import path_validator
 
 logger = logging.getLogger(__name__)
@@ -144,10 +146,6 @@ async def preflight(request: PreflightRequest, http_request: Request):
     Returns an actionable issue list. `can_proceed` is true only when no
     blocking issues are found; warnings are advisory and don't block.
     """
-    start = time.time()
-    issues: List[str] = []
-    warnings: List[str] = []
-
     # Security: keep path traversal protection consistent with /process.
     try:
         path_validator.validate_or_raise(request.video_path, "video")
@@ -160,7 +158,23 @@ async def preflight(request: PreflightRequest, http_request: Request):
             detail=f"Video file not found: {request.video_path}",
         )
 
-    capture = cv2.VideoCapture(request.video_path)
+    model_registry = getattr(http_request.app.state, "model_registry", None)
+    yolo = model_registry.get_yolo_model() if model_registry and model_registry.is_initialized else None
+
+    # All the cv2 decoding + YOLO inference below is synchronous and can take
+    # several seconds on CPU; run it in a worker thread so the event loop can
+    # keep serving /health and concurrent requests. HTTPExceptions raised in
+    # the helper propagate through the awaited thread unchanged.
+    return await asyncio.to_thread(_preflight_sync, request.video_path, yolo)
+
+
+def _preflight_sync(video_path: str, yolo: Any) -> PreflightResponse:
+    """Synchronous body of the preflight check (runs in a worker thread)."""
+    start = time.time()
+    issues: List[str] = []
+    warnings: List[str] = []
+
+    capture = cv2.VideoCapture(video_path)
     if not capture.isOpened():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -217,14 +231,13 @@ async def preflight(request: PreflightRequest, http_request: Request):
         vehicle_visible_count = 0
         bbox_centres_x: List[Optional[float]] = []
 
-        model_registry = getattr(http_request.app.state, "model_registry", None)
-        yolo = model_registry.get_yolo_model() if model_registry and model_registry.is_initialized else None
-
         # Batch YOLO across sampled frames in one call (much faster than per-frame).
+        # The shared ultralytics instance is not thread-safe; hold the lock.
         batch_results: List[Any] = []
         if yolo is not None:
             try:
-                batch_results = list(yolo(frames))
+                with YOLO_INFERENCE_LOCK:
+                    batch_results = list(yolo(frames))
             except Exception as exc:
                 logger.warning("Preflight YOLO batch failed: %s", exc)
                 batch_results = []

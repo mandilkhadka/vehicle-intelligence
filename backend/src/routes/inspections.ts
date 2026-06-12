@@ -5,18 +5,73 @@
 
 import { Router, Request, Response } from "express";
 import axios from "axios";
-import { body, param, query } from "express-validator";
+import { z } from "zod";
 import {
   getInspectionById,
-  getAllInspections,
+  listInspections,
+  countInspections,
   updateInspection,
   type InspectionRecord,
 } from "../models/inspection";
-import { asyncHandler, assertValid, CustomError } from "../middleware/errorHandler";
+import { asyncHandler, CustomError } from "../middleware/errorHandler";
+import { parseParams, parseQuery, parseBody } from "../utils/validate";
 import { config } from "../config/env";
 import logger from "../utils/logger";
 
 const router = Router();
+
+const inspectionParams = z.object({
+  id: z.string().uuid("Inspection ID must be a valid UUID"),
+});
+
+const listQuery = z.object({
+  limit: z.coerce
+    .number()
+    .int("Limit must be between 1 and 100")
+    .min(1, "Limit must be between 1 and 100")
+    .max(100, "Limit must be between 1 and 100")
+    .optional(),
+  offset: z.coerce
+    .number()
+    .int("Offset must be a non-negative integer")
+    .min(0, "Offset must be a non-negative integer")
+    .optional(),
+});
+
+const identityStringField = z
+  .string()
+  .max(200, "must be a string up to 200 characters")
+  .nullish();
+
+// Gatekeeping only — the handler keeps reading req.body through
+// identityOverrideFromBody, which drops anything it doesn't recognize.
+const identityBody = z
+  .object({
+    source: identityStringField,
+    vehicle_identity_source: identityStringField,
+    brand: identityStringField,
+    vehicle_brand: identityStringField,
+    model: identityStringField,
+    vehicle_model: identityStringField,
+    year: identityStringField,
+    vehicle_year: identityStringField,
+    variant: identityStringField,
+    vehicle_variant: identityStringField,
+    type: identityStringField,
+    vehicle_type: identityStringField,
+    vehicle_category: identityStringField,
+    category: identityStringField,
+    color: identityStringField,
+    vehicle_color: identityStringField,
+    vin: identityStringField,
+    registration: identityStringField,
+    confidence: z.coerce
+      .number()
+      .min(0, "confidence must be between 0 and 1")
+      .max(1, "confidence must be between 0 and 1")
+      .nullish(),
+  })
+  .passthrough();
 
 const IDENTITY_FIELDS = [
   "brand",
@@ -297,30 +352,16 @@ function buildVlmUpdate(
  */
 router.get(
   "/",
-  [
-    query("limit")
-      .optional()
-      .isInt({ min: 1, max: 100 })
-      .withMessage("Limit must be between 1 and 100"),
-    query("offset")
-      .optional()
-      .isInt({ min: 0 })
-      .withMessage("Offset must be a non-negative integer"),
-  ],
   asyncHandler(async (req: Request, res: Response) => {
-    assertValid(req);
+    const { limit, offset = 0 } = parseQuery(listQuery, req.query);
 
-    logger.debug("Fetching all inspections");
-    const inspections = getAllInspections();
-    
-    // Simple pagination (if needed, can be enhanced with database-level pagination)
-    const limit = req.query.limit ? parseInt(req.query.limit as string) : undefined;
-    const offset = req.query.offset ? parseInt(req.query.offset as string) : 0;
-    
-    const paginatedInspections = (limit
-      ? inspections.slice(offset, offset + limit)
-      : inspections.slice(offset)
-    ).map((insp) => {
+    logger.debug({ limit, offset }, "Fetching inspections");
+
+    // Pagination happens in SQL — the table can hold multi-KB JSON blobs per
+    // row, so loading everything per poll is O(total inspections).
+    // limit -1 = unlimited (backward-compatible default).
+    const total = countInspections();
+    const paginatedInspections = listInspections(limit ?? -1, offset).map((insp) => {
       const out: Record<string, unknown> = { ...insp };
       if (insp.damage_summary) {
         try {
@@ -349,8 +390,8 @@ router.get(
 
     res.json({
       data: paginatedInspections,
-      total: inspections.length,
-      limit: limit || inspections.length,
+      total,
+      limit: limit || total,
       offset,
     });
   })
@@ -362,45 +403,9 @@ router.get(
  */
 router.put(
   "/:id/identity",
-  [
-    param("id")
-      .isUUID()
-      .withMessage("Inspection ID must be a valid UUID"),
-    ...[
-      "source",
-      "vehicle_identity_source",
-      "brand",
-      "vehicle_brand",
-      "model",
-      "vehicle_model",
-      "year",
-      "vehicle_year",
-      "variant",
-      "vehicle_variant",
-      "type",
-      "vehicle_type",
-      "vehicle_category",
-      "category",
-      "color",
-      "vehicle_color",
-      "vin",
-      "registration",
-    ].map((fieldName) =>
-      body(fieldName)
-        .optional({ nullable: true })
-        .isString()
-        .isLength({ max: 200 })
-        .withMessage(`${fieldName} must be a string up to 200 characters`),
-    ),
-    body("confidence")
-      .optional({ nullable: true })
-      .isFloat({ min: 0, max: 1 })
-      .withMessage("confidence must be between 0 and 1"),
-  ],
   asyncHandler(async (req: Request, res: Response) => {
-    assertValid(req);
-
-    const inspectionId = req.params.id;
+    const { id: inspectionId } = parseParams(inspectionParams, req.params);
+    parseBody(identityBody, req.body ?? {});
     const inspection = getInspectionById(inspectionId);
     if (!inspection) {
       throw new CustomError("Inspection not found", 404, "INSPECTION_NOT_FOUND");
@@ -444,15 +449,8 @@ router.put(
  */
 router.put(
   "/:id/vlm",
-  [
-    param("id")
-      .isUUID()
-      .withMessage("Inspection ID must be a valid UUID"),
-  ],
   asyncHandler(async (req: Request, res: Response) => {
-    assertValid(req);
-
-    const inspectionId = req.params.id;
+    const { id: inspectionId } = parseParams(inspectionParams, req.params);
     const inspection = getInspectionById(inspectionId);
     if (!inspection) {
       throw new CustomError("Inspection not found", 404, "INSPECTION_NOT_FOUND");
@@ -496,15 +494,8 @@ router.put(
  */
 router.post(
   "/:id/retry-vlm",
-  [
-    param("id")
-      .isUUID()
-      .withMessage("Inspection ID must be a valid UUID"),
-  ],
   asyncHandler(async (req: Request, res: Response) => {
-    assertValid(req);
-
-    const inspectionId = req.params.id;
+    const { id: inspectionId } = parseParams(inspectionParams, req.params);
     const inspection = getInspectionById(inspectionId);
     if (!inspection) {
       throw new CustomError("Inspection not found", 404, "INSPECTION_NOT_FOUND");
@@ -603,15 +594,8 @@ router.post(
  */
 router.get(
   "/:id",
-  [
-    param("id")
-      .isUUID()
-      .withMessage("Inspection ID must be a valid UUID"),
-  ],
   asyncHandler(async (req: Request, res: Response) => {
-    assertValid(req);
-
-    const inspectionId = req.params.id;
+    const { id: inspectionId } = parseParams(inspectionParams, req.params);
     logger.debug({ inspectionId }, "Fetching inspection");
 
     const inspection = getInspectionById(inspectionId);

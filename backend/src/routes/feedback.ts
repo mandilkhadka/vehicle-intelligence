@@ -14,6 +14,7 @@
 import { Router, Request, Response } from "express";
 import { z } from "zod";
 import { asyncHandler, CustomError } from "../middleware/errorHandler";
+import { parseBody, parseParams } from "../utils/validate";
 import {
   createDamageFeedback,
   createMissingDamage,
@@ -25,6 +26,7 @@ import {
   listUncertainDetections,
   type FeedbackVerdict,
 } from "../models/feedback";
+import { getInspectionById, type InspectionRecord } from "../models/inspection";
 
 const router = Router();
 
@@ -58,27 +60,72 @@ const missingBody = z.object({
   reviewer: z.string().regex(reviewerPattern).optional(),
 });
 
-function parseBody<T extends z.ZodTypeAny>(schema: T, body: unknown): z.infer<T> {
-  const result = schema.safeParse(body);
-  if (!result.success) {
-    const issues = result.error.issues
-      .map((i) => `${i.path.join(".")}: ${i.message}`)
-      .join("; ");
+const inspectionParams = z.object({
+  id: z.string().uuid("Inspection ID must be a valid UUID"),
+});
+
+const feedbackDeleteParams = inspectionParams.extend({
+  fid: z.string().uuid("Feedback ID must be a valid UUID"),
+});
+
+const missingDeleteParams = inspectionParams.extend({
+  mid: z.string().uuid("Missing-damage report ID must be a valid UUID"),
+});
+
+/**
+ * Resolve the inspection or throw the same 404 the other routes use.
+ * Without this check, the damage_feedback FK would surface a raw SqliteError
+ * as a 500 INTERNAL_ERROR for unknown inspection ids.
+ */
+function requireInspection(id: string): InspectionRecord {
+  const inspection = getInspectionById(id);
+  if (!inspection) {
+    throw new CustomError("Inspection not found", 404, "INSPECTION_NOT_FOUND");
+  }
+  return inspection;
+}
+
+/**
+ * Feedback is keyed positionally by (inspection_id, location_index). Reject
+ * indexes past the end of damage_summary.locations when the summary is
+ * parseable; skip the check otherwise (we can't verify).
+ */
+function assertLocationIndexInRange(
+  inspection: InspectionRecord,
+  locationIndex: number,
+): void {
+  if (!inspection.damage_summary) {
+    return;
+  }
+  let locations: unknown[] | null = null;
+  try {
+    const parsed = JSON.parse(inspection.damage_summary) as {
+      locations?: unknown;
+    };
+    if (Array.isArray(parsed?.locations)) {
+      locations = parsed.locations;
+    }
+  } catch {
+    return;
+  }
+  if (locations && locationIndex >= locations.length) {
     throw new CustomError(
-      `Invalid request body — ${issues}`,
+      `location_index ${locationIndex} is out of range — inspection has ${locations.length} damage location(s)`,
       400,
       "VALIDATION_ERROR",
     );
   }
-  return result.data;
 }
 
 router.post(
   "/inspections/:id/feedback",
   asyncHandler(async (req: Request, res: Response) => {
+    const { id } = parseParams(inspectionParams, req.params);
     const body = parseBody(feedbackBody, req.body);
+    const inspection = requireInspection(id);
+    assertLocationIndexInRange(inspection, body.location_index);
     const record = createDamageFeedback({
-      inspectionId: req.params.id,
+      inspectionId: id,
       locationIndex: body.location_index,
       verdict: body.verdict as FeedbackVerdict,
       correctedType: body.corrected_type,
@@ -93,14 +140,17 @@ router.post(
 router.get(
   "/inspections/:id/feedback",
   asyncHandler(async (req: Request, res: Response) => {
-    res.json(listFeedbackForInspection(req.params.id));
+    const { id } = parseParams(inspectionParams, req.params);
+    requireInspection(id);
+    res.json(listFeedbackForInspection(id));
   }),
 );
 
 router.delete(
   "/inspections/:id/feedback/:fid",
   asyncHandler(async (req: Request, res: Response) => {
-    const removed = deleteDamageFeedback(req.params.fid);
+    const { fid } = parseParams(feedbackDeleteParams, req.params);
+    const removed = deleteDamageFeedback(fid);
     if (!removed) {
       throw new CustomError("Feedback not found", 404, "NOT_FOUND");
     }
@@ -111,9 +161,11 @@ router.delete(
 router.post(
   "/inspections/:id/missing-damage",
   asyncHandler(async (req: Request, res: Response) => {
+    const { id } = parseParams(inspectionParams, req.params);
     const body = parseBody(missingBody, req.body);
+    requireInspection(id);
     const record = createMissingDamage({
-      inspectionId: req.params.id,
+      inspectionId: id,
       framePath: body.frame_path,
       bbox: body.bbox,
       type: body.type,
@@ -129,14 +181,17 @@ router.post(
 router.get(
   "/inspections/:id/missing-damage",
   asyncHandler(async (req: Request, res: Response) => {
-    res.json(listMissingForInspection(req.params.id));
+    const { id } = parseParams(inspectionParams, req.params);
+    requireInspection(id);
+    res.json(listMissingForInspection(id));
   }),
 );
 
 router.delete(
   "/inspections/:id/missing-damage/:mid",
   asyncHandler(async (req: Request, res: Response) => {
-    const removed = deleteMissingDamage(req.params.mid);
+    const { mid } = parseParams(missingDeleteParams, req.params);
+    const removed = deleteMissingDamage(mid);
     if (!removed) {
       throw new CustomError("Missing-damage report not found", 404, "NOT_FOUND");
     }

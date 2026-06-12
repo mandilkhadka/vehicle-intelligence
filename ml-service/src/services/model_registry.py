@@ -4,6 +4,7 @@ Provides centralized loading and access to ML models to avoid redundant loading 
 """
 
 import os
+import threading
 import time
 import logging
 from typing import Optional, List
@@ -13,6 +14,16 @@ from src.config.constants import MODELS
 from src.services.damage_model import DamageDetectionModel
 
 logger = logging.getLogger(__name__)
+
+# Serializes inference on the SHARED general-purpose YOLO instance. The same
+# object is handed to VehicleIdentifier, DamageDetector, ExhaustClassifier,
+# VehicleFrameOrganizer, and /api/preflight, and the pipeline runs several of
+# those concurrently (asyncio.gather + to_thread). Ultralytics models share a
+# single internal predictor and are NOT safe for concurrent predict() calls
+# from multiple threads — results can interleave or crash. Every call site
+# that invokes the shared YOLO model must hold this lock. The dedicated
+# damage model is only used by the damage stage and needs no lock.
+YOLO_INFERENCE_LOCK = threading.Lock()
 
 
 def _resolve_device() -> str:

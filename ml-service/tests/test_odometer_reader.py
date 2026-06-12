@@ -248,6 +248,95 @@ def test_openai_validates_ocr_candidates_when_gemini_unavailable():
     assert reader.openai_client.responses.calls
 
 
+class FakeOdometerOllama:
+    """Fake OllamaClient returning a canned JSON per image path."""
+
+    def __init__(self, responses_by_frame):
+        self.available = True
+        self.vision_model = "qwen2.5vl"
+        self.text_model = "gemma2:9b"
+        self.timeout_seconds = 120.0
+        self.last_error = None
+        self.calls = []
+        self._responses = responses_by_frame
+
+    def chat_json(self, prompt, *, image_paths=None, model=None, force_json=True, timeout_seconds=None):
+        self.calls.append({"image_paths": image_paths, "model": model, "timeout_seconds": timeout_seconds})
+        if image_paths:
+            return self._responses.get(image_paths[0])
+        return self._responses.get(None)
+
+
+def test_ollama_vision_prefers_real_reading_over_confident_null(temp_dir):
+    """A confident "odometer not visible" (value=null) frame must not outrank
+    a genuine reading from another frame."""
+    frame_a = temp_dir / "a.jpg"
+    frame_b = temp_dir / "b.jpg"
+    for frame in (frame_a, frame_b):
+        cv2.imwrite(str(frame), np.zeros((80, 120, 3), dtype=np.uint8))
+
+    reader = OdometerReader.__new__(OdometerReader)
+    reader.ocr_available = False
+    reader.use_paddle = False
+    reader.use_gemini = False
+    reader.use_openai = False
+    reader.use_ollama = True
+    reader.ollama = FakeOdometerOllama({
+        str(frame_a): '{"value": null, "confidence": 0.9, "reasoning": "not visible"}',
+        str(frame_b): '{"value": 123456, "confidence": 0.7, "reasoning": "ODO readable"}',
+    })
+
+    result = reader._read_sync([str(frame_a), str(frame_b)])
+
+    assert result["value"] == 123456
+    assert result["confidence"] == 0.7
+    assert result["source"] == "ollama_vision"
+    assert result["speedometer_image_path"] == str(frame_b)
+    # Per-frame Ollama calls are capped below the odometer stage budget so the
+    # Gemini/OpenAI fallbacks remain reachable when Ollama hangs.
+    assert reader.ollama.calls
+    for call in reader.ollama.calls:
+        assert call["timeout_seconds"] is not None
+        assert call["timeout_seconds"] <= 25.0
+
+
+def test_vlm_validated_reading_is_returned_directly_without_rerank_deflation(temp_dir, monkeypatch):
+    """A VLM-validated OCR reading must keep the validator's confidence —
+    re-ranking it (occurrences=1, no preprocessing diversity) would deflate
+    e.g. 0.9 to ~0.77 and needlessly flag manual review."""
+    image_path = temp_dir / "dash.jpg"
+    cv2.imwrite(str(image_path), np.zeros((80, 160, 3), dtype=np.uint8))
+
+    class FakeTesseract:
+        @staticmethod
+        def image_to_string(image, config=None, timeout=None):
+            return "112028" if "--psm 6" in (config or "") else ""
+
+    reader = OdometerReader.__new__(OdometerReader)
+    reader.ocr_available = True
+    reader.use_paddle = False
+    reader.use_gemini = False
+    reader.use_openai = False
+    reader.use_ollama = True
+    reader.tesseract_config = r"--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789"
+
+    monkeypatch.setattr(odometer_module, "TESSERACT_AVAILABLE", True)
+    monkeypatch.setattr(odometer_module, "pytesseract", FakeTesseract)
+    monkeypatch.setattr(reader, "_preprocess_image", lambda frame_path: [(str(image_path), "original")])
+    monkeypatch.setattr(
+        reader,
+        "_validate_ocr_readings_with_vlm",
+        lambda *args, **kwargs: {"value": 112028, "confidence": 0.9, "frame": str(image_path)},
+    )
+
+    result = reader._read_sync([str(image_path)])
+
+    assert result["value"] == 112028
+    assert result["confidence"] == 0.9
+    assert result["source"] == "local_ocr+vlm_validated"
+    assert result["reason"] is None
+
+
 def test_local_ocr_low_confidence_result_includes_verification_reason(temp_dir, monkeypatch):
     image_a = temp_dir / "dashboard_a.jpg"
     image_b = temp_dir / "dashboard_b.jpg"

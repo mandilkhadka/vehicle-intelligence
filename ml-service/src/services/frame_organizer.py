@@ -17,6 +17,7 @@ import numpy as np
 from PIL import Image
 from ultralytics import YOLO
 
+from src.services.model_registry import YOLO_INFERENCE_LOCK
 from src.utils.image_quality import enhance_image_for_analysis, write_jpeg
 
 logger = logging.getLogger(__name__)
@@ -1057,7 +1058,8 @@ class VehicleFrameOrganizer:
         if self.yolo_model is None:
             return None, 0.0
         try:
-            results = self.yolo_model(frame_path)
+            with YOLO_INFERENCE_LOCK:
+                results = self.yolo_model(frame_path)
         except Exception as e:
             logger.warning("FrameOrganizer: YOLO failed for %s: %s", frame_path, e)
             return None, 0.0

@@ -383,10 +383,10 @@ describe("InspectionPage", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Interactive 360 Inspection Viewer")).toBeInTheDocument();
-      expect(screen.getByText("Details")).toBeInTheDocument();
+      expect(screen.getByText("Interior")).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByText("Details"));
+    fireEvent.click(screen.getByText("Interior"));
 
     await waitFor(() => {
       expect(screen.getAllByText("dashboard").length).toBeGreaterThan(0);

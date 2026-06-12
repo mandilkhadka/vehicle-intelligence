@@ -81,6 +81,70 @@ export async function uploadVideo(
   return response.data;
 }
 
+/**
+ * Upload a set of vehicle photos to the backend (photo-based inspection).
+ * Mirrors uploadVideo(): multipart form, progress callback, optional
+ * odometer image and vehicle identity fields.
+ * @param files - 1–24 image files (.jpg/.jpeg/.png/.webp)
+ * @param odometerImage - Optional odometer image file
+ * @param onProgress - Optional callback for upload progress
+ * @returns Promise with job ID and file info
+ */
+export async function uploadPhotos(
+  files: File[],
+  odometerImage?: File | null,
+  onProgress?: (progress: number) => void,
+  vehicleIdentity?: {
+    vehicle_identity_source?: string;
+    vehicle_brand?: string;
+    vehicle_model?: string;
+    vehicle_year?: string;
+    vehicle_variant?: string;
+    vehicle_type?: string;
+    vehicle_category?: string;
+    vin?: string;
+    registration?: string;
+  },
+): Promise<{
+  jobId: string;
+  fileId: string;
+  photoCount: number;
+  message?: string;
+  odometerImageUploaded?: boolean;
+  vehicleIdentityEvidenceUploaded?: boolean;
+}> {
+  const formData = new FormData();
+  files.forEach((file) => {
+    formData.append("photos", file);
+  });
+  if (odometerImage) {
+    formData.append("odometer_image", odometerImage);
+  }
+  if (vehicleIdentity) {
+    Object.entries(vehicleIdentity).forEach(([key, value]) => {
+      if (value && value.trim()) {
+        formData.append(key, value.trim());
+      }
+    });
+  }
+
+  const response = await apiClient.post("/upload/photos", formData, {
+    headers: {
+      "Content-Type": "multipart/form-data",
+    },
+    onUploadProgress: (progressEvent) => {
+      if (onProgress && progressEvent.total) {
+        const percentCompleted = Math.round(
+          (progressEvent.loaded * 100) / progressEvent.total,
+        );
+        onProgress(percentCompleted);
+      }
+    },
+  });
+
+  return response.data;
+}
+
 export interface PreflightResult {
   ok: boolean;
   can_proceed: boolean;
@@ -185,12 +249,14 @@ export async function getJobStatus(jobId: string): Promise<{
   status: "pending" | "processing" | "completed" | "failed";
   progress?: number;
   inspectionId?: string;
-  inspection_id?: string;
   error?: string;
   error_message?: string;
 }> {
   const response = await apiClient.get(`/jobs/${jobId}`);
-  return response.data;
+  const data = response.data;
+  // Normalize the backend's snake_case variant so consumers only ever see
+  // `inspectionId`.
+  return { ...data, inspectionId: data.inspectionId ?? data.inspection_id };
 }
 
 /**

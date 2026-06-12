@@ -123,6 +123,12 @@ CREATE INDEX IF NOT EXISTS idx_damage_feedback_inspection
     ON damage_feedback(inspection_id);
 CREATE INDEX IF NOT EXISTS idx_damage_feedback_created_at
     ON damage_feedback(created_at);
+-- One verdict per (inspection_id, location_index) — the documented feedback
+-- key. Re-reviews upsert in place (see createDamageFeedback). Existing DBs
+-- with duplicates are deduped by the init.ts migration before this index is
+-- (re)attempted there.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_damage_feedback_key
+    ON damage_feedback(inspection_id, location_index);
 CREATE INDEX IF NOT EXISTS idx_damage_missing_inspection
     ON damage_missing_reports(inspection_id);
 CREATE INDEX IF NOT EXISTS idx_damage_missing_created_at

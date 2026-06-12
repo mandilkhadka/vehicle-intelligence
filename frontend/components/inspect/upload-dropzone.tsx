@@ -2,16 +2,22 @@
 
 import React from "react"
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect, useRef } from "react"
 import { Upload, Film, X, FileVideo, CheckCircle2, AlertCircle, ShieldCheck, AlertTriangle } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
+import { Callout } from "@/components/ui/callout"
 import { Progress } from "@/components/ui/progress"
 import { cn } from "@/lib/utils"
 import { uploadVideo, runPreflight, type PreflightResult } from "@/lib/api"
+import { getApiErrorMessage } from "@/lib/api-error"
+import {
+  EMPTY_IDENTITY,
+  IdentityFields,
+  identityPayload,
+  type IdentityMetadata,
+} from "@/components/inspect/identity-fields"
 
-interface UploadedFile {
+export interface UploadedFile {
   id: string
   name: string
   size: number
@@ -28,30 +34,21 @@ interface UploadDropzoneProps {
   onFilesUploaded: (files: UploadedFile[]) => void
 }
 
-interface IdentityMetadata {
-  vehicle_brand: string
-  vehicle_model: string
-  vin: string
-  registration: string
-  vehicle_year: string
-  vehicle_variant: string
-  vehicle_type: string
-  vehicle_category: string
-}
-
 export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
   const [isDragging, setIsDragging] = useState(false)
   const [files, setFiles] = useState<UploadedFile[]>([])
-  const [identityMetadata, setIdentityMetadata] = useState<IdentityMetadata>({
-    vehicle_brand: "",
-    vehicle_model: "",
-    vin: "",
-    registration: "",
-    vehicle_year: "",
-    vehicle_variant: "",
-    vehicle_type: "",
-    vehicle_category: "",
-  })
+  const [identityMetadata, setIdentityMetadata] = useState<IdentityMetadata>(EMPTY_IDENTITY)
+  // The upload may start long after the video is dropped (pre-flight) and
+  // the user may still be typing identity fields. Read them through a ref at
+  // upload time so late edits aren't silently dropped.
+  const identityRef = useRef<IdentityMetadata>(EMPTY_IDENTITY)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+
+  // Keep the parent in sync with the FULL file list on every change so a
+  // second uploaded video never silently replaces the first one.
+  useEffect(() => {
+    onFilesUploaded(files)
+  }, [files, onFilesUploaded])
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -114,7 +111,7 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
             prev.map((f) => (f.id === newFile.id ? { ...f, progress } : f))
           )
         },
-        identityPayload(identityMetadata),
+        identityPayload(identityRef.current),
       )
 
       // Upload complete, now processing
@@ -133,22 +130,21 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
             f.id === newFile.id ? { ...f, status: "complete" } : f
           )
         )
-        onFilesUploaded([{ ...newFile, progress: 100, status: "complete", jobId: result.jobId }])
       }, 500)
-    } catch (error: any) {
+    } catch (error) {
       setFiles((prev) =>
         prev.map((f) =>
           f.id === newFile.id
             ? {
                 ...f,
                 status: "error",
-                error: error?.response?.data?.error || error?.message || "Upload failed",
+                error: getApiErrorMessage(error, "Upload failed"),
               }
             : f
         )
       )
     }
-  }, [identityMetadata, onFilesUploaded])
+  }, [])
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -158,7 +154,7 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
       const droppedFiles = Array.from(e.dataTransfer.files)
       const videoFiles = droppedFiles.filter((f) => f.type.startsWith("video/"))
       const imageFiles = droppedFiles.filter((f) => f.type.startsWith("image/"))
-      
+
       videoFiles.forEach((file) => {
         handleUpload(file, imageFiles[0] || null)
       })
@@ -172,7 +168,7 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
         const selectedFiles = Array.from(e.target.files)
         const videoFiles = selectedFiles.filter((f) => f.type.startsWith("video/"))
         const imageFiles = selectedFiles.filter((f) => f.type.startsWith("image/"))
-        
+
         videoFiles.forEach((file) => {
           handleUpload(file, imageFiles[0] || null)
         })
@@ -182,11 +178,7 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
   )
 
   const removeFile = (id: string) => {
-    setFiles((prev) => {
-      const next = prev.filter((f) => f.id !== id)
-      onFilesUploaded(next)
-      return next
-    })
+    setFiles((prev) => prev.filter((f) => f.id !== id))
   }
 
   const uploadAnyway = useCallback(
@@ -208,28 +200,44 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
   }
 
   const updateIdentityMetadata = (field: keyof IdentityMetadata, value: string) => {
+    identityRef.current = { ...identityRef.current, [field]: value }
     setIdentityMetadata((prev) => ({ ...prev, [field]: value }))
   }
+
+  const openFilePicker = () => fileInputRef.current?.click()
 
   return (
     <div className="space-y-4">
       <div
+        role="button"
+        tabIndex={0}
+        aria-label="Upload a 360° vehicle video"
+        onClick={openFilePicker}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault()
+            openFilePicker()
+          }
+        }}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         className={cn(
-          "relative flex min-h-[320px] cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed transition-all",
+          "relative flex min-h-[320px] cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           isDragging
             ? "border-primary bg-primary/5"
             : "border-border bg-secondary/30 hover:border-primary/50 hover:bg-secondary/50"
         )}
       >
         <input
+          ref={fileInputRef}
           type="file"
           accept="video/*,image/*"
           multiple
           onChange={handleFileInput}
-          className="absolute inset-0 cursor-pointer opacity-0"
+          className="sr-only"
+          tabIndex={-1}
+          aria-hidden="true"
         />
 
         <div className="flex flex-col items-center gap-4 p-8 text-center">
@@ -255,64 +263,20 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
             <span>Odometer image optional</span>
           </div>
 
-          <Button variant="outline" className="mt-2 bg-transparent">
+          <Button
+            variant="outline"
+            className="mt-2 bg-transparent"
+            onClick={(e) => {
+              e.stopPropagation()
+              openFilePicker()
+            }}
+          >
             Browse Files
           </Button>
         </div>
       </div>
 
-      <div className="rounded-lg border border-border bg-card p-4">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field
-            id="vehicle_brand"
-            label="Make"
-            value={identityMetadata.vehicle_brand}
-            onChange={(value) => updateIdentityMetadata("vehicle_brand", value)}
-          />
-          <Field
-            id="vehicle_model"
-            label="Model"
-            value={identityMetadata.vehicle_model}
-            onChange={(value) => updateIdentityMetadata("vehicle_model", value)}
-          />
-          <Field
-            id="vin"
-            label="VIN / chassis"
-            value={identityMetadata.vin}
-            onChange={(value) => updateIdentityMetadata("vin", value)}
-          />
-          <Field
-            id="registration"
-            label="Registration"
-            value={identityMetadata.registration}
-            onChange={(value) => updateIdentityMetadata("registration", value)}
-          />
-          <Field
-            id="vehicle_year"
-            label="Year"
-            value={identityMetadata.vehicle_year}
-            onChange={(value) => updateIdentityMetadata("vehicle_year", value)}
-          />
-          <Field
-            id="vehicle_variant"
-            label="Trim / variant"
-            value={identityMetadata.vehicle_variant}
-            onChange={(value) => updateIdentityMetadata("vehicle_variant", value)}
-          />
-          <Field
-            id="vehicle_type"
-            label="Vehicle type"
-            value={identityMetadata.vehicle_type}
-            onChange={(value) => updateIdentityMetadata("vehicle_type", value)}
-          />
-          <Field
-            id="vehicle_category"
-            label="Category"
-            value={identityMetadata.vehicle_category}
-            onChange={(value) => updateIdentityMetadata("vehicle_category", value)}
-          />
-        </div>
-      </div>
+      <IdentityFields value={identityMetadata} onFieldChange={updateIdentityMetadata} />
 
       {files.length > 0 && (
         <div className="space-y-3">
@@ -333,6 +297,7 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
                     variant="ghost"
                     size="icon"
                     className="h-6 w-6"
+                    aria-label={`Remove ${file.name}`}
                     onClick={() => removeFile(file.id)}
                   >
                     <X className="h-4 w-4" />
@@ -402,7 +367,7 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
                   />
                 )}
                 {file.status === "preflight_blocked" && file.preflight && (
-                  <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200">
+                  <Callout variant="warning" icon={false} className="mt-2 p-2 text-xs">
                     <p className="font-medium">Fix these before re-uploading:</p>
                     <ul className="mt-1 list-inside list-disc space-y-0.5">
                       {file.preflight.issues.map((issue) => (
@@ -418,7 +383,7 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
                         {" "}Vehicle visible {Math.round((file.preflight.vehicle_visible_ratio ?? 0) * 100)}%
                       </span>
                     </div>
-                  </div>
+                  </Callout>
                 )}
                 {file.preflight?.warnings?.length ? (
                   <div className="mt-2 rounded-md border border-border bg-secondary/40 p-2 text-xs text-muted-foreground">
@@ -439,50 +404,3 @@ export function UploadDropzone({ onFilesUploaded }: UploadDropzoneProps) {
   )
 }
 
-function identityPayload(metadata: IdentityMetadata) {
-  const payload = {
-    vehicle_identity_source: "upload_form",
-    vehicle_brand: metadata.vehicle_brand.trim(),
-    vehicle_model: metadata.vehicle_model.trim(),
-    vin: metadata.vin.trim(),
-    registration: metadata.registration.trim(),
-    vehicle_year: metadata.vehicle_year.trim(),
-    vehicle_variant: metadata.vehicle_variant.trim(),
-    vehicle_type: metadata.vehicle_type.trim(),
-    vehicle_category: metadata.vehicle_category.trim(),
-  }
-  const hasEvidence = Boolean(
-    payload.vehicle_brand ||
-      payload.vehicle_model ||
-      payload.vin ||
-      payload.registration ||
-      payload.vehicle_year ||
-      payload.vehicle_variant ||
-      payload.vehicle_type ||
-      payload.vehicle_category,
-  )
-  return hasEvidence ? payload : undefined
-}
-
-function Field({
-  id,
-  label,
-  value,
-  onChange,
-}: {
-  id: keyof IdentityMetadata
-  label: string
-  value: string
-  onChange: (value: string) => void
-}) {
-  return (
-    <div className="space-y-2">
-      <Label htmlFor={id}>{label}</Label>
-      <Input
-        id={id}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-      />
-    </div>
-  )
-}

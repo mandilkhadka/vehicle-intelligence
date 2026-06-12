@@ -6,9 +6,12 @@ import { usePathname } from "next/navigation"
 import {
   LayoutDashboard,
   Upload,
+  Camera,
+  ClipboardCheck,
   History,
   ChevronLeft,
   ChevronRight,
+  Images,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -17,6 +20,9 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 const navItems = [
   { icon: LayoutDashboard, label: "Dashboard", href: "/" },
   { icon: Upload, label: "New Inspection", href: "/inspect" },
+  { icon: Images, label: "Photo Inspection", href: "/photos" },
+  { icon: Camera, label: "Guided Capture", href: "/capture" },
+  { icon: ClipboardCheck, label: "Review Queue", href: "/review" },
   { icon: History, label: "History", href: "/history" },
 ]
 

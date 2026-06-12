@@ -80,6 +80,21 @@ _LOW_CONFIDENCE_OCR_REASON = (
     "manual/VLM verification is required"
 )
 
+# Per-call Ollama cap for odometer work. The odometer stage budget defaults to
+# 90s (ML_STAGE_TIMEOUT_ODOMETER) while the VLM vision loop tries up to 4
+# frames; with the 120s OLLAMA_TIMEOUT_SECONDS default a single hung call
+# would exhaust the stage budget and the Gemini/OpenAI fallbacks would never
+# run. Override with OLLAMA_ODOMETER_TIMEOUT_SECONDS.
+_OLLAMA_ODOMETER_TIMEOUT_CAP = 25.0
+
+
+def _ollama_odometer_timeout(client) -> float:
+    try:
+        base = float(getattr(client, "timeout_seconds", _OLLAMA_ODOMETER_TIMEOUT_CAP) or _OLLAMA_ODOMETER_TIMEOUT_CAP)
+    except (TypeError, ValueError):
+        base = _OLLAMA_ODOMETER_TIMEOUT_CAP
+    return _env_float("OLLAMA_ODOMETER_TIMEOUT_SECONDS", min(base, _OLLAMA_ODOMETER_TIMEOUT_CAP))
+
 
 def _is_plausible_odometer(value) -> bool:
     """Reject obviously bad OCR digits before they reach the user-facing report."""
@@ -319,13 +334,15 @@ class OdometerReader:
                     except Exception as e:
                         print(f"OCR error for preprocessed image {preprocessing_type}: {e}")
                         continue
-                    
-                    # Clean up temporary preprocessed images
-                    if preprocessing_type != "original" and os.path.exists(preprocessed_path):
-                        try:
-                            os.remove(preprocessed_path)
-                        except:
-                            pass
+                    finally:
+                        # Clean up temporary preprocessed images even when OCR
+                        # errored (the `continue` above would otherwise leak
+                        # _gray/_thresh/... JPEGs into the served uploads dir).
+                        if preprocessing_type != "original" and os.path.exists(preprocessed_path):
+                            try:
+                                os.remove(preprocessed_path)
+                            except OSError:
+                                pass
 
                 if best_confidence >= _EARLY_STOP_OCR_CONFIDENCE:
                     break
@@ -334,13 +351,39 @@ class OdometerReader:
                 print(f"Image processing error for {frame_path}: {e}")
                 continue
         
-        # If we found potential readings, validate with Gemini
+        # If we found potential readings, validate with the VLM chain.
         if odometer_values and (self.use_ollama or self.use_gemini or self.use_openai) and all_ocr_text_combined:
             validated = self._validate_ocr_readings_with_vlm(odometer_values, all_ocr_text_combined, best_image_path, dashboard_frames)
-            if validated:
-                # Replace with validated reading
-                odometer_values = [validated]
-                best_image_path = validated.get("frame", best_image_path)
+            if validated and _is_plausible_odometer(validated.get("value")):
+                # Return the VLM-validated reading directly. Re-ranking it
+                # through _rank_ocr_readings would deflate its confidence
+                # (no preprocessing diversity, occurrences=1) and could push a
+                # solid validated reading under review thresholds.
+                confidence = float(validated.get("confidence", 0.7) or 0.0)
+                image_path = validated.get("frame") or best_image_path or (dashboard_frames[0] if dashboard_frames else None)
+                alternatives = [
+                    {
+                        "value": item.get("value"),
+                        "confidence": item.get("confidence", 0.0),
+                        "occurrences": item.get("occurrences", 1),
+                        "digit_count": item.get("digit_count"),
+                        "preprocessing": item.get("preprocessing"),
+                    }
+                    for item in self._rank_ocr_readings(odometer_values)
+                    if item.get("value") != validated.get("value")
+                ][:5]
+                return {
+                    "value": validated.get("value"),
+                    "confidence": confidence,
+                    "speedometer_image_path": image_path,
+                    "source": "local_ocr+vlm_validated",
+                    "reason": (
+                        _LOW_CONFIDENCE_OCR_REASON
+                        if confidence < _MIN_RELIABLE_LOCAL_OCR_CONFIDENCE
+                        else None
+                    ),
+                    "alternatives": alternatives,
+                }
 
         # Deduplicate and prioritize readings
         if odometer_values:
@@ -395,7 +438,7 @@ class OdometerReader:
                 return reading
         if self.use_openai:
             reading = self._read_odometer_with_openai_vision(dashboard_frames)
-            if reading:
+            if reading and reading.get("value") is not None:
                 return reading
         return None
 
@@ -523,7 +566,12 @@ Rules:
                 }
             return None
 
-        readings.sort(key=lambda item: item.get("confidence", 0.0), reverse=True)
+        # Prefer frames with an actual reading: a confident "odometer not
+        # visible" (value=None) must never outrank a real value from another frame.
+        readings.sort(
+            key=lambda item: (item.get("value") is not None, item.get("confidence", 0.0)),
+            reverse=True,
+        )
         best = readings[0]
         return {
             "value": best.get("value"),
@@ -562,6 +610,7 @@ Rules:
                 prompt,
                 image_paths=[frame_path],
                 model=self.ollama.vision_model,
+                timeout_seconds=_ollama_odometer_timeout(self.ollama),
             )
             if not response_text:
                 self._last_ollama_error = self.ollama.last_error or self._last_ollama_error
@@ -584,7 +633,12 @@ Rules:
                 }
             return None
 
-        readings.sort(key=lambda item: item.get("confidence", 0.0), reverse=True)
+        # Prefer frames with an actual reading: a confident "odometer not
+        # visible" (value=None) must never outrank a real value from another frame.
+        readings.sort(
+            key=lambda item: (item.get("value") is not None, item.get("confidence", 0.0)),
+            reverse=True,
+        )
         best = readings[0]
         return {
             "value": best.get("value"),
@@ -640,7 +694,12 @@ Rules:
                 }
             return None
 
-        readings.sort(key=lambda item: item.get("confidence", 0.0), reverse=True)
+        # Prefer frames with an actual reading: a confident "odometer not
+        # visible" (value=None) must never outrank a real value from another frame.
+        readings.sort(
+            key=lambda item: (item.get("value") is not None, item.get("confidence", 0.0)),
+            reverse=True,
+        )
         best = readings[0]
         return {
             "value": best.get("value"),
@@ -891,7 +950,11 @@ Rules:
             prompt = self._odometer_validation_prompt(ocr_readings, all_ocr_text)
             if not prompt:
                 return None
-            response_text = self.ollama.chat_json(prompt, model=self.ollama.text_model)
+            response_text = self.ollama.chat_json(
+                prompt,
+                model=self.ollama.text_model,
+                timeout_seconds=_ollama_odometer_timeout(self.ollama),
+            )
             if not response_text:
                 self._last_ollama_error = self.ollama.last_error or self._last_ollama_error
                 return None
@@ -1009,7 +1072,9 @@ Important:
                 # Validate result
                 if result.get("value") is not None:
                     value = result.get("value")
-                    if isinstance(value, (int, float)) and 0 <= value <= 999999:
+                    # Same bound as _parse_gemini_odometer_json / the OCR path;
+                    # _is_plausible_odometer applies the stricter 2M ceiling later.
+                    if isinstance(value, (int, float)) and 0 <= value <= 9999999:
                         return {
                             "value": int(value),
                             "confidence": float(result.get("confidence", 0.7)),

@@ -83,16 +83,20 @@ export function createFile(file: {
     file.mime_type,
   );
 
-  return getFileById(file.id);
+  const created = getFileById(file.id);
+  if (!created) {
+    throw new Error(`File ${file.id} missing immediately after insert`);
+  }
+  return created;
 }
 
 /**
  * Get file by ID
  */
-export function getFileById(id: string): FileRecord {
+export function getFileById(id: string): FileRecord | undefined {
   const db = getDatabase();
   const stmt = db.prepare("SELECT * FROM files WHERE id = ?");
-  return stmt.get(id) as FileRecord;
+  return stmt.get(id) as FileRecord | undefined;
 }
 
 /**
@@ -111,16 +115,20 @@ export function createJob(job: {
 
   stmt.run(job.id, job.file_id, job.status || "pending");
 
-  return getJobById(job.id);
+  const created = getJobById(job.id);
+  if (!created) {
+    throw new Error(`Job ${job.id} missing immediately after insert`);
+  }
+  return created;
 }
 
 /**
  * Get job by ID
  */
-export function getJobById(id: string): JobRecord {
+export function getJobById(id: string): JobRecord | undefined {
   const db = getDatabase();
   const stmt = db.prepare("SELECT * FROM jobs WHERE id = ?");
-  return stmt.get(id) as JobRecord;
+  return stmt.get(id) as JobRecord | undefined;
 }
 
 /**
@@ -164,7 +172,59 @@ export function updateJobStatus(
   );
   stmt.run(...values);
 
-  return getJobById(id);
+  const updated = getJobById(id);
+  if (!updated) {
+    throw new Error(`Job ${id} not found while updating status`);
+  }
+  return updated;
+}
+
+/**
+ * Touch a job's progress only while it is still `processing`.
+ *
+ * Used by the in-flight progress simulation so a job the reaper already
+ * marked `failed` is never resurrected back to `processing` by a late tick.
+ * Returns false when no row changed (job no longer processing).
+ */
+export function touchJobIfProcessing(id: string, progress?: number): boolean {
+  const db = getDatabase();
+  const result =
+    progress === undefined
+      ? db
+          .prepare(
+            `UPDATE jobs SET updated_at = CURRENT_TIMESTAMP
+              WHERE id = ? AND status = 'processing'`,
+          )
+          .run(id)
+      : db
+          .prepare(
+            `UPDATE jobs SET progress = ?, updated_at = CURRENT_TIMESTAMP
+              WHERE id = ? AND status = 'processing'`,
+          )
+          .run(progress, id);
+  return Number(result.changes) > 0;
+}
+
+/**
+ * Flip a job to `completed` only if it is still `processing`.
+ *
+ * Guards against the reaper race: if a long ML call finally returns after the
+ * periodic reaper already marked the job failed, we must not flip
+ * failed -> completed. Returns false when no row changed.
+ */
+export function completeJobIfProcessing(id: string, inspectionId: string): boolean {
+  const db = getDatabase();
+  const result = db
+    .prepare(
+      `UPDATE jobs
+          SET status = 'completed',
+              progress = 100,
+              inspection_id = ?,
+              updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND status = 'processing'`,
+    )
+    .run(inspectionId, id);
+  return Number(result.changes) > 0;
 }
 
 /**
@@ -183,16 +243,20 @@ export function createInspection(inspection: {
 
   stmt.run(inspection.id, inspection.job_id, inspection.file_id);
 
-  return getInspectionById(inspection.id);
+  const created = getInspectionById(inspection.id);
+  if (!created) {
+    throw new Error(`Inspection ${inspection.id} missing immediately after insert`);
+  }
+  return created;
 }
 
 /**
  * Get inspection by ID
  */
-export function getInspectionById(id: string): InspectionRecord {
+export function getInspectionById(id: string): InspectionRecord | undefined {
   const db = getDatabase();
   const stmt = db.prepare("SELECT * FROM inspections WHERE id = ?");
-  return stmt.get(id) as InspectionRecord;
+  return stmt.get(id) as InspectionRecord | undefined;
 }
 
 /**
@@ -248,7 +312,11 @@ export function updateInspection(
   );
   stmt.run(...values);
 
-  return getInspectionById(id);
+  const updated = getInspectionById(id);
+  if (!updated) {
+    throw new Error(`Inspection ${id} not found while updating`);
+  }
+  return updated;
 }
 
 /**
@@ -266,6 +334,30 @@ export function listVideosEligibleForCleanup(retentionDays: number): Array<{ job
       INNER JOIN files f ON i.file_id = f.id
      WHERE j.status = 'completed'
        AND (julianday(CURRENT_TIMESTAMP) - julianday(i.updated_at)) > ?
+       AND f.file_path IS NOT NULL
+       AND f.file_path != ''
+  `);
+  return stmt.all(retentionDays) as Array<{ jobId: string; filePath: string }>;
+}
+
+/**
+ * Return uploaded video paths for failed jobs older than `retentionDays`.
+ *
+ * processVideoJob deletes the video in its catch block, but that only runs if
+ * the process survives — a job that died in a backend crash gets reaped to
+ * `failed` and its video would otherwise leak forever. No inspections join:
+ * a crash can predate the inspection row.
+ */
+export function listFailedJobVideosEligibleForCleanup(
+  retentionDays: number,
+): Array<{ jobId: string; filePath: string }> {
+  const db = getDatabase();
+  const stmt = db.prepare(`
+    SELECT j.id AS jobId, f.file_path AS filePath
+      FROM jobs j
+      INNER JOIN files f ON f.id = j.file_id
+     WHERE j.status = 'failed'
+       AND (julianday(CURRENT_TIMESTAMP) - julianday(j.updated_at)) > ?
        AND f.file_path IS NOT NULL
        AND f.file_path != ''
   `);
@@ -317,6 +409,33 @@ export function getAllInspections(): InspectionRecord[] {
 }
 
 /**
+ * List inspections with database-level pagination.
+ * Pass limit = -1 for no limit (SQLite treats negative LIMIT as unlimited).
+ */
+export function listInspections(limit: number, offset: number): InspectionRecord[] {
+  const db = getDatabase();
+  const stmt = db.prepare(
+    `SELECT i.*, j.status AS job_status
+       FROM inspections i
+       LEFT JOIN jobs j ON j.id = i.job_id
+      ORDER BY i.created_at DESC
+      LIMIT ? OFFSET ?`,
+  );
+  return stmt.all(limit, offset) as InspectionRecord[];
+}
+
+/**
+ * Count all inspections (for pagination totals)
+ */
+export function countInspections(): number {
+  const db = getDatabase();
+  const row = db.prepare("SELECT COUNT(*) AS count FROM inspections").get() as {
+    count: number;
+  };
+  return row.count;
+}
+
+/**
  * Metrics response interface
  */
 export interface MetricsResponse {
@@ -356,7 +475,7 @@ export function getInspectionMetrics(
   const summaryStmt = db.prepare(`
     SELECT
       COUNT(*) as totalInspections,
-      COUNT(DISTINCT vehicle_brand || '-' || COALESCE(vehicle_model, '')) as uniqueVehicles,
+      COUNT(DISTINCT COALESCE(vehicle_brand, 'Unknown') || '-' || COALESCE(vehicle_model, '')) as uniqueVehicles,
       COALESCE(SUM(scratches_detected), 0) + COALESCE(SUM(dents_detected), 0) + COALESCE(SUM(rust_detected), 0) +
       COALESCE(SUM(cracks_detected), 0) + COALESCE(SUM(paint_damage_detected), 0) as totalIssues
     FROM inspections

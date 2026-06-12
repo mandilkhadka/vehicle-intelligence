@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { AppShell } from "@/components/app-shell";
@@ -30,17 +30,17 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Search, Filter, Eye, Loader2, AlertTriangle, ShieldCheck } from "lucide-react";
+import { Search, Filter, Eye, Loader2, AlertTriangle } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import Loading from "./loading";
-import { getInspections, BACKEND_BASE_URL } from "@/lib/api";
-import { safeParseJsonOrValue } from "@/lib/utils/safe-json";
+import { getInspections } from "@/lib/api";
+import { getApiErrorMessage } from "@/lib/api-error";
 import {
-  getAuditBadgeState,
-  getInspectionPipelineAudit,
-} from "@/lib/inspection-audit";
-import { StatusBadge } from "@/components/status-badge";
+  toInspectionListItem,
+  type InspectionListItem,
+} from "@/lib/inspection-summary";
+import { StatusBadge, VerificationBadge } from "@/components/status-badge";
 
 function getScoreColor(score: number) {
   if (score >= 80) return "text-emerald-500";
@@ -49,111 +49,43 @@ function getScoreColor(score: number) {
   return "text-muted-foreground";
 }
 
-function getVerificationBadge(state: ReturnType<typeof getAuditBadgeState>) {
-  if (state.status === "verified") {
-    return (
-      <Badge className="gap-1 bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20">
-        <ShieldCheck className="h-3 w-3" />
-        {state.label}
-      </Badge>
-    );
-  }
-
-  if (state.status === "review") {
-    return (
-      <div className="flex flex-col items-start gap-1">
-        <Badge variant="outline" className="gap-1 border-accent/40 text-accent">
-          <AlertTriangle className="h-3 w-3" />
-          {state.label}
-        </Badge>
-        <span className="text-xs text-muted-foreground">{state.detail}</span>
-      </div>
-    );
-  }
-
-  return <span className="text-sm text-muted-foreground">-</span>;
-}
+type HistoryRow = InspectionListItem & { dateString: string; score: number };
 
 function HistoryPageContent() {
   const [searchQuery, setSearchQuery] = useState("");
-  const [inspections, setInspections] = useState<any[]>([]);
+  const [inspections, setInspections] = useState<HistoryRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState("all");
+  // Forces this page into the Suspense boundary so static prerendering
+  // doesn't choke on client-only search params.
   useSearchParams();
 
-  useEffect(() => {
-    const fetchInspections = async () => {
-      try {
-        const data = await getInspections();
-        const transformed = data.map((insp: any) => {
-          const vehicleInfo = safeParseJsonOrValue<Record<string, any>>(
-            insp.vehicle_info as any,
-            {},
-          );
-
-          const damage = safeParseJsonOrValue<Record<string, any>>(
-            insp.damage_summary as any,
-            {},
-          );
-
-          const issues =
-            (damage.scratches?.count || 0) +
-            (damage.dents?.count || 0) +
-            (damage.rust?.count || 0) +
-            (damage.cracks?.count || 0) +
-            (damage.paint_damage?.count || 0);
-
-          const frames = safeParseJsonOrValue<string[]>(
-            insp.extracted_frames as any,
-            [],
-          );
-
-          const isReal = (v: unknown): v is string =>
-            typeof v === "string" && v.trim() !== "" && v !== "Unknown";
-          const brand = (isReal(vehicleInfo.brand) && vehicleInfo.brand) || (isReal(insp.vehicle_brand) && insp.vehicle_brand) || "";
-          const model = (isReal(vehicleInfo.model) && vehicleInfo.model) || (isReal(insp.vehicle_model) && insp.vehicle_model) || "";
-          const year =
-            vehicleInfo.year ? String(vehicleInfo.year) :
-            (isReal(insp.vehicle_year) && insp.vehicle_year) || "";
-          const variant =
-            vehicleInfo.variant ? String(vehicleInfo.variant) :
-            (isReal(insp.vehicle_variant) && insp.vehicle_variant) || "";
-          const vehicle = [year, brand, model, variant].filter(Boolean).join(" ").trim() || "Unidentified";
-
-          const confidence =
-            (typeof vehicleInfo.confidence === "number" && vehicleInfo.confidence) ||
-            (typeof insp.vehicle_confidence === "number" && insp.vehicle_confidence) ||
-            0;
-          const audit = getInspectionPipelineAudit(insp);
-
-          return {
-            id: insp.id,
-            vehicle,
-            brand: brand || "—",
-            date: insp.created_at
-              ? new Date(insp.created_at).toLocaleDateString()
-              : "",
-            status: insp.job_status || "completed",
-            auditState: getAuditBadgeState(audit),
-            issues,
-            score: Math.round(confidence * 100),
-            image: (() => {
-              const f = frames[0];
-              if (!f || typeof f !== "string" || f.startsWith("frames/sample/")) return null;
-              return `${BACKEND_BASE_URL}/${f.startsWith("uploads/") ? f : `uploads/${f}`}`;
-            })(),
-          };
-        });
-        setInspections(transformed);
-      } catch (err) {
-        console.error("Failed to fetch inspections:", err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchInspections();
+  const fetchInspections = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await getInspections();
+      const transformed = data.map((insp: any): HistoryRow => {
+        const item = toInspectionListItem(insp);
+        return {
+          ...item,
+          dateString: item.date ? item.date.toLocaleDateString() : "",
+          score: Math.round(item.confidence * 100),
+        };
+      });
+      setInspections(transformed);
+    } catch (err) {
+      console.error("Failed to fetch inspections:", err);
+      setError(getApiErrorMessage(err, "Failed to load inspections"));
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    fetchInspections();
+  }, [fetchInspections]);
 
   const filteredInspections = inspections.filter((insp) => {
     const matchesSearch =
@@ -181,7 +113,9 @@ function HistoryPageContent() {
                     <CardDescription>
                       {loading
                         ? "Loading..."
-                        : `${filteredInspections.length} total inspections`}
+                        : error
+                          ? "Unable to load inspections"
+                          : `${filteredInspections.length} total inspections`}
                     </CardDescription>
                   </div>
                   <div className="flex items-center gap-2">
@@ -237,6 +171,16 @@ function HistoryPageContent() {
                             </p>
                           </TableCell>
                         </TableRow>
+                      ) : error ? (
+                        <TableRow>
+                          <TableCell colSpan={8} className="text-center py-8">
+                            <AlertTriangle className="mx-auto mb-2 h-6 w-6 text-destructive" />
+                            <p className="mb-3 text-sm text-destructive">{error}</p>
+                            <Button variant="outline" size="sm" onClick={fetchInspections}>
+                              Retry
+                            </Button>
+                          </TableCell>
+                        </TableRow>
                       ) : filteredInspections.length === 0 ? (
                         <TableRow>
                           <TableCell
@@ -277,7 +221,7 @@ function HistoryPageContent() {
                               </div>
                             </TableCell>
                             <TableCell className="text-muted-foreground">
-                              {inspection.date}
+                              {inspection.dateString}
                             </TableCell>
                             <TableCell>
                               <StatusBadge status={inspection.status} />
@@ -299,12 +243,13 @@ function HistoryPageContent() {
                               </span>
                             </TableCell>
                             <TableCell>
-                              {getVerificationBadge(inspection.auditState)}
+                              <VerificationBadge state={inspection.auditState} showDetail />
                             </TableCell>
                             <TableCell>
                               <Button variant="ghost" size="icon" asChild>
                                 <Link
                                   href={`/inspection/${inspection.id}`}
+                                  aria-label={`View inspection ${inspection.id}`}
                                 >
                                   <Eye className="h-4 w-4" />
                                 </Link>

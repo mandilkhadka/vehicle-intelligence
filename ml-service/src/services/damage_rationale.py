@@ -45,14 +45,23 @@ def _has_vlm_provider(analyzer: Any) -> bool:
     return False
 
 
+def _uploads_root(backend_root: str) -> str:
+    """Shared uploads dir; mirrors get_uploads_root() in src/api/process.py
+    (UPLOADS_ROOT env first — set in Docker — then the local checkout layout)."""
+    configured = os.getenv("UPLOADS_ROOT", "").strip()
+    if configured:
+        return os.path.abspath(configured)
+    return os.path.abspath(os.path.join(backend_root, "backend", "uploads"))
+
+
 def _resolve_snapshot_path(snapshot: Optional[str], backend_root: str) -> Optional[str]:
-    """Snapshots are stored as relative paths under backend/uploads (e.g.
+    """Snapshots are stored as relative paths under the uploads root (e.g.
     'frames/<id>/damage_snapshots/scratch_001.jpg'). Promote to absolute."""
     if not snapshot:
         return None
     if os.path.isabs(snapshot):
         return snapshot if os.path.exists(snapshot) else None
-    candidate = os.path.join(backend_root, "backend", "uploads", snapshot)
+    candidate = os.path.join(_uploads_root(backend_root), snapshot)
     return candidate if os.path.exists(candidate) else None
 
 

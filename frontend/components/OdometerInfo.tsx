@@ -2,8 +2,9 @@
 
 import Image from "next/image";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { BACKEND_BASE_URL } from "@/lib/api";
+import { uploadSrc } from "@/lib/format";
 
 interface OdometerInfoProps {
   odometer?: {
@@ -51,11 +52,16 @@ export default function OdometerInfo({ odometer }: OdometerInfoProps) {
       : "Not detected";
   const note = odometer.notes || odometer.reason || odometer.reasoning;
 
-  const displayImagePath =
-    odometer.readout_crop_path || odometer.crop_path || odometer.speedometer_image_path;
-  const imgPath = displayImagePath
-    ? `uploads/${displayImagePath.replace(/^.*uploads\//, "")}`
-    : null;
+  const imgSrc = uploadSrc(
+    odometer.readout_crop_path || odometer.crop_path || odometer.speedometer_image_path,
+  );
+
+  const statusBadgeClass =
+    status === "Verified"
+      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+      : status === "Candidate"
+        ? "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+        : "border-border bg-secondary/40 text-muted-foreground";
 
   return (
     <Card>
@@ -66,9 +72,9 @@ export default function OdometerInfo({ odometer }: OdometerInfoProps) {
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <p className="text-2xl font-bold tracking-tight">{value}</p>
-            <span className="rounded border border-border px-2 py-0.5 text-xs font-medium text-muted-foreground">
+            <Badge variant="outline" className={statusBadgeClass}>
               {status}
-            </span>
+            </Badge>
           </div>
           {note && (
             <p className="mt-2 text-sm text-muted-foreground">{note}</p>
@@ -115,10 +121,10 @@ export default function OdometerInfo({ odometer }: OdometerInfoProps) {
             </div>
           </div>
         )}
-        {imgPath && (
+        {imgSrc && (
           <div className="relative aspect-video overflow-hidden rounded-lg border border-border bg-secondary/40">
             <Image
-              src={`${BACKEND_BASE_URL}/${imgPath}`}
+              src={imgSrc}
               alt="Odometer readout"
               fill
               className="object-contain"

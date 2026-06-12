@@ -1,15 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Callout } from "@/components/ui/callout";
 import { Progress } from "@/components/ui/progress";
-import { CheckCircle2, Circle, Loader2, XCircle } from "lucide-react";
+import { CheckCircle2, Circle, Loader2, SearchX } from "lucide-react";
 import { getJobStatus } from "@/lib/api";
+import { isNotFoundError } from "@/lib/api-error";
 import { PROGRESS } from "@/lib/constants";
 import { showError } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { StatusBadge } from "@/components/status-badge";
 
 // Exponential backoff for polling. Successful polls reset to BASE_INTERVAL_MS;
 // each consecutive fetch failure doubles the wait up to MAX_INTERVAL_MS so a
@@ -36,6 +40,8 @@ export default function JobStatus({ jobId }: JobStatusProps) {
   const [status, setStatus] = useState<string>("pending");
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [notFound, setNotFound] = useState(false);
+  const [inspectionId, setInspectionId] = useState<string | null>(null);
   const router = useRouter();
   const stoppedRef = useRef(false);
   const fetchErrorShownRef = useRef(false);
@@ -62,9 +68,10 @@ export default function JobStatus({ jobId }: JobStatusProps) {
 
       if (data.status === "completed") {
         stoppedRef.current = true;
-        const inspectionId = data.inspectionId || data.inspection_id;
-        if (inspectionId) {
-          setTimeout(() => router.push(`/inspection/${inspectionId}`), 800);
+        if (data.inspectionId) {
+          setInspectionId(data.inspectionId);
+          const target = `/inspection/${data.inspectionId}`;
+          setTimeout(() => router.push(target), 800);
         }
         return;
       }
@@ -75,6 +82,14 @@ export default function JobStatus({ jobId }: JobStatusProps) {
       }
       scheduleNext(BASE_INTERVAL_MS);
     } catch (err) {
+      // A 404/410 is terminal: the job never existed or was reaped. Retrying
+      // forever just hides the problem from the user.
+      if (isNotFoundError(err)) {
+        stoppedRef.current = true;
+        setNotFound(true);
+        setStatus("failed");
+        return;
+      }
       consecutiveFailuresRef.current += 1;
       const delay = Math.min(
         BASE_INTERVAL_MS * Math.pow(2, consecutiveFailuresRef.current),
@@ -112,13 +127,44 @@ export default function JobStatus({ jobId }: JobStatusProps) {
     setRetryNonce((n) => n + 1);
   };
 
+  if (notFound) {
+    return (
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle>Job not found</CardTitle>
+          <StatusBadge status="failed" />
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-start gap-3 text-sm text-muted-foreground">
+            <SearchX className="mt-0.5 h-5 w-5 shrink-0" />
+            <p>
+              This job no longer exists. It may have expired, been cleaned up,
+              or the link is incorrect.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button asChild>
+              <Link href="/inspect">Start a new inspection</Link>
+            </Button>
+            <Button variant="outline" asChild>
+              <Link href="/history">View history</Link>
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   const isFailed = status === "failed";
   const isDone = status === "completed";
 
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle className="capitalize">{status}</CardTitle>
+        <div className="flex items-center gap-3">
+          <CardTitle className="capitalize">{status}</CardTitle>
+          <StatusBadge status={status} />
+        </div>
         <span className="text-sm font-medium text-muted-foreground">{progress}%</span>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -159,25 +205,36 @@ export default function JobStatus({ jobId }: JobStatusProps) {
         )}
 
         {error && !isFailed && !isDone && (
-          <div className="flex items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-300">
-            <span>{error}</span>
-            <Button type="button" size="sm" variant="outline" onClick={handleManualRetry}>
-              Retry now
-            </Button>
-          </div>
+          <Callout variant="warning" icon={false} className="text-xs">
+            <div className="flex items-center justify-between gap-3">
+              <span>{error}</span>
+              <Button type="button" size="sm" variant="outline" onClick={handleManualRetry}>
+                Retry now
+              </Button>
+            </div>
+          </Callout>
         )}
 
-        {isDone && (
-          <p className="flex items-center gap-2 text-sm font-medium text-emerald-600">
-            <CheckCircle2 className="h-4 w-4" /> Complete — redirecting to results…
-          </p>
-        )}
+        {isDone &&
+          (inspectionId ? (
+            <p className="flex items-center gap-2 text-sm font-medium text-emerald-600">
+              <CheckCircle2 className="h-4 w-4" /> Complete — redirecting to results…
+            </p>
+          ) : (
+            <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+              <p className="flex items-center gap-2 font-medium text-emerald-600">
+                <CheckCircle2 className="h-4 w-4" /> Complete
+              </p>
+              <Button variant="outline" size="sm" asChild>
+                <Link href="/history">View history</Link>
+              </Button>
+            </div>
+          ))}
 
         {isFailed && (
-          <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-            <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>{error || "An unexpected error occurred."}</span>
-          </div>
+          <Callout variant="destructive">
+            {error || "An unexpected error occurred."}
+          </Callout>
         )}
       </CardContent>
     </Card>

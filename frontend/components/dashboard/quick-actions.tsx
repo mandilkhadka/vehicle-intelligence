@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { Upload, History } from "lucide-react"
+import { Upload, Images, ClipboardCheck, History } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 
 const actions = [
@@ -11,6 +11,20 @@ const actions = [
     icon: Upload,
     href: "/inspect",
     color: "bg-primary/10 text-primary",
+  },
+  {
+    title: "Photo Inspection",
+    description: "Upload vehicle photos instead of a video",
+    icon: Images,
+    href: "/photos",
+    color: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+  },
+  {
+    title: "Review Detections",
+    description: "Confirm or reject uncertain AI findings",
+    icon: ClipboardCheck,
+    href: "/review",
+    color: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
   },
   {
     title: "Inspection History",

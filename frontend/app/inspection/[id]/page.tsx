@@ -41,6 +41,8 @@ import {
   type PipelineAuditCheck,
   type InspectionRecord,
 } from "@/lib/api";
+import { getApiErrorMessage } from "@/lib/api-error";
+import { uploadPath } from "@/lib/format";
 import { safeParseJsonOrValue } from "@/lib/utils/safe-json";
 import type { InspectionPdfData } from "@/components/InspectionPdfDocument";
 
@@ -114,12 +116,7 @@ export default function InspectionPage() {
   const downloadReport = () => {
     if (!inspection) return;
     const blob = new Blob([JSON.stringify(inspection, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `inspection-${inspectionId}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(blob, `inspection-${inspectionId}.json`);
   };
 
   const [pdfBusy, setPdfBusy] = useState(false);
@@ -131,12 +128,7 @@ export default function InspectionPage() {
       const { InspectionPdfDocument } = await import("@/components/InspectionPdfDocument");
       const data = buildPdfData(inspection, inspectionId);
       const blob = await pdf(<InspectionPdfDocument data={data} />).toBlob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `inspection-${inspectionId}.pdf`;
-      link.click();
-      URL.revokeObjectURL(url);
+      downloadBlob(blob, `inspection-${inspectionId}.pdf`);
     } catch (err) {
       console.error("PDF export failed", err);
     } finally {
@@ -1141,12 +1133,8 @@ function InspectionContent({
     try {
       const updated = await retryInspectionVlmAnalysis(inspection.id);
       onInspectionUpdated(updated);
-    } catch (error: any) {
-      setVlmRetryError(
-        error?.response?.data?.message ||
-          error?.message ||
-          "Failed to retry VLM analysis",
-      );
+    } catch (error) {
+      setVlmRetryError(getApiErrorMessage(error, "Failed to retry VLM analysis"));
     } finally {
       setRetryingVlm(false);
     }
@@ -1687,6 +1675,18 @@ function InspectionImageReview({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // Never hijack keys while the user is typing in a form field elsewhere
+      // on the page (identity form, VLM JSON textarea, search inputs, …).
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
       if (activeShots.length === 0) return;
       if (event.key === "ArrowRight") {
         setActiveIndex((current) => (current + 1 + activeShots.length) % activeShots.length);
@@ -1707,6 +1707,9 @@ function InspectionImageReview({
   const viewer = (
     <div
       data-testid="inspection-360-viewer"
+      role={isFullscreen ? "dialog" : "region"}
+      aria-modal={isFullscreen || undefined}
+      aria-label="360 inspection viewer"
       className={
         isFullscreen
           ? "fixed inset-0 z-50 flex flex-col bg-background"
@@ -1923,7 +1926,9 @@ function InspectionImageReview({
                 type="button"
                 key={shot.id}
                 onClick={() => selectIndex(index)}
-                className={`min-w-0 overflow-hidden rounded-lg border bg-background text-left transition ${
+                aria-current={isActive || undefined}
+                aria-label={`Show ${displayViewName(shot.view)} view`}
+                className={`min-w-0 overflow-hidden rounded-lg border bg-background text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                   isActive ? "border-primary ring-2 ring-primary/25" : "border-border hover:border-primary/60"
                 } ${isFullscreen ? "w-36 shrink-0" : ""}`}
               >
@@ -2020,12 +2025,8 @@ function VlmEvidenceImport({
       const updated = await updateInspectionVlmEvidence(inspectionId, parsed);
       setJsonText("");
       onUpdated(updated);
-    } catch (error: any) {
-      setFormError(
-        error?.response?.data?.message ||
-          error?.message ||
-          "Failed to save VLM evidence",
-      );
+    } catch (error) {
+      setFormError(getApiErrorMessage(error, "Failed to save VLM evidence"));
     } finally {
       setSaving(false);
     }
@@ -2098,12 +2099,8 @@ function IdentityEvidenceForm({
         ...form,
       });
       onUpdated(updated);
-    } catch (error: any) {
-      setFormError(
-        error?.response?.data?.message ||
-          error?.message ||
-          "Failed to save identity evidence",
-      );
+    } catch (error) {
+      setFormError(getApiErrorMessage(error, "Failed to save identity evidence"));
     } finally {
       setSaving(false);
     }
@@ -2208,9 +2205,4 @@ function IdentityField({
       />
     </div>
   );
-}
-
-function uploadPath(path: unknown): string | null {
-  if (typeof path !== "string" || !path) return null;
-  return path.startsWith("uploads/") ? path : `uploads/${path.replace(/^.*uploads\//, "")}`;
 }

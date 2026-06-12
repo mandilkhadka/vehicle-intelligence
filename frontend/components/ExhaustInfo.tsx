@@ -5,7 +5,7 @@ import { AlertTriangle } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { BACKEND_BASE_URL } from "@/lib/api";
+import { uploadSrc } from "@/lib/format";
 
 interface ExhaustInfoProps {
   exhaust?: {
@@ -31,11 +31,7 @@ export default function ExhaustInfo({ exhaust }: ExhaustInfoProps) {
 
   const pct = Math.round((exhaust.confidence || 0) * 100);
   const isModified = exhaust.type === "modified";
-  const imgPath = exhaust.exhaust_image_path
-    ? exhaust.exhaust_image_path.startsWith("uploads/")
-      ? exhaust.exhaust_image_path
-      : `uploads/${exhaust.exhaust_image_path}`
-    : null;
+  const imgSrc = uploadSrc(exhaust.exhaust_image_path);
 
   return (
     <Card>
@@ -68,10 +64,10 @@ export default function ExhaustInfo({ exhaust }: ExhaustInfoProps) {
           </div>
         )}
 
-        {imgPath && (
+        {imgSrc && (
           <div className="relative aspect-video overflow-hidden rounded-lg border border-border bg-secondary/40">
             <Image
-              src={`${BACKEND_BASE_URL}/${imgPath}`}
+              src={imgSrc}
               alt="Exhaust system"
               fill
               className="object-cover"

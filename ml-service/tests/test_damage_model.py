@@ -172,6 +172,62 @@ def test_dedupe_drops_vlm_duplicates_of_detector_findings():
     assert ("vlm", "front", "dent") in sources_and_views
 
 
+class _ExplodingModel:
+    def __init__(self, exc):
+        self.exc = exc
+        self.calls = 0
+        self.names = {}
+
+    def __call__(self, frame_paths, **kwargs):
+        self.calls += 1
+        raise self.exc
+
+
+def test_detect_surfaces_inference_failure_as_unavailable_detector():
+    model = DamageDetectionModel(
+        _ExplodingModel(RuntimeError("CUDA out of memory")), model_name="cardd-test.pt"
+    )
+
+    result = model.detect_sync(["/tmp/frame.jpg"])
+
+    # Graceful degradation to VLM-only, but NOT masked as a clean empty run.
+    assert result["locations"] == []
+    assert result["total_count"] == 0
+    assert result["detector"]["available"] is False
+    assert result["detector"]["model"] == "cardd-test.pt"
+    assert "CUDA out of memory" in result["detector"]["error"]
+
+
+def test_detect_does_not_retry_genuine_internal_typeerror():
+    exploding = _ExplodingModel(TypeError("unsupported operand type(s) for +"))
+    model = DamageDetectionModel(exploding)
+
+    result = model.detect_sync(["/tmp/frame.jpg"])
+
+    # A TypeError raised INSIDE inference is a failure, not a kwarg-less stub:
+    # it must not be silently re-run without conf/iou/imgsz tuning.
+    assert exploding.calls == 1
+    assert result["detector"]["available"] is False
+
+
+def test_detect_retries_positional_only_stub_models():
+    class _PositionalOnlyStub:
+        def __init__(self, results):
+            self._results = results
+            self.names = CARDD_NAMES
+
+        def __call__(self, frame_paths):  # no ultralytics kwargs
+            return self._results[: len(frame_paths)]
+
+    result_obj = _FakeResult(boxes=[_FakeBox(1, 0.9, [10, 10, 200, 60])], names=CARDD_NAMES)
+    model = DamageDetectionModel(_PositionalOnlyStub([result_obj]))
+
+    result = model.detect_sync(["/tmp/frame.jpg"])
+
+    assert result["scratches"]["count"] == 1
+    assert result["detector"]["available"] is True
+
+
 def test_dedupe_noop_without_detector_locations():
     damage_data = {
         "locations": [

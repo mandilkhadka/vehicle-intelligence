@@ -4,7 +4,6 @@
  */
 
 import { Request, Response, NextFunction } from "express";
-import { validationResult } from "express-validator";
 import logger from "../utils/logger";
 import { config } from "../config/env";
 
@@ -25,17 +24,6 @@ export class CustomError extends Error implements AppError {
     this.code = code;
     this.isOperational = true;
     Error.captureStackTrace(this, this.constructor);
-  }
-}
-
-/**
- * Throw a 400 CustomError if express-validator found any invalid fields.
- * Call at the top of a handler after its validation chain ran.
- */
-export function assertValid(req: Request): void {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    throw new CustomError(errors.array()[0].msg, 400, "VALIDATION_ERROR");
   }
 }
 

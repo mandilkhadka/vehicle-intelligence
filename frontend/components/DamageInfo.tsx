@@ -7,13 +7,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import DamageOverlayViewer from "@/components/DamageOverlayViewer";
 import {
-  BACKEND_BASE_URL,
   listDamageFeedback,
   submitDamageFeedback,
   type FeedbackVerdict,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { SEVERITY_RANK, formatCurrency, formatRange } from "@/lib/format";
+import { SEVERITY_RANK, formatRange, uploadSrc } from "@/lib/format";
 
 interface EstimatedCost {
   low: number;
@@ -73,11 +72,6 @@ const SEVERITY_STYLES: Record<string, string> = {
   low: "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
 };
 
-function snapshotSrc(snapshot: string): string {
-  const path = snapshot.startsWith("uploads/") ? snapshot : `uploads/${snapshot}`;
-  return `${BACKEND_BASE_URL}/${path}`;
-}
-
 interface PartGroup {
   part: string;
   partLabel: string;
@@ -132,7 +126,7 @@ export default function DamageInfo({ damage, inspectionId }: DamageInfoProps) {
   const [expandedPart, setExpandedPart] = useState<string | null>(null);
   const [viewerLocation, setViewerLocation] = useState<DamageLocation | null>(null);
 
-  const allLocations = damage?.locations ?? [];
+  const allLocations = useMemo(() => damage?.locations ?? [], [damage?.locations]);
   const filteredLocations = useMemo(
     () => allLocations.filter((l) => (l.confidence ?? 0) >= minConfidence),
     [allLocations, minConfidence],
@@ -373,7 +367,7 @@ export default function DamageInfo({ damage, inspectionId }: DamageInfoProps) {
                             >
                               <div className="relative aspect-square overflow-hidden rounded-lg border border-border">
                                 <Image
-                                  src={snapshotSrc(imageSrc)}
+                                  src={uploadSrc(imageSrc)!}
                                   alt={`${type} on ${group.partLabel} — ${pct}% confidence`}
                                   fill
                                   loading="lazy"
@@ -485,7 +479,7 @@ export default function DamageInfo({ damage, inspectionId }: DamageInfoProps) {
         {viewerLocation?.frame && (
           <DamageOverlayViewer
             location={viewerLocation}
-            frameSrc={snapshotSrc(viewerLocation.frame)}
+            frameSrc={uploadSrc(viewerLocation.frame)!}
             onClose={() => setViewerLocation(null)}
           />
         )}

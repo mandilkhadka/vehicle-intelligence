@@ -4,12 +4,17 @@
  */
 
 import { Router, Request, Response } from "express";
-import { param } from "express-validator";
+import { z } from "zod";
 import { getJobById } from "../models/inspection";
-import { asyncHandler, assertValid, CustomError } from "../middleware/errorHandler";
+import { asyncHandler, CustomError } from "../middleware/errorHandler";
+import { parseParams } from "../utils/validate";
 import logger from "../utils/logger";
 
 const router = Router();
+
+const jobParams = z.object({
+  id: z.string().uuid("Job ID must be a valid UUID"),
+});
 
 /**
  * GET /api/jobs/health-check
@@ -25,15 +30,8 @@ router.get("/health-check", (_req: Request, res: Response) => {
  */
 router.get(
   "/:id",
-  [
-    param("id")
-      .isUUID()
-      .withMessage("Job ID must be a valid UUID"),
-  ],
   asyncHandler(async (req: Request, res: Response) => {
-    assertValid(req);
-
-    const jobId = req.params.id;
+    const { id: jobId } = parseParams(jobParams, req.params);
     logger.debug({ jobId }, "Fetching job status");
 
     const job = getJobById(jobId);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Minus, Plus, RotateCcw, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -35,6 +35,7 @@ const MAX_ZOOM = 5;
 export default function DamageOverlayViewer({ location, frameSrc, onClose }: DamageOverlayViewerProps) {
   const [zoom, setZoom] = useState(1);
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -43,6 +44,16 @@ export default function DamageOverlayViewer({ location, frameSrc, onClose }: Dam
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // Dialog focus management: move focus to the close button on open and
+  // hand it back to the opener on close.
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    closeButtonRef.current?.focus();
+    return () => {
+      opener?.focus?.();
+    };
+  }, []);
 
   const frameW = location.frame_width || natural?.w || 0;
   const frameH = location.frame_height || natural?.h || 0;
@@ -106,7 +117,7 @@ export default function DamageOverlayViewer({ location, frameSrc, onClose }: Dam
           <ViewerButton label="Reset zoom" onClick={() => setZoom(1)} disabled={zoom === 1}>
             <RotateCcw className="h-4 w-4" />
           </ViewerButton>
-          <ViewerButton label="Close viewer" onClick={onClose}>
+          <ViewerButton ref={closeButtonRef} label="Close viewer" onClick={onClose}>
             <X className="h-4 w-4" />
           </ViewerButton>
         </div>
@@ -177,11 +188,13 @@ export default function DamageOverlayViewer({ location, frameSrc, onClose }: Dam
 }
 
 function ViewerButton({
+  ref,
   label,
   onClick,
   disabled,
   children,
 }: {
+  ref?: React.Ref<HTMLButtonElement>;
   label: string;
   onClick: () => void;
   disabled?: boolean;
@@ -189,6 +202,7 @@ function ViewerButton({
 }) {
   return (
     <button
+      ref={ref}
       type="button"
       aria-label={label}
       title={label}
