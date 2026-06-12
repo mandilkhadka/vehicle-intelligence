@@ -113,19 +113,6 @@ export interface DamageFeedbackRecord {
   created_at: string;
 }
 
-export interface MissingDamageRecord {
-  id: string;
-  inspection_id: string;
-  frame_path?: string;
-  bbox?: string;
-  type?: string;
-  severity?: string;
-  part?: string;
-  note?: string;
-  reviewer?: string;
-  created_at: string;
-}
-
 export async function submitDamageFeedback(
   inspectionId: string,
   body: {
@@ -148,25 +135,6 @@ export async function listDamageFeedback(
   inspectionId: string,
 ): Promise<DamageFeedbackRecord[]> {
   const response = await apiClient.get(`/inspections/${inspectionId}/feedback`);
-  return response.data;
-}
-
-export async function submitMissingDamage(
-  inspectionId: string,
-  body: {
-    frame_path?: string;
-    bbox?: number[];
-    type?: string;
-    severity?: string;
-    part?: string;
-    note?: string;
-    reviewer?: string;
-  },
-): Promise<MissingDamageRecord> {
-  const response = await apiClient.post(
-    `/inspections/${inspectionId}/missing-damage`,
-    body,
-  );
   return response.data;
 }
 
@@ -538,25 +506,6 @@ export async function getMetrics(
     params: { startDate, endDate },
   });
   return response.data;
-}
-
-/**
- * Get inspections filtered by date range
- * @param startDate - Start date (YYYY-MM-DD)
- * @param endDate - End date (YYYY-MM-DD)
- * @param limit - Optional limit for results
- * @returns Promise with list of inspections
- */
-export async function getInspectionsByDateRange(
-  startDate: string,
-  endDate: string,
-  limit?: number,
-): Promise<InspectionRecord[]> {
-  const response = await apiClient.get("/inspections", {
-    params: { startDate, endDate, limit },
-  });
-  const result = response.data;
-  return Array.isArray(result) ? result : result.data || [];
 }
 
 export default apiClient;

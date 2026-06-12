@@ -27,7 +27,7 @@ from urllib.parse import quote_plus
 from PIL import Image
 import PIL.PngImagePlugin  # noqa: F401 - registers PNG support used by google-generativeai
 
-from src.config.env import load_ml_environment
+from src.services.ollama_client import OllamaClient
 
 logger = logging.getLogger(__name__)
 
@@ -47,21 +47,51 @@ _OPENAI_TIMEOUT_SECONDS = 90
 _OPENAI_MAX_RETRIES = 1
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return float(default)
+    try:
+        return float(raw)
+    except ValueError:
+        return float(default)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return int(default)
+    try:
+        return int(raw)
+    except ValueError:
+        return int(default)
+
+
 class GeminiAnalyzer:
     """Multimodal evaluation of vehicle frames with Gemini 2.5 Pro."""
 
     def __init__(self) -> None:
-        load_ml_environment()
-
         self._genai = None
         self.model = None
         self.api_key: Optional[str] = None
         self.openai_client = None
         self.openai_api_key: Optional[str] = None
         self.openai_base_url = os.getenv("OPENAI_BASE_URL", "").strip()
-        self.openai_model = os.getenv("OPENAI_VISION_MODEL", "gpt-4.1-mini").strip() or "gpt-4.1-mini"
+        self.openai_model = os.getenv("OPENAI_VISION_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
+        # Local-first VLM. When OLLAMA_BASE_URL is set, Ollama is the primary
+        # provider (tried before Gemini/OpenAI); see _analyze_sync.
+        self.ollama = OllamaClient.from_env()
         self._last_gemini_error: Optional[str] = None
         self._last_openai_error: Optional[str] = None
+        self._last_ollama_error: Optional[str] = None
+        self._last_gemini_raw: Optional[str] = None
+
+        if self.ollama.available:
+            logger.info(
+                "GeminiAnalyzer: Ollama VLM enabled (primary) at %s with vision model %s",
+                self.ollama.base_url,
+                self.ollama.vision_model,
+            )
 
         api_key = os.getenv("GEMINI_API_KEY", "").strip()
         if not api_key or len(api_key) < 20:
@@ -71,7 +101,11 @@ class GeminiAnalyzer:
                 import google.generativeai as genai
                 genai.configure(api_key=api_key)
                 self._genai = genai
-                self.model = genai.GenerativeModel("gemini-2.5-pro")
+                # temperature=0: deterministic, less speculative damage reporting.
+                self.model = genai.GenerativeModel(
+                    "gemini-2.5-pro",
+                    generation_config={"temperature": 0},
+                )
                 self.api_key = api_key
                 logger.info("GeminiAnalyzer: initialized with gemini-2.5-pro")
             except Exception as e:
@@ -118,13 +152,22 @@ class GeminiAnalyzer:
     # ------------------------------------------------------------------ #
 
     def _analyze_sync(self, frame_paths: List[str], frame_analysis: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        if (not self.model or not self.api_key) and (not self.openai_client or not self.openai_api_key):
-            return self._unavailable_response("No Gemini or OpenAI VLM API key configured")
+        # `ollama` may be absent on instances built via __new__ in tests; treat
+        # missing as "not configured" so the chain degrades to Gemini/OpenAI.
+        ollama = getattr(self, "ollama", None)
+        ollama_ready = bool(ollama and ollama.available)
+        gemini_ready = bool(self.model and self.api_key)
+        openai_ready = bool(self.openai_client and self.openai_api_key)
+        if not (ollama_ready or gemini_ready or openai_ready):
+            return self._unavailable_response("No Ollama, Gemini, or OpenAI VLM provider configured")
+
+        self._last_ollama_error = None
+        self._last_gemini_raw = None
 
         selected_with_labels = self._select_frames(frame_paths, _MAX_FRAMES_TO_SEND, frame_analysis)
         selected = [item["frame"] for item in selected_with_labels]
         if not selected:
-            return self._unavailable_response("No frames available for Gemini analysis")
+            return self._unavailable_response("No frames available for VLM analysis")
 
         images: List[Image.Image] = []
         used_selection: List[Dict[str, Any]] = []
@@ -141,36 +184,135 @@ class GeminiAnalyzer:
             return self._unavailable_response("All selected frames were unreadable")
 
         prompt = self._build_prompt(used_selection)
-        content = [prompt] + images
 
-        response = self._call_with_retries(content) if self.model and self.api_key else None
-        if response is None and self.openai_client and self.openai_api_key:
-            openai_result = self._analyze_with_openai(prompt, used_selection)
-            if openai_result is not None:
-                return openai_result
+        # Provider chain. Ollama is local-first (preferred); Gemini and OpenAI
+        # are cloud fallbacks. Each helper returns a normalized dict on success
+        # or None to fall through to the next provider.
+        if ollama_ready:
+            result = self._analyze_with_ollama(prompt, used_selection)
+            if result is not None:
+                return result
 
+        if gemini_ready:
+            result = self._analyze_with_gemini([prompt] + images, used_selection)
+            if result is not None:
+                return result
+
+        if openai_ready:
+            result = self._analyze_with_openai(prompt, used_selection)
+            if result is not None:
+                return result
+
+        reasons = [
+            getattr(self, "_last_ollama_error", None),
+            self._last_gemini_error,
+            self._last_openai_error,
+        ]
+        reason = "; ".join(str(item) for item in reasons if item)
+        out = self._unavailable_response(reason or "VLM call failed after retries")
+        if getattr(self, "_last_gemini_raw", None):
+            out["raw_summary"] = self._last_gemini_raw[:2000]
+        return out
+
+    def _analyze_with_gemini(
+        self,
+        content: List[Any],
+        used_selection: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        response = self._call_with_retries(content)
         if response is None:
-            reasons = [
-                self._last_gemini_error or "Gemini API key not configured",
-                self._last_openai_error,
-            ]
-            reason = "; ".join(str(item) for item in reasons if item)
-            return self._unavailable_response(reason or "VLM call failed after retries")
-
+            return None
         try:
             text = response.text or ""
         except Exception as e:
             logger.warning(f"GeminiAnalyzer: response had no text: {e}")
-            return self._unavailable_response("Gemini returned no text")
-
+            self._last_gemini_error = "Gemini returned no text"
+            return None
         parsed = self._parse_json_response(text)
         if parsed is None:
-            return {
-                **self._unavailable_response("Could not parse Gemini JSON"),
-                "raw_summary": text[:2000],
-            }
-
+            self._last_gemini_error = "Gemini returned unparseable JSON"
+            self._last_gemini_raw = text
+            return None
         return self._normalize(parsed, used_selection, text, provider="gemini")
+
+    def _analyze_with_ollama(
+        self,
+        prompt: str,
+        used_selection: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        self._last_ollama_error = None
+        image_paths = [item["frame"] for item in used_selection if item.get("frame")]
+        text = self.ollama.chat_json(
+            prompt,
+            image_paths=image_paths,
+            model=self.ollama.vision_model,
+        )
+        if not text:
+            self._last_ollama_error = self.ollama.last_error or "Ollama VLM unavailable"
+            return None
+        parsed = self._parse_json_response(text)
+        if parsed is None:
+            self._last_ollama_error = "Ollama VLM unavailable: could not parse JSON"
+            return None
+        return self._normalize(parsed, used_selection, text, provider="ollama")
+
+    def vlm_generate_text(self, prompt: str, image_paths: List[str]) -> Optional[str]:
+        """
+        Run the configured VLM (Ollama -> Gemini -> OpenAI) on a free-form
+        prompt plus image files and return the raw response text. The caller
+        parses the result. Used by damage_rationale so per-detection rationales
+        work with whichever provider is configured. Returns None if no provider
+        produced text.
+        """
+        image_paths = [p for p in (image_paths or []) if p]
+
+        ollama = getattr(self, "ollama", None)
+        if ollama and ollama.available:
+            text = ollama.chat_json(prompt, image_paths=image_paths, model=ollama.vision_model)
+            if text:
+                return text
+
+        if self.model and self.api_key and image_paths:
+            images: List[Image.Image] = []
+            for path in image_paths:
+                try:
+                    images.append(Image.open(path).convert("RGB"))
+                except Exception as exc:
+                    logger.debug("vlm_generate_text: unreadable image %s: %s", path, exc)
+            if images:
+                response = self._call_with_retries([prompt, *images])
+                text = self._gemini_response_text(response)
+                if text:
+                    return text
+
+        if self.openai_client and self.openai_api_key:
+            selection = [{"frame": p} for p in image_paths]
+            response = self._call_openai_with_retries(prompt, selection)
+            if response is not None:
+                text = getattr(response, "output_text", None) or self._extract_openai_output_text(response)
+                if text:
+                    return text
+
+        return None
+
+    @staticmethod
+    def _gemini_response_text(response: Any) -> Optional[str]:
+        """Extract text from a Gemini response, walking candidates if needed."""
+        if response is None:
+            return None
+        try:
+            text = getattr(response, "text", None)
+            if text:
+                return text
+        except Exception:
+            pass
+        for cand in getattr(response, "candidates", None) or []:
+            content_obj = getattr(cand, "content", None)
+            for part in getattr(content_obj, "parts", None) or []:
+                part_text = getattr(part, "text", None)
+                if part_text:
+                    return part_text
+        return None
 
     # ------------------------------------------------------------------ #
     # Internals                                                          #
@@ -274,15 +416,32 @@ class GeminiAnalyzer:
             label_lines.append(f"- Frame {idx + 1}: organizer_expected_view={label or 'unknown'}{suffix}")
         labels_text = "\n".join(label_lines)
         return (
-            "You are an expert automotive inspector reviewing frames from a 360° "
-            "walkaround video of a single vehicle. The frames are provided in order "
-            "below. Each frame is referred to by its 1-based index (1..{n}).\n\n"
+            "You are a meticulous, conservative automotive inspector reviewing frames "
+            "from a 360° walkaround video of a single vehicle. The frames are provided "
+            "in order below. Each frame is referred to by its 1-based index (1..{n}).\n\n"
             "The video-understanding preprocessor selected these representative "
             "frames and expected views:\n{labels}\n\n"
             "Carefully examine every frame and produce a STRICT JSON response in the "
             "schema below. Do not include markdown, code fences, or any text outside "
             "the JSON. Use null for unknown values. Be specific — this report will be "
             "shown to a buyer.\n\n"
+            "DAMAGE POLICY — READ CAREFULLY:\n"
+            "- DEFAULT ASSUMPTION: the vehicle is CLEAN and UNDAMAGED. A clean car is "
+            "the normal, expected case. Most vehicles you inspect have NO damage.\n"
+            "- Only report damage you can clearly SEE and justify with specific visual "
+            "evidence. Do NOT invent or infer damage to appear thorough. When in "
+            "doubt, report nothing and return an empty damage_items list.\n"
+            "- The following are NOT damage — never report them as damage_items:\n"
+            "    * reflections of sky, clouds, buildings, people, or other cars on "
+            "glossy paint or glass\n"
+            "    * shadows, glare, or normal lighting variation on shiny surfaces\n"
+            "    * water droplets, dust, dirt, mud, pollen, or road grime\n"
+            "    * panel gaps, seams, body lines, trim, and rubber molding\n"
+            "    * badges, emblems, logos, antennas, sensors, cameras, door handles\n"
+            "    * manufacturer/dealer stickers or tags on a new car\n"
+            "- For every damage_item you DO report, the 'notes' field MUST state the "
+            "exact visible defect and why it is NOT one of the non-damage items above. "
+            "Omit any item you cannot justify this way.\n\n"
             "Schema:\n"
             "{{\n"
             '  "vehicle": {{\n'
@@ -310,8 +469,9 @@ class GeminiAnalyzer:
             '      "location": "specific vehicle area, e.g. front bumper, left door, rear fender",\n'
             '      "severity": "low|moderate|high",\n'
             '      "frame_index": 1,\n'
+            '      "region": [ymin, xmin, ymax, xmax],\n'
             '      "confidence": 0.0-1.0,\n'
-            '      "notes": "short evidence-based description"\n'
+            '      "notes": "REQUIRED: exact visible defect and why it is not a reflection/shadow/dirt/trim/badge"\n'
             '    }}\n'
             '  ],\n'
             '  "overall_condition": "excellent|good|fair|poor",\n'
@@ -336,7 +496,8 @@ class GeminiAnalyzer:
             "Rules:\n"
             "- Provide exactly one per_frame entry per frame, in order, with index 1..{n}.\n"
             "- Be conservative with confidence: if you cannot read the badge, set the brand to your best visual guess and lower confidence.\n"
-            "- For damage_notes and damage_items, do not invent damage that is not visible; return an empty list when none is visible.\n"
+            "- For damage_notes and damage_items, do NOT invent damage that is not clearly visible; per the DAMAGE POLICY above, return an empty list when the vehicle looks clean.\n"
+            "- damage_items.region is the bounding box of the damage in the SAME frame given by frame_index, as integers [ymin, xmin, ymax, xmax] normalized to a 0-1000 grid (top-left origin). Use null if you cannot localize it.\n"
             "- For modification_items, only mark modified when visual evidence supports it; otherwise use stock or unknown with low confidence.\n"
             "- The reference_image.search_query MUST be specific enough to find an official press/marketing photo of a brand-new unit of the SAME model.\n"
         ).format(n=frame_count, labels=labels_text)
@@ -458,6 +619,7 @@ class GeminiAnalyzer:
                 self.openai_client.responses.create,
                 model=self.openai_model,
                 input=[{"role": "user", "content": content}],
+                temperature=0,
             )
             return future.result(timeout=_OPENAI_TIMEOUT_SECONDS)
         finally:
@@ -471,6 +633,7 @@ class GeminiAnalyzer:
                     self.openai_client.chat.completions.create,
                     model=self.openai_model,
                     messages=[{"role": "user", "content": content}],
+                    temperature=0,
                 )
                 return future.result(timeout=_OPENAI_TIMEOUT_SECONDS)
             finally:
@@ -677,9 +840,27 @@ class GeminiAnalyzer:
         items: List[Any],
         frame_evidence_by_index: Optional[Dict[int, Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
-        normalized: List[Dict[str, Any]] = []
+        """
+        Normalize and GATE the VLM's raw damage items. The VLM is the
+        authoritative damage source, so we do not trust it to self-suppress:
+
+        1. confidence floor (ML_DAMAGE_VLM_MIN_CONFIDENCE, default 0.55)
+        2. evidence required — drop items with empty `notes`
+        3. multi-frame consensus — cluster by (type, location); a cluster only
+           survives if seen in >= ML_DAMAGE_CONSENSUS_MIN_FRAMES distinct frames
+           (default 2; a reflection/shadow appears in one frame, real damage from
+           several walkaround angles). A single-frame item still survives if its
+           confidence >= ML_DAMAGE_VLM_HIGH_CONFIDENCE (default 0.85) so obvious
+           damage in one good shot is never dropped. Set CONSENSUS_MIN_FRAMES=1
+           to disable the multi-frame requirement.
+
+        Each surviving cluster is collapsed to its highest-confidence
+        representative, so the same physical damage seen from multiple angles
+        becomes one finding.
+        """
         if not isinstance(items, list):
-            return normalized
+            return []
+
         allowed_types = {
             "scratch",
             "dent",
@@ -693,23 +874,70 @@ class GeminiAnalyzer:
             "other",
         }
         allowed_severity = {"low", "moderate", "high"}
-        for item in items[:20]:
+
+        min_confidence = _env_float("ML_DAMAGE_VLM_MIN_CONFIDENCE", 0.55)
+        high_confidence = _env_float("ML_DAMAGE_VLM_HIGH_CONFIDENCE", 0.85)
+        consensus_min_frames = max(1, _env_int("ML_DAMAGE_CONSENSUS_MIN_FRAMES", 2))
+
+        # Stage 1+2: per-item normalization, confidence floor, evidence required.
+        candidates: List[Dict[str, Any]] = []
+        for item in items[:40]:
             if not isinstance(item, dict):
                 continue
+            confidence = _safe_float(item.get("confidence"))
+            if confidence < min_confidence:
+                continue
+            notes = item.get("notes")
+            if not (isinstance(notes, str) and notes.strip()):
+                continue  # evidence required
+
             damage_type = str(item.get("type") or "other").strip().lower()
             severity = str(item.get("severity") or "low").strip().lower()
             frame_index = _safe_int(item.get("frame_index"))
-            out = {
+            out: Dict[str, Any] = {
                 "type": damage_type if damage_type in allowed_types else "other",
                 "location": item.get("location") or "unknown",
                 "severity": severity if severity in allowed_severity else "low",
                 "frame_index": frame_index,
-                "confidence": _safe_float(item.get("confidence")),
-                "notes": item.get("notes"),
+                "confidence": confidence,
+                "notes": notes,
             }
+            region = GeminiAnalyzer._normalize_region(item.get("region"))
+            if region is not None:
+                out["region"] = region
             GeminiAnalyzer._attach_frame_evidence(out, frame_evidence_by_index, frame_index)
-            normalized.append(out)
+            candidates.append(out)
+
+        # Stage 3: cluster by (type, normalized location) and apply consensus.
+        clusters: Dict[tuple, List[Dict[str, Any]]] = {}
+        for cand in candidates:
+            key = (cand["type"], str(cand["location"]).strip().lower())
+            clusters.setdefault(key, []).append(cand)
+
+        normalized: List[Dict[str, Any]] = []
+        for group in clusters.values():
+            best = max(group, key=lambda c: c.get("confidence", 0.0))
+            distinct_frames = {
+                c["frame_index"] for c in group if c.get("frame_index") is not None
+            }
+            if len(distinct_frames) >= consensus_min_frames or best["confidence"] >= high_confidence:
+                normalized.append(best)
+
+        normalized.sort(key=lambda c: c.get("confidence", 0.0), reverse=True)
         return normalized
+
+    @staticmethod
+    def _normalize_region(region: Any) -> Optional[List[float]]:
+        """Validate a VLM region as 4 finite numbers [ymin, xmin, ymax, xmax]."""
+        if not isinstance(region, (list, tuple)) or len(region) != 4:
+            return None
+        out: List[float] = []
+        for value in region:
+            try:
+                out.append(float(value))
+            except (TypeError, ValueError):
+                return None
+        return out
 
     @staticmethod
     def _normalize_modification_items(

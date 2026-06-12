@@ -100,15 +100,15 @@ const uploadWithOdometer = multer({
 // dropped rather than rejecting the whole upload — the override is purely
 // optional metadata.
 const IDENTITY_FIELD_RULES: Record<string, { maxLen: number; pattern?: RegExp }> = {
-  source: { maxLen: 64, pattern: /^[A-Za-z0-9 _.\-]+$/ },
+  source: { maxLen: 64, pattern: /^[A-Za-z0-9 _.-]+$/ },
   brand: { maxLen: 64, pattern: /^[\p{L}\p{N} .,'\-/&]+$/u },
   model: { maxLen: 128, pattern: /^[\p{L}\p{N} .,'\-/&]+$/u },
   year: { maxLen: 8, pattern: /^[0-9]{2,4}$/ },
   variant: { maxLen: 128, pattern: /^[\p{L}\p{N} .,'\-/&]+$/u },
-  type: { maxLen: 64, pattern: /^[A-Za-z0-9 _\-]+$/ },
-  vehicle_category: { maxLen: 64, pattern: /^[A-Za-z0-9 _\-]+$/ },
+  type: { maxLen: 64, pattern: /^[A-Za-z0-9 _-]+$/ },
+  vehicle_category: { maxLen: 64, pattern: /^[A-Za-z0-9 _-]+$/ },
   vin: { maxLen: 32, pattern: /^[A-HJ-NPR-Z0-9]{8,32}$/i },
-  registration: { maxLen: 32, pattern: /^[A-Za-z0-9 \-]+$/ },
+  registration: { maxLen: 32, pattern: /^[A-Za-z0-9 -]+$/ },
 };
 
 function bodyString(req: Request, field: string): string | undefined {

@@ -90,10 +90,12 @@ def _reader_with_fake_gemini(text=None, model=None):
     reader = OdometerReader.__new__(OdometerReader)
     reader.use_gemini = True
     reader.use_openai = False
+    reader.use_ollama = False
     reader.ocr_available = False
     reader.use_paddle = False
     reader.gemini_model = model or FakeGeminiModel(text)
     reader._last_openai_error = None
+    reader._last_ollama_error = None
     return reader
 
 
@@ -101,6 +103,7 @@ def _reader_with_fake_openai(text):
     reader = OdometerReader.__new__(OdometerReader)
     reader.use_gemini = False
     reader.use_openai = True
+    reader.use_ollama = False
     reader.ocr_available = False
     reader.use_paddle = False
     reader.openai_client = FakeOpenAIClient(text)
@@ -108,6 +111,7 @@ def _reader_with_fake_openai(text):
     reader.openai_model = "gpt-4.1-mini"
     reader._last_gemini_error = None
     reader._last_openai_error = None
+    reader._last_ollama_error = None
     return reader
 
 
@@ -115,6 +119,7 @@ def _reader_with_fake_openai_chat(text):
     reader = OdometerReader.__new__(OdometerReader)
     reader.use_gemini = False
     reader.use_openai = True
+    reader.use_ollama = False
     reader.ocr_available = False
     reader.use_paddle = False
     reader.openai_client = FakeOpenAIChatOnlyClient(text)
@@ -122,6 +127,7 @@ def _reader_with_fake_openai_chat(text):
     reader.openai_model = "local-vlm"
     reader._last_gemini_error = None
     reader._last_openai_error = None
+    reader._last_ollama_error = None
     return reader
 
 
@@ -261,6 +267,7 @@ def test_local_ocr_low_confidence_result_includes_verification_reason(temp_dir, 
     reader.ocr_available = True
     reader.use_gemini = False
     reader.use_openai = False
+    reader.use_ollama = False
     reader.use_paddle = False
     reader.tesseract_config = r"--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789"
 

@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import {
+  AlertTriangle,
   BrainCircuit,
   Camera,
   ChevronLeft,
@@ -1153,6 +1154,65 @@ function InspectionContent({
 
   return (
     <div className="space-y-6">
+      {reviewShots.length > 0 && (
+        <InspectionImageReview
+          shots={reviewShots}
+          damageLocations={damageLocations}
+          coverage={frameAnalysis?.coverage}
+          framesAnalyzed={frameAnalysis?.frames_analyzed}
+          angleCount={angleShotCount}
+          dashboardCount={dashboardCandidates.length}
+        />
+      )}
+      {visualAnalysis && !visualAnalysis.available && (
+        <div className="w-full rounded-lg border-2 border-amber-500/60 bg-amber-50 p-5 shadow-sm dark:border-amber-500/40 dark:bg-amber-950/30">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-0.5 h-6 w-6 shrink-0 text-amber-600 dark:text-amber-400" />
+              <div className="space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-base font-semibold text-amber-900 dark:text-amber-100">
+                    AI Visual Analysis Unavailable
+                  </h2>
+                  <Badge
+                    variant="outline"
+                    className="rounded-md border-amber-500/50 bg-background text-xs text-amber-800 dark:text-amber-200"
+                  >
+                    Manual review
+                  </Badge>
+                </div>
+                <p className="text-sm text-amber-900/90 dark:text-amber-100/90">
+                  Final visual conclusions were not verified by the Gemini/VLM pass.
+                </p>
+                {visualAnalysis.reason && (
+                  <p className="text-sm text-amber-800/80 dark:text-amber-200/80">
+                    {visualAnalysis.reason}
+                  </p>
+                )}
+                {vlmRetryError && (
+                  <p className="text-sm text-destructive">{vlmRetryError}</p>
+                )}
+              </div>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              className="shrink-0 gap-2 border-amber-500/50 bg-background hover:bg-amber-100/50 dark:hover:bg-amber-900/40"
+              onClick={retryVlm}
+              disabled={retryingVlm}
+            >
+              {retryingVlm && <Loader2 className="h-4 w-4 animate-spin" />}
+              {retryingVlm ? "Retrying VLM..." : "Retry VLM Analysis"}
+            </Button>
+          </div>
+          <div className="mt-4">
+            <VlmEvidenceImport
+              inspectionId={inspection.id}
+              onUpdated={onInspectionUpdated}
+            />
+          </div>
+        </div>
+      )}
       {report && (report.summary || report.recommendations?.length || reportModification?.summary) && (
         <Card>
           <CardHeader>
@@ -1250,13 +1310,6 @@ function InspectionContent({
               items={aiListing.confidenceWarnings}
             />
           </div>
-
-          <div className="rounded-lg border border-border bg-background/60 p-3">
-            <h4 className="mb-2 text-sm font-semibold">Buyer-facing report</h4>
-            <p className="whitespace-pre-line text-sm leading-relaxed text-muted-foreground">
-              {aiListing.buyerFacingReport}
-            </p>
-          </div>
         </CardContent>
       </Card>
 
@@ -1311,17 +1364,6 @@ function InspectionContent({
           inspectionId={inspection.id}
           initialVehicleInfo={vehicleInfo}
           onUpdated={onInspectionUpdated}
-        />
-      )}
-
-      {reviewShots.length > 0 && (
-        <InspectionImageReview
-          shots={reviewShots}
-          damageLocations={damageLocations}
-          coverage={frameAnalysis?.coverage}
-          framesAnalyzed={frameAnalysis?.frames_analyzed}
-          angleCount={angleShotCount}
-          dashboardCount={dashboardCandidates.length}
         />
       )}
 
@@ -1457,44 +1499,6 @@ function InspectionContent({
             )}
           </CardContent>
         </Card>
-      )}
-
-      {visualAnalysis && !visualAnalysis.available && (
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(340px,0.8fr)]">
-          <Card className="overflow-hidden">
-            <CardHeader className="border-b border-border bg-secondary/30">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <CardTitle className="flex items-center gap-2">
-                  <BrainCircuit className="h-5 w-5 text-muted-foreground" />
-                  AI Visual Analysis Unavailable
-                </CardTitle>
-                <Badge variant="outline" className="w-fit rounded-md bg-background text-xs">
-                  Manual review
-                </Badge>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-2 text-sm">
-              <p className="text-foreground">
-                Final visual conclusions were not verified by the Gemini/VLM pass.
-              </p>
-              {visualAnalysis.reason && (
-                <p className="text-muted-foreground">{visualAnalysis.reason}</p>
-              )}
-              {vlmRetryError && <p className="text-destructive">{vlmRetryError}</p>}
-              <Button
-                type="button"
-                variant="outline"
-                className="mt-2 gap-2"
-                onClick={retryVlm}
-                disabled={retryingVlm}
-              >
-                {retryingVlm && <Loader2 className="h-4 w-4 animate-spin" />}
-                {retryingVlm ? "Retrying VLM..." : "Retry VLM Analysis"}
-              </Button>
-            </CardContent>
-          </Card>
-          <VlmEvidenceImport inspectionId={inspection.id} onUpdated={onInspectionUpdated} />
-        </div>
       )}
 
       {referenceImage?.search_url && (
@@ -1742,7 +1746,7 @@ function InspectionImageReview({
                   className="h-8 rounded"
                   onClick={() => setMode("interior")}
                 >
-                  Details
+                  Interior
                 </Button>
               </div>
             )}

@@ -274,3 +274,6 @@ docker-compose.override.yml
 training-set/
 *.training-set/
 
+
+# Tooling artifacts
+/graphify-out/

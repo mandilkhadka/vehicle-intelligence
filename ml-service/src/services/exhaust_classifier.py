@@ -37,7 +37,8 @@ class ExhaustClassifier:
             self.yolo_model = yolo_model
         else:
             logger.warning("ExhaustClassifier: Loading YOLOv8 model internally (consider using ModelRegistry)")
-            self.yolo_model = YOLO("yolov8n.pt")
+            from src.config.constants import MODELS
+            self.yolo_model = YOLO(MODELS["yolo"])
 
     def _select_frames(self, frame_paths: List[str], max_frames: int) -> List[str]:
         """Select evenly-spaced frames from the input list."""

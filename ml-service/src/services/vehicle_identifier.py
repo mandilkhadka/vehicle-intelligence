@@ -129,7 +129,8 @@ class VehicleIdentifier:
             self.yolo_model = yolo_model
         else:
             logger.warning("VehicleIdentifier: Loading YOLOv8 model internally (consider using ModelRegistry)")
-            self.yolo_model = YOLO("yolov8n.pt")
+            from src.config.constants import MODELS
+            self.yolo_model = YOLO(MODELS["yolo"])
 
         # CLIP
         if clip_model is not None and clip_processor is not None:
@@ -139,12 +140,13 @@ class VehicleIdentifier:
         else:
             logger.warning("VehicleIdentifier: Loading CLIP models internally (consider using ModelRegistry)")
             from transformers import CLIPProcessor, CLIPModel
+            from src.config.constants import MODELS
             os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
             self.clip_model = CLIPModel.from_pretrained(
-                "openai/clip-vit-base-patch32", local_files_only=False
+                MODELS["clip"], local_files_only=False
             )
             self.clip_processor = CLIPProcessor.from_pretrained(
-                "openai/clip-vit-base-patch32", local_files_only=False
+                MODELS["clip"], local_files_only=False
             )
 
         # Brand prompts / cached text embeddings

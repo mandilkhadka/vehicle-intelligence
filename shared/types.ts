@@ -121,6 +121,13 @@ export interface DamageInfo {
     snapshot?: string;
     confidence: number;
     bbox?: [number, number, number, number];
+    /** Normalized (0-1) segmentation polygon [[x, y], ...] from the damage model */
+    mask?: Array<[number, number]>;
+    /** Pixel dimensions of `frame`, for scaling bbox/mask overlays */
+    frame_width?: number;
+    frame_height?: number;
+    /** "detector" (dedicated damage model) or "vlm" */
+    source?: string;
     severity?: DamageSeverity;
     angle?: string;
     linked_view?: string;

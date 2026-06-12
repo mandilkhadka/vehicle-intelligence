@@ -2,8 +2,9 @@
 Check whether the local ML service environment can run the full inspection pipeline.
 
 By default this avoids loading large models or calling paid APIs. Pass
---live-gemini or --live-openai to verify configured VLM keys/quotas with a
-small request.
+--live-gemini, --live-openai, or --live-ollama to verify configured VLM
+providers with a small request (--live-ollama confirms the server is up and the
+configured models are pulled).
 """
 
 import argparse
@@ -49,6 +50,17 @@ def main() -> int:
         help="Timeout for --live-openai.",
     )
     parser.add_argument(
+        "--live-ollama",
+        action="store_true",
+        help="Query the Ollama server once to verify it is up and the configured models are pulled.",
+    )
+    parser.add_argument(
+        "--ollama-timeout-seconds",
+        type=int,
+        default=10,
+        help="Timeout for --live-ollama.",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Print machine-readable JSON only.",
@@ -58,8 +70,10 @@ def main() -> int:
     readiness = build_pipeline_readiness(
         live_gemini=args.live_gemini,
         live_openai=args.live_openai,
+        live_ollama=args.live_ollama,
         gemini_timeout_seconds=args.gemini_timeout_seconds,
         openai_timeout_seconds=args.openai_timeout_seconds,
+        ollama_timeout_seconds=args.ollama_timeout_seconds,
     )
 
     if args.json:
@@ -97,6 +111,10 @@ def _print_summary(readiness):
     openai_live = (readiness["checks"].get("openai") or {}).get("live")
     if openai_live and not openai_live.get("ready"):
         print(f"\nOpenAI live check: {openai_live.get('reason')}")
+
+    ollama_live = (readiness["checks"].get("ollama") or {}).get("live")
+    if ollama_live and ollama_live.get("reason"):
+        print(f"\nOllama live check: {ollama_live.get('reason')}")
 
     ocr = readiness["checks"].get("ocr") or {}
     if not ocr.get("ready"):

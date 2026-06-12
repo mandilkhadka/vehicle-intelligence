@@ -7,7 +7,9 @@ services:
     ports:
       - "3001:3001"
     environment:
-      - NODE_ENV=production
+      # This is the dev compose; NODE_ENV=development keeps backend/src/config/env.ts
+      # from treating the baked-in dev ML_SERVICE_API_KEY as a production secret.
+      - NODE_ENV=development
       - PORT=3001
       - CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3001
       - ML_SERVICE_URL=http://ml-service:8000
@@ -43,7 +45,6 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - NODE_ENV=production
       - PORT=8000
       - CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3001
       - LOG_LEVEL=info
@@ -51,10 +52,18 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
-      - OPENAI_VISION_MODEL=${OPENAI_VISION_MODEL:-gpt-4.1-mini}
-      - OPENAI_TEXT_MODEL=${OPENAI_TEXT_MODEL:-gpt-4.1-mini}
+      - OPENAI_VISION_MODEL=${OPENAI_VISION_MODEL:-gpt-4o-mini}
+      - OPENAI_TEXT_MODEL=${OPENAI_TEXT_MODEL:-gpt-4o-mini}
+      # Local Ollama VLM. Reach the host's Ollama from inside the container via
+      # host.docker.internal. Leave OLLAMA_BASE_URL blank in .env to disable.
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-}
+      - OLLAMA_VISION_MODEL=${OLLAMA_VISION_MODEL:-qwen2.5vl}
+      - OLLAMA_TEXT_MODEL=${OLLAMA_TEXT_MODEL:-gemma2:9b}
+      - OLLAMA_TIMEOUT_SECONDS=${OLLAMA_TIMEOUT_SECONDS:-120}
       - UPLOADS_ROOT=/app/uploads
       - ALLOWED_UPLOAD_PATHS=/app/uploads
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - backend-uploads:/app/uploads
     networks:

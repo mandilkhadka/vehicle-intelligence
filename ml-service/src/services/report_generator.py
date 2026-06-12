@@ -11,7 +11,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import time
 
-from src.config.env import load_ml_environment
+from src.services.ollama_client import OllamaClient
 
 
 class ReportGenerator:
@@ -19,8 +19,6 @@ class ReportGenerator:
 
     def __init__(self):
         """Initialize report generator"""
-        # Get API keys from service-local or repo-level environment.
-        load_ml_environment()
         api_key = os.getenv("GEMINI_API_KEY", "").strip()
         
         # Validate API key format (basic check - Gemini keys typically start with AIza)
@@ -43,7 +41,7 @@ class ReportGenerator:
         self.openai_client = None
         self.openai_api_key = None
         self.openai_base_url = os.getenv("OPENAI_BASE_URL", "").strip()
-        self.openai_model = os.getenv("OPENAI_TEXT_MODEL", os.getenv("OPENAI_VISION_MODEL", "gpt-4.1-mini")).strip() or "gpt-4.1-mini"
+        self.openai_model = os.getenv("OPENAI_TEXT_MODEL", os.getenv("OPENAI_VISION_MODEL", "gpt-4o-mini")).strip() or "gpt-4o-mini"
         openai_key = os.getenv("OPENAI_API_KEY", "").strip()
         if (openai_key and len(openai_key) >= 20) or self.openai_base_url:
             try:
@@ -58,6 +56,15 @@ class ReportGenerator:
                 print(f"Failed to configure OpenAI fallback: {e}")
                 self.openai_client = None
                 self.openai_api_key = None
+
+        # Local-first text generation. When OLLAMA_BASE_URL is set, Ollama is
+        # the primary provider (tried before Gemini/OpenAI); see _generate_sync.
+        self.ollama = OllamaClient.from_env()
+        if self.ollama.available:
+            print(
+                f"Ollama text generation enabled (primary) at {self.ollama.base_url} "
+                f"with model {self.ollama.text_model}"
+            )
 
     async def generate(self, inspection_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -75,6 +82,12 @@ class ReportGenerator:
         """
         prompt = self._create_prompt(inspection_data)
 
+        ollama = getattr(self, "ollama", None)
+        if ollama is not None and ollama.available:
+            report = self._generate_with_ollama(prompt, inspection_data)
+            if report is not None:
+                return report
+
         if self.api_key and self.model:
             report = self._generate_with_gemini(prompt, inspection_data)
             if report is not None:
@@ -86,6 +99,17 @@ class ReportGenerator:
                 return report
 
         return self._generate_mock_report(inspection_data)
+
+    def _generate_with_ollama(self, prompt: str, inspection_data: Dict[str, Any]) -> Dict[str, Any] | None:
+        try:
+            report_text = self.ollama.chat_json(prompt, model=self.ollama.text_model)
+            if not report_text:
+                print(f"Ollama report generation unavailable: {self.ollama.last_error}")
+                return None
+            return self._report_from_text(report_text, inspection_data)
+        except Exception as e:
+            print(f"Ollama report generation error: {e}")
+            return None
 
     def _generate_with_gemini(self, prompt: str, inspection_data: Dict[str, Any]) -> Dict[str, Any] | None:
         try:

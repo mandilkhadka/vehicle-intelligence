@@ -205,13 +205,18 @@ async def health_check():
 
 
 @app.get("/ready")
-async def readiness_check(live_gemini: bool = False, live_openai: bool = False):
+async def readiness_check(
+    live_gemini: bool = False,
+    live_openai: bool = False,
+    live_ollama: bool = False,
+):
     """Readiness check endpoint for video-understanding dependencies."""
     return build_pipeline_readiness(
         model_registry=getattr(app.state, "model_registry", None),
         require_loaded_models=True,
         live_gemini=live_gemini,
         live_openai=live_openai,
+        live_ollama=live_ollama,
     )
 
 

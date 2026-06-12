@@ -8,6 +8,7 @@ from src.api.process import (
     ProcessRequest,
     RetryVlmRequest,
     _build_process_pipeline_audit,
+    _ground_vlm_locations,
     _merge_visual_damage_categories,
     _merge_vehicle_identity_override,
     _process_named_view_evidence,
@@ -735,3 +736,52 @@ def test_named_view_audit_tracks_detail_views_without_blocking_core_coverage():
     assert evidence["has_required_named_views"] is True
     assert evidence["missing_named_views"] == []
     assert evidence["missing_detail_views"] == ["wheels", "trunk", "engine-bay"]
+
+
+def test_ground_vlm_locations_crops_region_to_bbox_and_snapshot(tmp_path, monkeypatch):
+    """A VLM finding's normalized region becomes a pixel bbox + cropped
+    snapshot, so it satisfies the same location contract as the CV detector."""
+    import cv2
+    import numpy as np
+
+    uploads = tmp_path / "uploads"
+    monkeypatch.setenv("UPLOADS_ROOT", str(uploads))
+
+    inspection_id = "insp123"
+    frame_rel = f"frames/{inspection_id}/organized/front.jpg"
+    frame_abs = uploads / frame_rel
+    frame_abs.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(frame_abs), np.full((1000, 1000, 3), 128, dtype=np.uint8))
+
+    damage_data = {
+        "locations": [
+            {
+                "source": "vlm",
+                "type": "scratch",
+                "frame": frame_rel,
+                # [ymin, xmin, ymax, xmax] on a 0-1000 grid -> bbox [x1,y1,x2,y2]
+                "region": [100, 200, 300, 400],
+                "confidence": 0.9,
+            }
+        ]
+    }
+
+    _ground_vlm_locations(damage_data, inspection_id, backend_root=str(tmp_path))
+
+    loc = damage_data["locations"][0]
+    assert loc["bbox"] == [200, 100, 400, 300]
+    assert "region" not in loc  # superseded by bbox
+    assert loc["snapshot"].startswith(f"frames/{inspection_id}/damage_snapshots/")
+    assert (uploads / loc["snapshot"]).exists()
+
+
+def test_ground_vlm_locations_skips_when_no_region(tmp_path, monkeypatch):
+    monkeypatch.setenv("UPLOADS_ROOT", str(tmp_path / "uploads"))
+    damage_data = {
+        "locations": [
+            {"source": "vlm", "type": "dent", "frame": "frames/x/organized/rear.jpg", "confidence": 0.9}
+        ]
+    }
+    _ground_vlm_locations(damage_data, "x", backend_root=str(tmp_path))
+    loc = damage_data["locations"][0]
+    assert "bbox" not in loc and "snapshot" not in loc  # UI falls back to frame

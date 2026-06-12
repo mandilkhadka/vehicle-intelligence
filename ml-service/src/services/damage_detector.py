@@ -10,7 +10,6 @@ from ultralytics import YOLO
 import cv2
 import numpy as np
 import os
-from pathlib import Path
 from src.utils.frame_utils import select_frames
 
 logger = logging.getLogger(__name__)
@@ -54,25 +53,47 @@ DEDUP_RADIUS_PX = _env_int("ML_DAMAGE_DEDUP_RADIUS_PX", 80)
 DEDUP_FRAME_WINDOW = _env_int("ML_DAMAGE_DEDUP_FRAME_WINDOW", 5)
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+# The classical OpenCV heuristics below (Canny edges -> "scratch", orange/brown
+# HSV -> "rust", Laplacian blobs -> "dent") fire on reflections, shadows, panel
+# gaps, badges, and curved bodywork, so a clean car reports phantom damage. The
+# vision-language model in gemini_analyzer.py is the authoritative damage source.
+# These heuristics are OFF by default; set ML_DAMAGE_USE_CV_HEURISTICS=true to
+# re-enable them (e.g. for offline comparison).
+USE_CV_HEURISTICS = _env_bool("ML_DAMAGE_USE_CV_HEURISTICS", False)
+
+
 class DamageDetector:
     """Detects vehicle damage (scratches, dents, rust, cracks, paint damage)"""
 
-    def __init__(self, yolo_model: Optional[YOLO] = None):
+    def __init__(self, yolo_model: Optional[YOLO] = None, damage_model=None):
         """
         Initialize damage detector.
 
         Args:
-            yolo_model: Pre-loaded YOLOv8 model instance (from ModelRegistry)
+            yolo_model: Pre-loaded YOLOv8 model instance (from ModelRegistry),
+                used only to crop the vehicle region for the CV heuristics.
+            damage_model: Optional DamageDetectionModel (from ModelRegistry) —
+                a dedicated automotive-damage detector (e.g. CarDD-trained).
+                When present it is the primary damage source.
 
-        If model is not provided, it will be loaded internally (legacy behavior).
-        For best performance, pass pre-loaded model from ModelRegistry.
+        If yolo_model is not provided, it will be loaded internally (legacy
+        behavior). For best performance, pass pre-loaded models from ModelRegistry.
         """
+        self.damage_model = damage_model
         if yolo_model is not None:
             logger.info("DamageDetector: Using injected YOLOv8 model")
             self.yolo_model = yolo_model
         else:
             logger.warning("DamageDetector: Loading YOLOv8 model internally (consider using ModelRegistry)")
-            self.yolo_model = YOLO("yolov8n.pt")
+            from src.config.constants import MODELS
+            self.yolo_model = YOLO(MODELS["yolo"])
 
     def _select_frames(self, frame_paths: List[str], max_frames: int) -> List[str]:
         """Select evenly-spaced frames from the input list."""
@@ -94,6 +115,20 @@ class DamageDetector:
         Synchronous damage detection with snapshot capture
         Improved algorithm with better filtering and confidence calculation
         """
+        # Primary path: the dedicated automotive-damage detection model
+        # (CarDD-trained YOLO/RT-DETR via ML_DAMAGE_MODEL_PATH). It produces
+        # locations in the same contract, so downstream stages are unchanged.
+        if self.damage_model is not None:
+            return self.damage_model.detect_sync(frame_paths, inspection_id)
+
+        # The classical CV heuristics are disabled by default: they generate
+        # phantom damage on clean cars. Without a dedicated detector the VLM
+        # (gemini_analyzer) is the authoritative damage source; return an empty
+        # structured result so the response shape stays identical for
+        # downstream consumers and Zod.
+        if not USE_CV_HEURISTICS:
+            return self._empty_result()
+
         scratches_count = 0
         dents_count = 0
         rust_count = 0
@@ -645,6 +680,23 @@ class DamageDetector:
             "confidence_threshold": DAMAGE_CONFIDENCE_THRESHOLD,
             "locations": damage_locations[:20],  # Limit to top 20 locations by confidence
         }
+
+    @staticmethod
+    def _empty_result() -> Dict[str, Any]:
+        """Zeroed damage result with the exact shape _detect_sync would return."""
+        categories = (
+            "scratches", "dents", "rust", "cracks", "paint_damage",
+            "wheel_damage", "broken_lights", "missing_parts", "panel_misalignment",
+        )
+        result: Dict[str, Any] = {cat: {"count": 0, "detected": False} for cat in categories}
+        result.update({
+            "severity": "low",
+            "total_count": 0,
+            "average_confidence": 0.0,
+            "confidence_threshold": DAMAGE_CONFIDENCE_THRESHOLD,
+            "locations": [],
+        })
+        return result
 
     def _get_vehicle_region(self, image: np.ndarray, frame_path: str) -> tuple:
         """

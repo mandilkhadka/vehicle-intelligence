@@ -4,9 +4,9 @@
  */
 
 import { Router, Request, Response } from "express";
-import { query, validationResult } from "express-validator";
+import { query } from "express-validator";
 import { getInspectionMetrics } from "../models/inspection";
-import { asyncHandler, CustomError } from "../middleware/errorHandler";
+import { asyncHandler, assertValid, CustomError } from "../middleware/errorHandler";
 import logger from "../utils/logger";
 
 const router = Router();
@@ -43,14 +43,7 @@ router.get(
       .custom(isValidDateFormat),
   ],
   asyncHandler(async (req: Request, res: Response) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      throw new CustomError(
-        errors.array()[0].msg,
-        400,
-        "VALIDATION_ERROR"
-      );
-    }
+    assertValid(req);
 
     const startDate = req.query.startDate as string;
     const endDate = req.query.endDate as string;

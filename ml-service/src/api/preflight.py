@@ -14,10 +14,9 @@ app.state.model_registry.
 from __future__ import annotations
 
 import logging
-import math
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 import cv2
 import numpy as np

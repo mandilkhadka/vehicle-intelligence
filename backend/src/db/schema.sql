@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS inspections (
     
     -- Vehicle identification
     vehicle_type TEXT,
-    -- vehicle_type: 'car', 'bike'
+    -- vehicle_type: VehicleType in shared/types.ts ('car', 'bike', 'motorcycle', 'truck', 'suv')
     vehicle_brand TEXT,
     vehicle_model TEXT,
     vehicle_year TEXT,
@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS inspections (
     cracks_detected INTEGER DEFAULT 0,
     paint_damage_detected INTEGER DEFAULT 0,
     damage_severity TEXT,
-    -- damage_severity: 'low', 'high'
+    -- damage_severity: DamageSeverity in shared/types.ts ('low', 'medium', 'high')
     
     -- Exhaust information
     exhaust_type TEXT,

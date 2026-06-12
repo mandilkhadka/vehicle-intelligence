@@ -15,7 +15,7 @@ import shutil
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
-from src.config.env import load_ml_environment
+from src.services.ollama_client import OllamaClient
 from src.utils.image_quality import read_image_with_orientation, write_jpeg
 
 try:
@@ -125,8 +125,6 @@ class OdometerReader:
         self.ocr_available = bool(PADDLEOCR_AVAILABLE or TESSERACT_AVAILABLE)
         
         # Initialize Gemini/OpenAI validation if configured.
-        load_ml_environment()
-        
         api_key = os.getenv("GEMINI_API_KEY", "").strip()
         if api_key and len(api_key) >= 20 and GEMINI_AVAILABLE:
             try:
@@ -147,7 +145,7 @@ class OdometerReader:
         self.openai_client = None
         self.openai_api_key = None
         self.openai_base_url = os.getenv("OPENAI_BASE_URL", "").strip()
-        self.openai_model = os.getenv("OPENAI_VISION_MODEL", "gpt-4.1-mini").strip() or "gpt-4.1-mini"
+        self.openai_model = os.getenv("OPENAI_VISION_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
         openai_key = os.getenv("OPENAI_API_KEY", "").strip()
         if (openai_key and len(openai_key) >= 20) or self.openai_base_url:
             try:
@@ -164,6 +162,17 @@ class OdometerReader:
                 self.use_openai = False
         else:
             self.use_openai = False
+
+        # Local-first VLM for odometer reading/validation. Primary when
+        # OLLAMA_BASE_URL is set; tried before Gemini/OpenAI.
+        self.ollama = OllamaClient.from_env()
+        self.use_ollama = self.ollama.available
+        self._last_ollama_error = None
+        if self.use_ollama:
+            print(
+                f"Ollama vision enabled (primary) at {self.ollama.base_url} "
+                f"with model {self.ollama.vision_model} for odometer reading"
+            )
 
     async def read(self, dashboard_frames: List[str]) -> Dict[str, Any]:
         """
@@ -188,18 +197,20 @@ class OdometerReader:
             }
         self._last_gemini_error = None
         self._last_openai_error = None
+        self._last_ollama_error = None
 
         odometer_values = []
         all_ocr_text_combined = []
         best_confidence = 0.0
         best_image_path = None
 
-        if not self.ocr_available and (self.use_gemini or self.use_openai):
+        if not self.ocr_available and (self.use_ollama or self.use_gemini or self.use_openai):
             vlm_reading = self._read_odometer_with_vlm_vision(dashboard_frames)
             if vlm_reading:
                 return vlm_reading
             reason = (
-                self._last_gemini_error
+                self._last_ollama_error
+                or self._last_gemini_error
                 or self._last_openai_error
                 or "No OCR engine available and VLM vision did not return a reading"
             )
@@ -324,7 +335,7 @@ class OdometerReader:
                 continue
         
         # If we found potential readings, validate with Gemini
-        if odometer_values and (self.use_gemini or self.use_openai) and all_ocr_text_combined:
+        if odometer_values and (self.use_ollama or self.use_gemini or self.use_openai) and all_ocr_text_combined:
             validated = self._validate_ocr_readings_with_vlm(odometer_values, all_ocr_text_combined, best_image_path, dashboard_frames)
             if validated:
                 # Replace with validated reading
@@ -361,7 +372,7 @@ class OdometerReader:
                 ],
             }
         else:
-            if self.use_gemini or self.use_openai:
+            if self.use_ollama or self.use_gemini or self.use_openai:
                 vlm_reading = self._read_odometer_with_vlm_vision(dashboard_frames)
                 if vlm_reading:
                     return vlm_reading
@@ -374,6 +385,10 @@ class OdometerReader:
             }
 
     def _read_odometer_with_vlm_vision(self, dashboard_frames: List[str]) -> Dict[str, Any]:
+        if self.use_ollama:
+            reading = self._read_odometer_with_ollama_vision(dashboard_frames)
+            if reading and reading.get("value") is not None:
+                return reading
         if self.use_gemini:
             reading = self._read_odometer_with_gemini_vision(dashboard_frames)
             if reading and reading.get("value") is not None:
@@ -385,12 +400,19 @@ class OdometerReader:
         return None
 
     def _vlm_source_label(self) -> str:
-        if self.use_gemini and self.use_openai:
+        enabled = [
+            label
+            for label, on in (
+                ("ollama", self.use_ollama),
+                ("gemini", self.use_gemini),
+                ("openai", self.use_openai),
+            )
+            if on
+        ]
+        if len(enabled) > 1:
             return "vlm_vision"
-        if self.use_gemini:
-            return "gemini_vision"
-        if self.use_openai:
-            return "openai_vision"
+        if len(enabled) == 1:
+            return f"{enabled[0]}_vision"
         return "none"
 
     @staticmethod
@@ -508,6 +530,67 @@ Rules:
             "confidence": best.get("confidence", 0.0),
             "speedometer_image_path": best.get("frame"),
             "source": "gemini_vision",
+            "reasoning": best.get("reasoning"),
+        }
+
+    def _read_odometer_with_ollama_vision(self, dashboard_frames: List[str]) -> Dict[str, Any]:
+        """Use a local Ollama vision model to read the odometer directly."""
+        if not self.use_ollama:
+            return None
+
+        prompt = """Read the vehicle odometer value from this dashboard or instrument-cluster image.
+
+Return ONLY a JSON object in this exact format:
+{
+  "value": <integer_odometer_value_or_null>,
+  "confidence": <number_between_0_and_1>,
+  "reasoning": "short note"
+}
+
+Rules:
+- Read the odometer mileage/kilometer total, not speed, trip, range, gear, clock, or temperature.
+- Odometer values are usually 4-8 digits.
+- If the odometer is not visible or not readable, return null with low confidence.
+- Do not include markdown or any text outside the JSON object."""
+
+        readings = []
+        unavailable_reason = None
+        for frame_path in dashboard_frames[:4]:
+            if not frame_path or not os.path.exists(frame_path):
+                continue
+            response_text = self.ollama.chat_json(
+                prompt,
+                image_paths=[frame_path],
+                model=self.ollama.vision_model,
+            )
+            if not response_text:
+                self._last_ollama_error = self.ollama.last_error or self._last_ollama_error
+                unavailable_reason = self._last_ollama_error or unavailable_reason
+                continue
+            parsed = self._parse_gemini_odometer_json(response_text, frame_path)
+            if parsed:
+                readings.append(parsed)
+
+        readings = [r for r in readings if r.get("value") is None or _is_plausible_odometer(r.get("value"))]
+        if not readings:
+            if unavailable_reason:
+                return {
+                    "value": None,
+                    "confidence": 0.0,
+                    "speedometer_image_path": dashboard_frames[0] if dashboard_frames else None,
+                    "source": "ollama_vision",
+                    "reason": unavailable_reason,
+                    "reasoning": unavailable_reason,
+                }
+            return None
+
+        readings.sort(key=lambda item: item.get("confidence", 0.0), reverse=True)
+        best = readings[0]
+        return {
+            "value": best.get("value"),
+            "confidence": best.get("confidence", 0.0),
+            "speedometer_image_path": best.get("frame"),
+            "source": "ollama_vision",
             "reasoning": best.get("reasoning"),
         }
 
@@ -790,12 +873,39 @@ Rules:
         }
     
     def _validate_ocr_readings_with_vlm(self, ocr_readings: List[Dict], all_ocr_text: List[Dict], best_frame: str, dashboard_frames: List[str]) -> Dict[str, Any]:
+        if self.use_ollama:
+            validated = self._validate_ocr_readings_with_ollama(ocr_readings, all_ocr_text, best_frame, dashboard_frames)
+            if validated:
+                return validated
         if self.use_gemini:
             validated = self._validate_ocr_readings_with_gemini(ocr_readings, all_ocr_text, best_frame, dashboard_frames)
             if validated:
                 return validated
         if self.use_openai:
             return self._validate_ocr_readings_with_openai(ocr_readings, all_ocr_text, best_frame, dashboard_frames)
+        return None
+
+    def _validate_ocr_readings_with_ollama(self, ocr_readings: List[Dict], all_ocr_text: List[Dict], best_frame: str, dashboard_frames: List[str]) -> Dict[str, Any]:
+        """Use a local Ollama text model to validate/correct OCR readings."""
+        try:
+            prompt = self._odometer_validation_prompt(ocr_readings, all_ocr_text)
+            if not prompt:
+                return None
+            response_text = self.ollama.chat_json(prompt, model=self.ollama.text_model)
+            if not response_text:
+                self._last_ollama_error = self.ollama.last_error or self._last_ollama_error
+                return None
+            parsed = self._parse_gemini_odometer_json(
+                response_text, best_frame or (dashboard_frames[0] if dashboard_frames else None)
+            )
+            if parsed and parsed.get("value") is not None:
+                return {
+                    "value": parsed.get("value"),
+                    "confidence": parsed.get("confidence", 0.7),
+                    "frame": best_frame or (dashboard_frames[0] if dashboard_frames else None),
+                }
+        except Exception as e:
+            print(f"Ollama validation error: {e}")
         return None
 
     def _odometer_validation_prompt(self, ocr_readings: List[Dict], all_ocr_text: List[Dict]) -> str:

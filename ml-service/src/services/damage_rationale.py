@@ -31,12 +31,18 @@ _MIN_CONFIDENCE = float(os.getenv("ML_DAMAGE_RATIONALE_MIN_CONFIDENCE", "0.45"))
 _JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}")
 
 
-def _try_import_pil():
-    try:
-        from PIL import Image  # type: ignore
-        return Image
-    except Exception:
-        return None
+def _has_vlm_provider(analyzer: Any) -> bool:
+    """True if the analyzer has any VLM provider wired (Ollama, Gemini, or OpenAI)."""
+    if analyzer is None:
+        return False
+    ollama = getattr(analyzer, "ollama", None)
+    if ollama is not None and getattr(ollama, "available", False):
+        return True
+    if getattr(analyzer, "model", None) and getattr(analyzer, "api_key", None):
+        return True
+    if getattr(analyzer, "openai_client", None) and getattr(analyzer, "openai_api_key", None):
+        return True
+    return False
 
 
 def _resolve_snapshot_path(snapshot: Optional[str], backend_root: str) -> Optional[str]:
@@ -152,16 +158,7 @@ async def attach_rationales(
             loc.setdefault("rationale", None)
             loc.setdefault("rationale_likely_real", None)
 
-    if gemini_analyzer is None:
-        damage_data.setdefault("rationale_available", False)
-        return
-    model = getattr(gemini_analyzer, "model", None)
-    if model is None or not getattr(gemini_analyzer, "api_key", None):
-        damage_data.setdefault("rationale_available", False)
-        return
-
-    Image = _try_import_pil()
-    if Image is None:
+    if not _has_vlm_provider(gemini_analyzer):
         damage_data.setdefault("rationale_available", False)
         return
 
@@ -171,7 +168,7 @@ async def attach_rationales(
         damage_data.setdefault("rationale_count", 0)
         return
 
-    images: List[Any] = []
+    image_paths: List[str] = []
     items: List[Dict[str, Any]] = []
     used_indices: List[int] = []
     for idx in candidate_indices:
@@ -179,41 +176,24 @@ async def attach_rationales(
         abs_path = _resolve_snapshot_path(loc.get("snapshot"), backend_root)
         if not abs_path:
             continue
-        try:
-            images.append(Image.open(abs_path).convert("RGB"))
-            items.append(loc)
-            used_indices.append(idx)
-        except Exception as exc:
-            logger.debug("Skipping snapshot for rationale: %s (%s)", abs_path, exc)
+        image_paths.append(abs_path)
+        items.append(loc)
+        used_indices.append(idx)
 
-    if not images:
+    if not image_paths:
         damage_data["rationale_available"] = True
         damage_data.setdefault("rationale_count", 0)
         return
 
     prompt = _build_prompt(items)
-    content: List[Any] = [prompt, *images]
 
     def _invoke() -> Optional[str]:
+        # Routes through whichever VLM provider is configured (Ollama, Gemini,
+        # or OpenAI). Image order matches the prompt's stated context order.
         try:
-            response = gemini_analyzer._call_with_retries(content)  # type: ignore[attr-defined]
-            if response is None:
-                return None
-            text = getattr(response, "text", None)
-            if text:
-                return text
-            # Fall back to walking candidates if .text is unavailable.
-            candidates = getattr(response, "candidates", None) or []
-            for cand in candidates:
-                content_obj = getattr(cand, "content", None)
-                parts = getattr(content_obj, "parts", None) or []
-                for part in parts:
-                    t = getattr(part, "text", None)
-                    if t:
-                        return t
-            return None
+            return gemini_analyzer.vlm_generate_text(prompt, image_paths)  # type: ignore[attr-defined]
         except Exception as exc:
-            logger.warning("Damage rationale Gemini call failed: %s", exc)
+            logger.warning("Damage rationale VLM call failed: %s", exc)
             return None
 
     try:

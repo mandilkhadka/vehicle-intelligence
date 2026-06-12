@@ -491,28 +491,3 @@ function fillMissingDates(
   return result;
 }
 
-/**
- * Get inspections filtered by date range
- */
-export function getInspectionsByDateRange(
-  startDate: string,
-  endDate: string,
-  limit?: number,
-): InspectionRecord[] {
-  const db = getDatabase();
-  const params: (string | number)[] = [startDate, endDate];
-
-  let query = `
-    SELECT * FROM inspections
-    WHERE created_at >= ? AND created_at < datetime(?, '+1 day')
-    ORDER BY created_at DESC
-  `;
-
-  if (limit) {
-    query += ` LIMIT ?`;
-    params.push(limit);
-  }
-
-  const stmt = db.prepare(query);
-  return stmt.all(...params) as InspectionRecord[];
-}

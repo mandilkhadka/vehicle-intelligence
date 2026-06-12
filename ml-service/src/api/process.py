@@ -7,9 +7,7 @@ import os
 import logging
 import asyncio
 import time
-import threading
 import re
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from fastapi import APIRouter, HTTPException, status, Request
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any, Tuple
@@ -27,7 +25,7 @@ from src.services.inspection_analysis import InspectionAnalysisPipeline
 from src.services.report_generator import ReportGenerator
 from src.services.gemini_analyzer import GeminiAnalyzer
 from src.services.model_registry import ModelRegistry
-from src.services.panel_inference import attach_parts_to_locations, panel_label
+from src.services.panel_inference import attach_parts_to_locations
 from src.services.repair_costs import estimate_repair_costs
 from src.services.damage_rationale import attach_rationales
 from src.config.constants import FRAME_EXTRACTION
@@ -126,6 +124,7 @@ def initialize_ml_services(model_registry: Optional[ModelRegistry] = None) -> Tu
 
     # Get shared models from registry if available
     yolo_model = None
+    damage_model = None
     clip_model = None
     clip_processor = None
     brand_text_embeddings = None
@@ -134,6 +133,7 @@ def initialize_ml_services(model_registry: Optional[ModelRegistry] = None) -> Tu
     if model_registry is not None and model_registry.is_initialized:
         logger.info("Using pre-loaded models from ModelRegistry")
         yolo_model = model_registry.get_yolo_model()
+        damage_model = model_registry.get_damage_model()
         clip_model = model_registry.get_clip_model()
         clip_processor = model_registry.get_clip_processor()
         brand_text_embeddings = model_registry.get_brand_text_embeddings()
@@ -179,7 +179,7 @@ def initialize_ml_services(model_registry: Optional[ModelRegistry] = None) -> Tu
     logger.info(f"DashboardDetector initialized ({time.time() - init_start_time:.2f}s)")
 
     logger.info("Initializing DamageDetector...")
-    damage_detector = DamageDetector(yolo_model=yolo_model)
+    damage_detector = DamageDetector(yolo_model=yolo_model, damage_model=damage_model)
     logger.info(f"DamageDetector initialized ({time.time() - init_start_time:.2f}s)")
 
     logger.info("Initializing ExhaustClassifier...")
@@ -601,21 +601,10 @@ async def process_video(request: ProcessRequest, http_request: Request):
             logger.info("  [Parallel] Starting damage detection...")
             result = await damage_detector.detect(surface_frames_absolute, request.inspection_id)
             _attach_damage_angle_metadata(result, frame_analysis_abs)
-            # Ground each location on a specific panel (front_bumper, door_fl,
-            # ...) using the organizer view + bbox position. Confidence is
-            # geometric prior only — a future fine-tuned model can override.
-            attach_parts_to_locations(result.get("locations") or [])
-            # Attach repair cost estimates from the rate card. Adds
-            # estimated_cost per location and total_estimated_repair_cost
-            # on the damage dict.
-            estimate_repair_costs(result)
-            # Best-effort: ask Gemini for one-sentence rationales on the
-            # highest-confidence detections. Internally bounded by its own
-            # timeout; never fails the stage.
-            try:
-                await attach_rationales(result, gemini_analyzer, backend_root=backend_root)
-            except Exception as exc:
-                logger.warning(f"  [Parallel] Damage rationale step errored: {exc}")
+            # Relativize detector frames now (matching the already-relative VLM
+            # frames) so the merge's frame-based dedup works. Part grounding,
+            # cost estimation, and rationales run AFTER the Gemini merge (see
+            # below) so they cover the authoritative VLM-sourced locations too.
             for loc in result.get("locations", []) or []:
                 if loc.get("frame"):
                     loc["frame"] = convert_to_relative_path(loc["frame"], backend_root)
@@ -672,6 +661,28 @@ async def process_video(request: ProcessRequest, http_request: Request):
         else:
             logger.info(f"Parallel ML processing completed in {parallel_duration:.2f} seconds")
         _merge_visual_damage_categories(damage_data, gemini_data)
+        # Crop each VLM finding's reported region into a snapshot + pixel bbox so
+        # it satisfies the same location contract as the legacy CV detector
+        # (part inference, cost lookup, rationale, and the UI snapshot card).
+        _ground_vlm_locations(damage_data, request.inspection_id, backend_root)
+        # When the dedicated detector found the same physical damage the VLM
+        # reported, keep the detector finding (precise box/mask) and drop the
+        # VLM duplicate so counts and costs aren't doubled.
+        _dedupe_detector_vlm_overlaps(damage_data)
+        # Ground each location on a specific panel (front_bumper, door_fl, ...)
+        # from its view + bbox, so cost lookups are part-aware below.
+        attach_parts_to_locations(damage_data.get("locations") or [])
+        # Confidence gate + recompute per-category counts; re-runs cost
+        # estimation now that parts are attached. Tags `vlm_verified`. With the
+        # CV heuristics off, every location is VLM-sourced; when the VLM is
+        # unavailable there are simply no locations (never phantom damage).
+        _apply_vlm_verification_filter(damage_data, gemini_data)
+        # Best-effort: one-sentence rationales on the highest-confidence
+        # findings, using the snapshots cropped above. Never fails the request.
+        try:
+            await attach_rationales(damage_data, gemini_analyzer, backend_root=backend_root)
+        except Exception as exc:
+            logger.warning("Damage rationale step errored: %s", exc)
 
         # Merge Gemini's fine-grained vehicle ID into vehicle_info when available.
         # Gemini can name a specific model and year; CLIP zero-shot cannot.
@@ -1177,6 +1188,155 @@ _DAMAGE_LOCATION_TYPES = {
 
 _MIN_VISUAL_DAMAGE_CONFIDENCE = 0.55
 
+# When VLM verification is unavailable (Gemini failed AND OpenAI VLM failed),
+# YOLO-only damage detections are not cross-checked. To avoid surfacing
+# over-eager false positives (e.g. labelling a clean car as scratched), we
+# apply a stricter confidence floor to the locations that survive. Override
+# with ML_DAMAGE_UNVERIFIED_MIN_CONFIDENCE.
+_DEFAULT_UNVERIFIED_MIN_CONFIDENCE = 0.80
+
+# Map of damage `type` string (as emitted on a location) to the structured
+# category key in damage_data. Mirrors _DAMAGE_LOCATION_TYPES inverted.
+_LOCATION_TYPE_TO_CATEGORY = {
+    "scratch": "scratches",
+    "dent": "dents",
+    "rust": "rust",
+    "crack": "cracks",
+    "paint_damage": "paint_damage",
+    "wheel_damage": "wheel_damage",
+    "broken_light": "broken_lights",
+    "missing_part": "missing_parts",
+    "panel_misalignment": "panel_misalignment",
+}
+
+
+def _apply_vlm_verification_filter(
+    damage_data: Dict[str, Any],
+    gemini_analysis: Dict[str, Any],
+) -> None:
+    """
+    Post-filter damage locations based on whether a VLM successfully ran.
+
+    - If a VLM (Gemini or OpenAI fallback) produced a usable analysis, keep
+      the existing locations and tag each surviving one with
+      ``vlm_verified: True``.
+    - If the VLM was unavailable (quota exhausted, auth failure, parse
+      error, etc.), YOLO-only detections are uncorroborated. Drop any
+      location whose confidence is below the stricter
+      ``_DEFAULT_UNVERIFIED_MIN_CONFIDENCE`` floor (env-overridable via
+      ``ML_DAMAGE_UNVERIFIED_MIN_CONFIDENCE``) and tag the survivors with
+      ``vlm_verified: False`` so the frontend can render an
+      "Unverified — based on object detection only" badge.
+
+    Per-category counts (``scratches.count`` etc.), ``total_count``,
+    ``average_confidence`` and ``total_estimated_repair_cost`` are
+    recomputed from the post-filter location list so downstream consumers
+    don't double-count suppressed detections.
+    """
+    if not isinstance(damage_data, dict):
+        return
+
+    locations = damage_data.get("locations")
+    if not isinstance(locations, list):
+        locations = []
+        damage_data["locations"] = locations
+
+    vlm_available = bool(isinstance(gemini_analysis, dict) and gemini_analysis.get("available"))
+
+    if vlm_available:
+        threshold = _MIN_VISUAL_DAMAGE_CONFIDENCE
+    else:
+        threshold = _env_float(
+            "ML_DAMAGE_UNVERIFIED_MIN_CONFIDENCE",
+            _DEFAULT_UNVERIFIED_MIN_CONFIDENCE,
+        )
+
+    kept: List[Dict[str, Any]] = []
+    dropped = 0
+    for loc in locations:
+        if not isinstance(loc, dict):
+            continue
+        raw_confidence = loc.get("confidence")
+        try:
+            confidence_value = float(raw_confidence) if raw_confidence is not None else None
+        except (TypeError, ValueError):
+            confidence_value = None
+
+        # VLM-sourced locations come from the VLM and are inherently verified,
+        # so keep them whenever the VLM ran (vlm_available implies their source
+        # ran). When the VLM did NOT run, no VLM-sourced locations should
+        # exist; treat them like YOLO ones for safety.
+        source = str(loc.get("source") or "").lower()
+        is_vlm_source = source == "vlm"
+
+        # Detector-sourced locations come from the dedicated damage model and
+        # were already gated by its own confidence threshold at inference; the
+        # stricter "unverified" floor exists for the legacy CV heuristics, not
+        # for a model trained on automotive damage. Keep them as-is.
+        if source == "detector":
+            loc["vlm_verified"] = bool(vlm_available)
+            kept.append(loc)
+            continue
+
+        if confidence_value is not None and confidence_value < threshold:
+            # Allow VLM-sourced items through the unverified threshold only if
+            # the VLM actually ran — otherwise drop everything below floor.
+            if not (vlm_available and is_vlm_source and confidence_value >= _MIN_VISUAL_DAMAGE_CONFIDENCE):
+                dropped += 1
+                continue
+
+        loc["vlm_verified"] = bool(vlm_available)
+        kept.append(loc)
+
+    damage_data["locations"] = kept
+    damage_data["vlm_verification_available"] = vlm_available
+    damage_data["unverified_confidence_threshold"] = (
+        None if vlm_available else float(threshold)
+    )
+    if dropped:
+        damage_data["suppressed_unverified_locations"] = int(dropped)
+
+    # Recompute per-category counts from the kept locations.
+    category_counts: Dict[str, int] = {cat: 0 for cat in _STRUCTURED_DAMAGE_CATEGORIES}
+    for loc in kept:
+        raw_type = str(loc.get("type") or "").strip().lower().replace("-", "_")
+        category = _LOCATION_TYPE_TO_CATEGORY.get(raw_type)
+        if category:
+            category_counts[category] += 1
+
+    for category in _STRUCTURED_DAMAGE_CATEGORIES:
+        existing = damage_data.get(category)
+        count = category_counts[category]
+        if isinstance(existing, dict):
+            existing["count"] = count
+            existing["detected"] = count > 0
+        else:
+            damage_data[category] = {"count": count, "detected": count > 0}
+
+    # Recompute total_count + average_confidence to stay consistent.
+    total = sum(category_counts.values())
+    if kept:
+        conf_values = [
+            float(loc.get("confidence"))
+            for loc in kept
+            if loc.get("confidence") is not None
+        ]
+        avg_conf = (sum(conf_values) / len(conf_values)) if conf_values else 0.0
+    else:
+        avg_conf = 0.0
+    damage_data["total_count"] = int(total)
+    damage_data["average_confidence"] = float(round(avg_conf, 3))
+
+    # Recompute repair cost so total_estimated_repair_cost.has_unknowns and
+    # the low/high range reflect the post-filter list, not the original one.
+    # estimate_repair_costs() mutates in place. Strip any stale total first
+    # in case all locations were dropped.
+    damage_data.pop("total_estimated_repair_cost", None)
+    try:
+        estimate_repair_costs(damage_data)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"Failed to recompute repair costs after VLM filter: {exc}")
+
 
 def _merge_visual_damage_categories(
     damage_data: Dict[str, Any],
@@ -1252,11 +1412,173 @@ def _merge_visual_damage_categories(
             "frame_index": item.get("organizer_frame_index") or item.get("frame_index"),
             "source_frame_index": item.get("source_frame_index"),
             "timestamp_seconds": item.get("timestamp_seconds"),
+            "region": item.get("region"),
             "notes": item.get("notes"),
             "source": "vlm",
         }
         locations.append({key: value for key, value in visual_location.items() if value is not None})
         existing_location_keys.add(location_key)
+
+
+def _ground_vlm_locations(
+    damage_data: Dict[str, Any],
+    inspection_id: Optional[str],
+    backend_root: str,
+) -> None:
+    """
+    Turn each VLM damage finding's normalized ``region`` into a pixel ``bbox``
+    and a cropped ``snapshot`` so VLM-sourced locations satisfy the same
+    contract the legacy CV detector produced: part inference (needs bbox + view),
+    cost lookup, the rationale image, and the UI snapshot card.
+
+    ``region`` is ``[ymin, xmin, ymax, xmax]``. Gemini emits it on a 0-1000 grid;
+    some VLMs emit 0-1 normalized — both are handled. Locations without a usable
+    region/frame are left as-is (the UI falls back to the full frame).
+    """
+    locations = damage_data.get("locations")
+    if not isinstance(locations, list) or not locations:
+        return
+
+    import cv2  # local import; cv2 is already an ML-service dependency
+
+    snapshots_dir: Optional[str] = None
+    if inspection_id:
+        snapshots_dir = os.path.join(
+            get_uploads_root(backend_root), "frames", str(inspection_id), "damage_snapshots"
+        )
+        try:
+            os.makedirs(snapshots_dir, exist_ok=True)
+        except OSError as exc:
+            logger.warning("Could not create VLM snapshot dir %s: %s", snapshots_dir, exc)
+            snapshots_dir = None
+
+    counter = 0
+    for loc in locations:
+        if not isinstance(loc, dict):
+            continue
+        if str(loc.get("source") or "").lower() != "vlm" or loc.get("bbox") is not None:
+            continue
+        region = loc.pop("region", None)  # superseded by bbox below
+        frame_rel = loc.get("frame")
+        if not (isinstance(region, (list, tuple)) and len(region) == 4 and frame_rel):
+            continue
+
+        try:
+            abs_frame = (
+                str(frame_rel)
+                if os.path.isabs(str(frame_rel))
+                else upload_path(str(frame_rel), backend_root)
+            )
+        except ValueError:
+            continue
+        image = cv2.imread(abs_frame)
+        if image is None:
+            continue
+        h, w = image.shape[:2]
+
+        try:
+            ymin, xmin, ymax, xmax = (float(v) for v in region)
+        except (TypeError, ValueError):
+            continue
+        # 0-1 normalized vs 0-1000 grid.
+        scale = 1.0 if max(ymin, xmin, ymax, xmax) <= 1.0 else 1000.0
+        x1 = int(max(0, min(w - 1, xmin / scale * w)))
+        y1 = int(max(0, min(h - 1, ymin / scale * h)))
+        x2 = int(max(0, min(w, xmax / scale * w)))
+        y2 = int(max(0, min(h, ymax / scale * h)))
+        if x2 - x1 < 4 or y2 - y1 < 4:
+            continue  # degenerate region
+
+        loc["bbox"] = [x1, y1, x2, y2]
+        # Frame dimensions let the frontend scale the bbox/mask overlay and
+        # the dedupe below compare boxes across differently-sized frames.
+        loc["frame_width"] = int(w)
+        loc["frame_height"] = int(h)
+
+        if not snapshots_dir:
+            continue
+        pad = 24
+        crop = image[max(0, y1 - pad):min(h, y2 + pad), max(0, x1 - pad):min(w, x2 + pad)]
+        if crop.size == 0:
+            continue
+        counter += 1
+        damage_type = (str(loc.get("type") or "damage").strip().lower() or "damage").replace("/", "_")
+        out_full = os.path.join(snapshots_dir, f"vlm_{damage_type}_{counter:03d}.jpg")
+        try:
+            if cv2.imwrite(out_full, crop):
+                loc["snapshot"] = convert_to_relative_path(out_full, backend_root)
+        except Exception as exc:
+            logger.debug("Failed to write VLM snapshot %s: %s", out_full, exc)
+
+
+def _normalized_bbox(loc: Dict[str, Any]) -> Optional[Tuple[float, float, float, float]]:
+    """Location bbox scaled to 0-1 by its frame dimensions, or None."""
+    bbox = loc.get("bbox")
+    w = loc.get("frame_width")
+    h = loc.get("frame_height")
+    if not (isinstance(bbox, (list, tuple)) and len(bbox) == 4 and w and h):
+        return None
+    try:
+        x1, y1, x2, y2 = (float(v) for v in bbox)
+        return (x1 / float(w), y1 / float(h), x2 / float(w), y2 / float(h))
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _bbox_iou(a: Tuple[float, float, float, float], b: Tuple[float, float, float, float]) -> float:
+    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
+    ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    if inter <= 0.0:
+        return 0.0
+    area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
+    area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _dedupe_detector_vlm_overlaps(damage_data: Dict[str, Any], iou_threshold: float = 0.30) -> None:
+    """
+    Drop VLM-sourced locations that duplicate a detector finding: same damage
+    type, same organizer view, and overlapping normalized bounding boxes. The
+    detector finding wins — its box (and mask) is pixel-accurate, whereas the
+    VLM region is a coarse grid estimate. Category counts are recomputed later
+    by _apply_vlm_verification_filter, so this only edits the location list.
+    """
+    locations = damage_data.get("locations")
+    if not isinstance(locations, list) or not locations:
+        return
+
+    detector_refs = []
+    for loc in locations:
+        if isinstance(loc, dict) and str(loc.get("source") or "").lower() == "detector":
+            norm = _normalized_bbox(loc)
+            if norm:
+                detector_refs.append((str(loc.get("type") or ""), str(loc.get("linked_view") or loc.get("angle") or ""), norm))
+    if not detector_refs:
+        return
+
+    kept: List[Dict[str, Any]] = []
+    dropped = 0
+    for loc in locations:
+        if not isinstance(loc, dict) or str(loc.get("source") or "").lower() != "vlm":
+            kept.append(loc)
+            continue
+        norm = _normalized_bbox(loc)
+        loc_type = str(loc.get("type") or "")
+        loc_view = str(loc.get("linked_view") or loc.get("angle") or "")
+        duplicate = norm is not None and any(
+            ref_type == loc_type and ref_view == loc_view and _bbox_iou(ref_box, norm) >= iou_threshold
+            for ref_type, ref_view, ref_box in detector_refs
+        )
+        if duplicate:
+            dropped += 1
+        else:
+            kept.append(loc)
+
+    if dropped:
+        logger.info("Dropped %d VLM damage location(s) duplicating detector findings", dropped)
+        damage_data["locations"] = kept
 
 
 def _build_process_pipeline_audit(

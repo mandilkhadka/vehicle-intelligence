@@ -30,6 +30,8 @@ import {
   type FeedbackExportRow,
 } from "../src/models/feedback";
 
+// Must match the `type` strings the ML pipeline emits for
+// damage_summary.locations (_DAMAGE_LOCATION_TYPES in ml-service/src/api/process.py).
 const TAXONOMY = [
   "scratch",
   "dent",
@@ -37,10 +39,20 @@ const TAXONOMY = [
   "crack",
   "paint_damage",
   "wheel_damage",
-  "broken_lights",
-  "missing_parts",
+  "broken_light",
+  "missing_part",
   "panel_misalignment",
 ];
+
+// Legacy/plural spellings that reviewers or older pipeline versions may have
+// stored; map them onto the canonical taxonomy instead of dropping the row.
+const TAXONOMY_ALIASES: Record<string, string> = {
+  scratches: "scratch",
+  dents: "dent",
+  cracks: "crack",
+  broken_lights: "broken_light",
+  missing_parts: "missing_part",
+};
 
 interface CliArgs {
   out: string;
@@ -124,8 +136,8 @@ function ensureDirs(outDir: string): void {
 
 function classIdFor(name?: string): number {
   if (!name) return -1;
-  const idx = TAXONOMY.indexOf(name.toLowerCase());
-  return idx;
+  const normalized = name.toLowerCase();
+  return TAXONOMY.indexOf(TAXONOMY_ALIASES[normalized] ?? normalized);
 }
 
 function resolveImageOnDisk(relPath: string | undefined, uploadsRoot: string): string | null {

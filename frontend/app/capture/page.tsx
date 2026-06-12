@@ -17,7 +17,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Camera, Check, CheckCircle2, Loader2, Pause, Play, RotateCcw, Square, Sun } from "lucide-react";
+import { AlertTriangle, Camera, Check, CheckCircle2, Loader2, Play, RotateCcw, Square, Sun } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";

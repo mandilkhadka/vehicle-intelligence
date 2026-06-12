@@ -101,8 +101,10 @@ Other:
   vehicle-presence diagnostics.
 - `POST /api/process` — full inspection pipeline.
 - `POST /api/retry-vlm` — VLM-only rerun from saved organized frames.
-- `GET /health`, `GET /ready` (pass `?live_gemini=true&live_openai=true` for
-  quota/key verification).
+- `GET /health`, `GET /ready` (pass
+  `?live_gemini=true&live_openai=true&live_ollama=true` for VLM provider
+  verification — `live_ollama` confirms the server is up and the models are
+  pulled).
 
 ## Static file access control
 
@@ -232,9 +234,53 @@ python scripts/retry_vlm_analysis.py \
 
 **ML service** (`.env`): `GEMINI_API_KEY` (optional; report text falls back
 without it), `OPENAI_API_KEY` (optional fallback), `OPENAI_BASE_URL`,
-`ML_DEVICE` (auto/`cuda`/`mps`/`cpu`), `ML_STAGE_TIMEOUT_VEHICLE` /
+`OLLAMA_BASE_URL` (optional local VLM — when set, Ollama is the **primary**
+provider, tried before Gemini/OpenAI), `OLLAMA_VISION_MODEL` (default
+`qwen2.5vl`), `OLLAMA_TEXT_MODEL` (default `gemma2:9b`), `OLLAMA_TIMEOUT_SECONDS`,
+`ML_DEVICE` (auto/`cuda`/`mps`/`cpu`), `ML_YOLO_MODEL` / `ML_CLIP_MODEL`
+(model weights are never hardcoded — see `src/config/constants.py`),
+`ML_DAMAGE_MODEL_PATH` / `_ARCH` / `_CONFIDENCE` / `_IOU` / `_IMGSZ` /
+`ML_DAMAGE_CLASS_MAP` (dedicated damage detector), `ML_STAGE_TIMEOUT_VEHICLE` /
 `_ODOMETER` / `_DAMAGE` / `_EXHAUST` / `_GEMINI`,
 `ML_DAMAGE_RATIONALE_TIMEOUT`, `PORT`, `LOG_LEVEL`, `CORS_ALLOWED_ORIGINS`.
+
+The VLM provider chain is **Ollama → Gemini → OpenAI** (first one configured
+*and* successful wins). Ollama uses its **native** `/api/chat` endpoint
+(`src/services/ollama_client.py`) with `format: "json"` — not the OpenAI-compat
+`/v1` shim, which fails on vision because Ollama lacks the `/v1/responses` API.
+The chain is shared by `gemini_analyzer.py` (visual analysis), `report_generator.py`
+(text), `odometer_reader.py` (VLM odometer), and `damage_rationale.py` (via
+`GeminiAnalyzer.vlm_generate_text`).
+
+Damage detection sources, in priority order. CLIP is **never** a damage
+source — it only does frame selection and vehicle identification.
+
+1. **Dedicated detector (primary when configured)** — set
+   `ML_DAMAGE_MODEL_PATH` to detection/segmentation weights (e.g. CarDD-trained
+   YOLO11/YOLO12 or RT-DETR; `ML_DAMAGE_MODEL_ARCH=auto|yolo|rtdetr`).
+   `ModelRegistry` loads it at startup; `damage_model.py` maps model classes to
+   the pipeline taxonomy (`ML_DAMAGE_CLASS_MAP` extends it) and emits locations
+   with pixel `bbox`, optional normalized `mask` polygons,
+   `frame_width`/`frame_height`, and `source: "detector"`. Train/benchmark/
+   deploy workflow lives in `ml-service/training/` (prepare CarDD → train
+   candidates → `benchmark_damage_models.py` ranks P/R/F1/mAP/small-instance
+   recall/latency → point `ML_DAMAGE_MODEL_PATH` at the winner).
+2. **VLM** (`gemini_analyzer.py`) — authoritative only when no detector is
+   configured; otherwise a complementary source for categories outside the
+   trained taxonomy (rust, missing parts, …). Findings are gated by
+   `ML_DAMAGE_VLM_MIN_CONFIDENCE` (0.55), multi-frame consensus
+   `ML_DAMAGE_CONSENSUS_MIN_FRAMES` (2; set 1 to disable), and a single-frame
+   escape hatch `ML_DAMAGE_VLM_HIGH_CONFIDENCE` (0.85). Each VLM finding's
+   normalized `region` is cropped into a `snapshot` + pixel `bbox` in
+   `process.py` (`_ground_vlm_locations`). VLM findings duplicating a detector
+   finding (same type/view, overlapping bbox) are dropped
+   (`_dedupe_detector_vlm_overlaps`).
+3. The classical OpenCV heuristics in `damage_detector.py` (which
+   false-positive on clean cars) stay OFF — `ML_DAMAGE_USE_CV_HEURISTICS`
+   (default `false`).
+
+All sources emit the same location contract, so `panel_inference`,
+`repair_costs`, and `damage_rationale` are source-agnostic.
 
 **Frontend** (`.env.local`): `NEXT_PUBLIC_API_URL`, `BACKEND_URL` (used at
 build time for `/uploads/*` rewrite).

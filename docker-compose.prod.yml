@@ -53,10 +53,18 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
-      - OPENAI_VISION_MODEL=${OPENAI_VISION_MODEL:-gpt-4.1-mini}
-      - OPENAI_TEXT_MODEL=${OPENAI_TEXT_MODEL:-gpt-4.1-mini}
+      - OPENAI_VISION_MODEL=${OPENAI_VISION_MODEL:-gpt-4o-mini}
+      - OPENAI_TEXT_MODEL=${OPENAI_TEXT_MODEL:-gpt-4o-mini}
+      # Local Ollama VLM. Set OLLAMA_BASE_URL to your Ollama host (e.g.
+      # http://host.docker.internal:11434). Leave blank in .env to disable.
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-}
+      - OLLAMA_VISION_MODEL=${OLLAMA_VISION_MODEL:-qwen2.5vl}
+      - OLLAMA_TEXT_MODEL=${OLLAMA_TEXT_MODEL:-gemma2:9b}
+      - OLLAMA_TIMEOUT_SECONDS=${OLLAMA_TIMEOUT_SECONDS:-120}
       - UPLOADS_ROOT=/app/uploads
       - ALLOWED_UPLOAD_PATHS=/app/uploads
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - backend-uploads:/app/uploads
     networks:

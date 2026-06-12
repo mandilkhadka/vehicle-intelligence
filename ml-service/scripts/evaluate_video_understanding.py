@@ -28,10 +28,13 @@ import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
 from src.config.constants import FRAME_EXTRACTION  # noqa: E402
+from src.config.env import load_ml_environment  # noqa: E402
 from src.services.frame_extractor import FrameExtractor  # noqa: E402
 from src.services.frame_organizer import EXTERIOR_VIEWS, VehicleFrameOrganizer  # noqa: E402
 from src.services.model_registry import ModelRegistry  # noqa: E402
 from src.services.odometer_reader import OdometerReader  # noqa: E402
+
+load_ml_environment()
 
 logger = logging.getLogger("evaluate_video_understanding")
 

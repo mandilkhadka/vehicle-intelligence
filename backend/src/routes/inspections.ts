@@ -5,15 +5,14 @@
 
 import { Router, Request, Response } from "express";
 import axios from "axios";
-import { body, param, query, validationResult } from "express-validator";
+import { body, param, query } from "express-validator";
 import {
   getInspectionById,
   getAllInspections,
   updateInspection,
   type InspectionRecord,
 } from "../models/inspection";
-import { asyncHandler } from "../middleware/errorHandler";
-import { CustomError } from "../middleware/errorHandler";
+import { asyncHandler, assertValid, CustomError } from "../middleware/errorHandler";
 import { config } from "../config/env";
 import logger from "../utils/logger";
 
@@ -309,14 +308,7 @@ router.get(
       .withMessage("Offset must be a non-negative integer"),
   ],
   asyncHandler(async (req: Request, res: Response) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      throw new CustomError(
-        errors.array()[0].msg,
-        400,
-        "VALIDATION_ERROR"
-      );
-    }
+    assertValid(req);
 
     logger.debug("Fetching all inspections");
     const inspections = getAllInspections();
@@ -406,14 +398,7 @@ router.put(
       .withMessage("confidence must be between 0 and 1"),
   ],
   asyncHandler(async (req: Request, res: Response) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      throw new CustomError(
-        errors.array()[0].msg,
-        400,
-        "VALIDATION_ERROR",
-      );
-    }
+    assertValid(req);
 
     const inspectionId = req.params.id;
     const inspection = getInspectionById(inspectionId);
@@ -465,14 +450,7 @@ router.put(
       .withMessage("Inspection ID must be a valid UUID"),
   ],
   asyncHandler(async (req: Request, res: Response) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      throw new CustomError(
-        errors.array()[0].msg,
-        400,
-        "VALIDATION_ERROR",
-      );
-    }
+    assertValid(req);
 
     const inspectionId = req.params.id;
     const inspection = getInspectionById(inspectionId);
@@ -524,14 +502,7 @@ router.post(
       .withMessage("Inspection ID must be a valid UUID"),
   ],
   asyncHandler(async (req: Request, res: Response) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      throw new CustomError(
-        errors.array()[0].msg,
-        400,
-        "VALIDATION_ERROR",
-      );
-    }
+    assertValid(req);
 
     const inspectionId = req.params.id;
     const inspection = getInspectionById(inspectionId);
@@ -638,14 +609,7 @@ router.get(
       .withMessage("Inspection ID must be a valid UUID"),
   ],
   asyncHandler(async (req: Request, res: Response) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      throw new CustomError(
-        errors.array()[0].msg,
-        400,
-        "VALIDATION_ERROR"
-      );
-    }
+    assertValid(req);
 
     const inspectionId = req.params.id;
     logger.debug({ inspectionId }, "Fetching inspection");

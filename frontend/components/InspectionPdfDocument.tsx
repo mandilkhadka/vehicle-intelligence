@@ -9,6 +9,8 @@ import {
   View,
 } from "@react-pdf/renderer";
 
+import { SEVERITY_RANK, formatRange } from "@/lib/format";
+
 // Cost / damage shapes match what DamageInfo consumes. Kept local on purpose:
 // the PDF is a snapshot of what the screen showed at download time and should
 // not chase shared schema drift.
@@ -243,8 +245,6 @@ const styles = StyleSheet.create({
   },
 });
 
-const SEVERITY_RANK: Record<string, number> = { low: 1, medium: 2, high: 3 };
-
 function severityStyle(sev?: string) {
   switch ((sev || "low").toLowerCase()) {
     case "high":
@@ -254,23 +254,6 @@ function severityStyle(sev?: string) {
     default:
       return styles.severityLow;
   }
-}
-
-function formatCurrency(amount: number, currency: string): string {
-  try {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency,
-      maximumFractionDigits: 0,
-    }).format(amount);
-  } catch {
-    return `${currency} ${Math.round(amount)}`;
-  }
-}
-
-function formatRange(cost: EstimatedCost): string {
-  if (cost.low === cost.high) return formatCurrency(cost.low, cost.currency);
-  return `${formatCurrency(cost.low, cost.currency)} – ${formatCurrency(cost.high, cost.currency)}`;
 }
 
 function snapshotUrl(backendBaseUrl: string, snapshot: string): string {
@@ -303,7 +286,7 @@ function groupByPart(locations: DamageLocation[]): PartGroup[] {
         locations: [],
         totalLow: 0,
         totalHigh: 0,
-        currency: loc.estimated_cost?.currency || "USD",
+        currency: loc.estimated_cost?.currency || "JPY",
         maxSeverity: "low",
         hasCost: false,
         types: new Set<string>(),

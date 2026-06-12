@@ -7,7 +7,6 @@ shots before downstream OCR and VLM inspection.
 
 import asyncio
 import logging
-import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path

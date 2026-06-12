@@ -53,6 +53,9 @@ def test_pipeline_readiness_can_require_startup_loaded_models(monkeypatch):
 
 
 def test_pipeline_readiness_degrades_when_odometer_and_gemini_paths_missing(monkeypatch):
+    # Isolate from any base-url provider leaking in from a developer .env.
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
     missing = {"paddleocr", "pytesseract", "google.generativeai", "openai"}
     monkeypatch.setattr(pipeline_readiness, "_module_available", _fake_modules(missing))
     monkeypatch.setattr(pipeline_readiness, "_env_api_key_present", lambda name: False)
@@ -68,6 +71,8 @@ def test_pipeline_readiness_degrades_when_odometer_and_gemini_paths_missing(monk
 
 
 def test_pipeline_readiness_live_gemini_failure_blocks_vlm_and_fallback_odometer(monkeypatch):
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
     monkeypatch.setattr(pipeline_readiness, "_module_available", _fake_modules({"paddleocr", "pytesseract"}))
     monkeypatch.setattr(pipeline_readiness, "_env_api_key_present", lambda name: name != "OPENAI_API_KEY")
     monkeypatch.setattr(pipeline_readiness.shutil, "which", lambda name: None)
@@ -122,6 +127,7 @@ def test_pipeline_readiness_accepts_openai_compatible_base_url_without_public_ke
 
 
 def test_pipeline_readiness_live_openai_failure_blocks_openai_only_vlm(monkeypatch):
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
     monkeypatch.setattr(
         pipeline_readiness,
         "_module_available",

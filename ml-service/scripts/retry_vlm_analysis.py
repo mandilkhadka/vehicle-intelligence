@@ -21,7 +21,10 @@ from typing import Any, Dict, List, Tuple
 SRC_PARENT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SRC_PARENT))
 
+from src.config.env import load_ml_environment  # noqa: E402
 from src.services.gemini_analyzer import GeminiAnalyzer  # noqa: E402
+
+load_ml_environment()
 
 
 PATH_KEYS = ("frame", "organized_path", "crop_path", "readout_crop_path")

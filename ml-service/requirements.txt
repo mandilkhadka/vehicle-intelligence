@@ -38,7 +38,6 @@ openai>=1.109.0  # Optional VLM fallback when Gemini quota/billing is unavailabl
 
 # Utilities
 requests==2.33.0  # Security fix: CVE-2026-25645
-aiofiles==25.1.0  # Updated to latest
 python-dotenv==1.2.2  # Security fix: CVE-2026-28684
 
 # Test utilities

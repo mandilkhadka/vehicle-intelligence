@@ -83,6 +83,10 @@ const mlResponseSchema = z
                 frame: z.string().nullable().optional(),
                 snapshot: z.string().nullable().optional(),
                 bbox: z.array(z.number()).optional(),
+                mask: z.array(z.array(z.number())).nullable().optional(),
+                frame_width: z.number().optional(),
+                frame_height: z.number().optional(),
+                source: z.string().optional(),
                 rationale: z.string().nullable().optional(),
                 rationale_likely_real: z.boolean().nullable().optional(),
                 estimated_cost: z

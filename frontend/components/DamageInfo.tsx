@@ -2,18 +2,18 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
-import { ChevronDown, ChevronRight, Info, ThumbsDown, ThumbsUp, Check, Loader2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Info, Maximize2, ThumbsDown, ThumbsUp, Check, Loader2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import DamageOverlayViewer from "@/components/DamageOverlayViewer";
 import {
   BACKEND_BASE_URL,
   listDamageFeedback,
   submitDamageFeedback,
-  type DamageFeedbackRecord,
   type FeedbackVerdict,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { SEVERITY_RANK, formatCurrency, formatRange } from "@/lib/format";
 
 interface EstimatedCost {
   low: number;
@@ -32,6 +32,10 @@ interface DamageLocation {
   confidence?: number;
   severity?: string;
   bbox?: [number, number, number, number];
+  mask?: Array<[number, number]>;
+  frame_width?: number;
+  frame_height?: number;
+  source?: string;
   rationale?: string | null;
   rationale_likely_real?: boolean | null;
   estimated_cost?: EstimatedCost | null;
@@ -69,25 +73,6 @@ const SEVERITY_STYLES: Record<string, string> = {
   low: "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
 };
 
-const SEVERITY_RANK: Record<string, number> = { low: 1, medium: 2, high: 3 };
-
-function formatCurrency(amount: number, currency: string): string {
-  try {
-    return new Intl.NumberFormat(undefined, {
-      style: "currency",
-      currency,
-      maximumFractionDigits: 0,
-    }).format(amount);
-  } catch {
-    return `${currency} ${Math.round(amount)}`;
-  }
-}
-
-function formatRange(cost: EstimatedCost): string {
-  if (cost.low === cost.high) return formatCurrency(cost.low, cost.currency);
-  return `${formatCurrency(cost.low, cost.currency)} – ${formatCurrency(cost.high, cost.currency)}`;
-}
-
 function snapshotSrc(snapshot: string): string {
   const path = snapshot.startsWith("uploads/") ? snapshot : `uploads/${snapshot}`;
   return `${BACKEND_BASE_URL}/${path}`;
@@ -117,7 +102,7 @@ function groupByPart(locations: DamageLocation[]): PartGroup[] {
         locations: [],
         totalLow: 0,
         totalHigh: 0,
-        currency: loc.estimated_cost?.currency || "USD",
+        currency: loc.estimated_cost?.currency || "JPY",
         maxSeverity: "low",
         hasCost: false,
       };
@@ -145,6 +130,7 @@ function groupByPart(locations: DamageLocation[]): PartGroup[] {
 export default function DamageInfo({ damage, inspectionId }: DamageInfoProps) {
   const [minConfidence, setMinConfidence] = useState(0.5);
   const [expandedPart, setExpandedPart] = useState<string | null>(null);
+  const [viewerLocation, setViewerLocation] = useState<DamageLocation | null>(null);
 
   const allLocations = damage?.locations ?? [];
   const filteredLocations = useMemo(
@@ -366,7 +352,10 @@ export default function DamageInfo({ damage, inspectionId }: DamageInfoProps) {
                     <div className="border-t bg-secondary/20 p-4">
                       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                         {group.locations.map((loc, i) => {
-                          if (!loc.snapshot) return null;
+                          // Prefer the cropped damage snapshot; fall back to the
+                          // full frame so VLM findings without a crop still show.
+                          const imageSrc = loc.snapshot || loc.frame;
+                          if (!imageSrc) return null;
                           const pct = Math.round((loc.confidence || 0) * 100);
                           const type = loc.type || "damage";
                           const originalIndex = (loc as DamageLocation & { __originalIndex?: number })
@@ -379,12 +368,12 @@ export default function DamageInfo({ damage, inspectionId }: DamageInfoProps) {
                             fb?.verdict === "missed_severity";
                           return (
                             <div
-                              key={`${loc.snapshot}-${i}`}
+                              key={`${imageSrc}-${i}`}
                               className="space-y-2"
                             >
                               <div className="relative aspect-square overflow-hidden rounded-lg border border-border">
                                 <Image
-                                  src={snapshotSrc(loc.snapshot)}
+                                  src={snapshotSrc(imageSrc)}
                                   alt={`${type} on ${group.partLabel} — ${pct}% confidence`}
                                   fill
                                   loading="lazy"
@@ -395,6 +384,19 @@ export default function DamageInfo({ damage, inspectionId }: DamageInfoProps) {
                                 <div className="absolute right-1.5 top-1.5 rounded-md bg-background/80 px-1.5 py-0.5 text-xs font-semibold backdrop-blur-sm">
                                   {pct}%
                                 </div>
+                                {loc.frame && loc.bbox && (
+                                  <button
+                                    type="button"
+                                    aria-label="View damage location on full frame"
+                                    title="View on full frame"
+                                    onClick={() =>
+                                      setViewerLocation({ ...loc, part_label: loc.part_label || group.partLabel })
+                                    }
+                                    className="absolute left-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-md bg-background/80 text-foreground backdrop-blur-sm transition hover:bg-background"
+                                  >
+                                    <Maximize2 className="h-3.5 w-3.5" />
+                                  </button>
+                                )}
                                 <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-2 py-1.5 text-xs font-medium capitalize text-white">
                                   {type}
                                 </div>
@@ -479,6 +481,14 @@ export default function DamageInfo({ damage, inspectionId }: DamageInfoProps) {
             threshold to see weaker hits.
           </p>
         ) : null}
+
+        {viewerLocation?.frame && (
+          <DamageOverlayViewer
+            location={viewerLocation}
+            frameSrc={snapshotSrc(viewerLocation.frame)}
+            onClose={() => setViewerLocation(null)}
+          />
+        )}
       </CardContent>
     </Card>
   );

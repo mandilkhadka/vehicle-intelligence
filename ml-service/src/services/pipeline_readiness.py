@@ -34,14 +34,24 @@ def _openai_provider_configured() -> bool:
     return _env_api_key_present("OPENAI_API_KEY") or bool(_openai_base_url())
 
 
+def _ollama_base_url() -> str:
+    return os.getenv("OLLAMA_BASE_URL", "").strip()
+
+
+def _ollama_provider_configured() -> bool:
+    return bool(_ollama_base_url())
+
+
 def build_pipeline_readiness(
     *,
     model_registry: Optional[Any] = None,
     require_loaded_models: bool = False,
     live_gemini: bool = False,
     live_openai: bool = False,
+    live_ollama: bool = False,
     gemini_timeout_seconds: int = 10,
     openai_timeout_seconds: int = 10,
+    ollama_timeout_seconds: int = 10,
 ) -> Dict[str, Any]:
     """Return readiness/capability diagnostics for the inspection pipeline."""
     python_ready = sys.version_info >= (3, 10)
@@ -59,6 +69,11 @@ def build_pipeline_readiness(
     openai_key_ready = _openai_provider_configured()
     openai_base_url = _openai_base_url()
     openai_ready = openai_library_ready and openai_key_ready
+    # Ollama speaks over HTTP via `requests` (a hard dependency), so the only
+    # gate is whether a base URL is configured.
+    ollama_library_ready = _module_available("requests")
+    ollama_base_url = _ollama_base_url()
+    ollama_ready = ollama_library_ready and _ollama_provider_configured()
 
     paddleocr_ready = _module_available("paddleocr")
     pytesseract_ready = _module_available("pytesseract")
@@ -73,8 +88,8 @@ def build_pipeline_readiness(
         model_backed_angle_scoring_ready = (
             model_registry_initialized or (yolo_dependency_ready and clip_dependency_ready)
         )
-    odometer_ready = ocr_ready or gemini_ready or openai_ready
-    llm_vlm_ready = gemini_ready or openai_ready
+    odometer_ready = ocr_ready or ollama_ready or gemini_ready or openai_ready
+    llm_vlm_ready = ollama_ready or gemini_ready or openai_ready
     frame_organization_ready = python_ready and cv_ready and numpy_ready and pillow_ready
 
     gemini_live_check = None
@@ -91,7 +106,14 @@ def build_pipeline_readiness(
             timeout_seconds=openai_timeout_seconds,
         )
 
-    if live_gemini or live_openai:
+    ollama_live_check = None
+    if live_ollama:
+        ollama_live_check = _check_ollama_live(
+            enabled=ollama_ready,
+            timeout_seconds=ollama_timeout_seconds,
+        )
+
+    if live_gemini or live_openai or live_ollama:
         gemini_provider_ready = (
             gemini_ready and gemini_live_check["ready"]
             if live_gemini and gemini_live_check is not None
@@ -102,9 +124,14 @@ def build_pipeline_readiness(
             if live_openai and openai_live_check is not None
             else openai_ready
         )
-        llm_vlm_ready = gemini_provider_ready or openai_provider_ready
+        ollama_provider_ready = (
+            ollama_ready and ollama_live_check["ready"]
+            if live_ollama and ollama_live_check is not None
+            else ollama_ready
+        )
+        llm_vlm_ready = ollama_provider_ready or gemini_provider_ready or openai_provider_ready
         if not ocr_ready:
-            odometer_ready = gemini_provider_ready or openai_provider_ready
+            odometer_ready = ollama_provider_ready or gemini_provider_ready or openai_provider_ready
 
     capabilities = {
         "frame_extraction": frame_organization_ready,
@@ -161,8 +188,16 @@ def build_pipeline_readiness(
             "library": openai_library_ready,
             "api_key_configured": openai_key_ready,
             "base_url": openai_base_url or None,
-            "model": os.getenv("OPENAI_VISION_MODEL", "gpt-4.1-mini"),
+            "model": os.getenv("OPENAI_VISION_MODEL", "gpt-4o-mini"),
             "live": openai_live_check,
+        },
+        "ollama": {
+            "ready": ollama_ready,
+            "library": ollama_library_ready,
+            "base_url": ollama_base_url or None,
+            "vision_model": os.getenv("OLLAMA_VISION_MODEL", "qwen2.5vl"),
+            "text_model": os.getenv("OLLAMA_TEXT_MODEL", "gemma2:9b"),
+            "live": ollama_live_check,
         },
         "frame_extraction_config": {
             "ready": True,
@@ -185,6 +220,10 @@ def build_pipeline_readiness(
         status = "not_ready"
 
     warnings = []
+    if ollama_ready and not live_ollama:
+        warnings.append(
+            "Ollama is configured but not live-verified; run with live_ollama=true or --live-ollama to confirm the server is up and the model is pulled."
+        )
     if gemini_ready and not live_gemini:
         warnings.append(
             "Gemini is configured but not live-verified; run with live_gemini=true or --live-gemini to check quota/billing."
@@ -258,7 +297,7 @@ def _check_openai_live(*, enabled: bool, timeout_seconds: int) -> Dict[str, Any]
         if base_url:
             client_kwargs["base_url"] = base_url
         client = OpenAI(**client_kwargs)
-        model = os.getenv("OPENAI_TEXT_MODEL", os.getenv("OPENAI_VISION_MODEL", "gpt-4.1-mini")).strip() or "gpt-4.1-mini"
+        model = os.getenv("OPENAI_TEXT_MODEL", os.getenv("OPENAI_VISION_MODEL", "gpt-4o-mini")).strip() or "gpt-4o-mini"
         try:
             response = _call_openai_responses_ready(client, model, timeout_seconds)
             ready = bool(getattr(response, "output_text", None) or getattr(response, "output", None))
@@ -280,6 +319,44 @@ def _check_openai_live(*, enabled: bool, timeout_seconds: int) -> Dict[str, Any]
         return {
             "ready": False,
             "reason": f"OpenAI API unavailable: {exc}",
+        }
+
+
+def _check_ollama_live(*, enabled: bool, timeout_seconds: int) -> Dict[str, Any]:
+    if not enabled:
+        return {
+            "ready": False,
+            "reason": "OLLAMA_BASE_URL is not configured",
+        }
+
+    try:
+        from src.services.ollama_client import OllamaClient
+
+        client = OllamaClient.from_env()
+        models = client.list_models(timeout_seconds=timeout_seconds)
+        if models is None:
+            return {"ready": False, "reason": client.last_error or "Ollama server unreachable"}
+        vision_ok = OllamaClient._model_matches(models, client.vision_model)
+        text_ok = OllamaClient._model_matches(models, client.text_model)
+        if not vision_ok:
+            return {
+                "ready": False,
+                "reason": f"Ollama vision model '{client.vision_model}' not pulled — run 'ollama pull {client.vision_model}'",
+                "models": models,
+            }
+        return {
+            "ready": True,
+            "reason": None
+            if text_ok
+            else f"Ollama text model '{client.text_model}' not pulled — report generation will fall back",
+            "vision_model": client.vision_model,
+            "text_model": client.text_model,
+            "models": models,
+        }
+    except Exception as exc:
+        return {
+            "ready": False,
+            "reason": f"Ollama unavailable: {exc}",
         }
 
 

@@ -9,6 +9,9 @@ import logging
 from typing import Optional, List
 from ultralytics import YOLO
 
+from src.config.constants import MODELS
+from src.services.damage_model import DamageDetectionModel
+
 logger = logging.getLogger(__name__)
 
 
@@ -70,6 +73,7 @@ class ModelRegistry:
 
     def __init__(self):
         self._yolo_model: Optional[YOLO] = None
+        self._damage_model: Optional[DamageDetectionModel] = None
         self._clip_model = None
         self._clip_processor = None
         # Precomputed L2-normalized brand text embeddings (shape: [num_brands, embed_dim])
@@ -100,6 +104,9 @@ class ModelRegistry:
         # Load YOLOv8 model (shared across all detectors)
         self._load_yolo_model()
 
+        # Load the dedicated damage detection model (when configured)
+        self._load_damage_model()
+
         # Load CLIP model and processor (for vehicle identification)
         self._load_clip_models()
 
@@ -113,11 +120,12 @@ class ModelRegistry:
         logger.info("=" * 60)
 
     def _load_yolo_model(self) -> None:
-        """Load YOLOv8 nano model for object detection."""
-        logger.info(f"Loading YOLOv8 model (device={self._device})...")
+        """Load the general object-detection model (vehicle/dashboard grounding)."""
+        model_name = MODELS["yolo"]
+        logger.info(f"Loading YOLO model ({model_name}, device={self._device})...")
         start_time = time.time()
         try:
-            self._yolo_model = YOLO("yolov8n.pt")
+            self._yolo_model = YOLO(model_name)
             # ultralytics lazy-moves to device on first call; doing it now
             # surfaces device errors at startup rather than mid-request.
             if self._device != "cpu":
@@ -132,11 +140,50 @@ class ModelRegistry:
             logger.error(f"Failed to load YOLOv8 model: {e}", exc_info=True)
             raise RuntimeError(f"Failed to load YOLOv8 model: {e}") from e
 
+    def _load_damage_model(self) -> None:
+        """
+        Load the dedicated damage detection/segmentation model when
+        ML_DAMAGE_MODEL_PATH is set (e.g. CarDD-trained YOLO/RT-DETR weights —
+        see ml-service/training/). Skipped silently when unconfigured so the
+        service still runs in VLM-only mode.
+        """
+        weights = MODELS["damage"]
+        if not weights:
+            logger.info(
+                "No dedicated damage model configured (ML_DAMAGE_MODEL_PATH empty); "
+                "damage detection will rely on the VLM only"
+            )
+            return
+
+        arch = MODELS["damage_arch"]
+        use_rtdetr = arch == "rtdetr" or (arch == "auto" and "rtdetr" in os.path.basename(weights).lower())
+        logger.info(f"Loading damage model ({weights}, arch={'rtdetr' if use_rtdetr else 'yolo'}, device={self._device})...")
+        start_time = time.time()
+        try:
+            if use_rtdetr:
+                from ultralytics import RTDETR
+                model = RTDETR(weights)
+            else:
+                model = YOLO(weights)
+            if self._device != "cpu":
+                try:
+                    model.to(self._device)
+                except Exception as e:
+                    logger.warning(f"Failed to move damage model to {self._device}, staying on CPU: {e}")
+            self._damage_model = DamageDetectionModel(model, model_name=weights)
+            logger.info(
+                f"Damage model loaded in {time.time() - start_time:.2f}s "
+                f"(classes={getattr(model, 'names', None)})"
+            )
+        except Exception as e:
+            logger.error(f"Failed to load damage model {weights}: {e}", exc_info=True)
+            raise RuntimeError(f"Failed to load damage model {weights}: {e}") from e
+
     def _load_clip_models(self) -> None:
         """Load CLIP model and processor for vehicle identification."""
         from transformers import CLIPProcessor, CLIPModel
 
-        model_name = "openai/clip-vit-base-patch32"
+        model_name = MODELS["clip"]
 
         # Set environment variable to avoid hanging on network issues
         os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
@@ -219,6 +266,10 @@ class ModelRegistry:
             raise RuntimeError("YOLOv8 model not initialized. Call initialize_all_models() first.")
         return self._yolo_model
 
+    def get_damage_model(self) -> Optional[DamageDetectionModel]:
+        """Dedicated damage detection model, or None when not configured."""
+        return self._damage_model
+
     def get_clip_model(self):
         """Get the shared CLIP model instance."""
         if self._clip_model is None:
@@ -241,10 +292,6 @@ class ModelRegistry:
     def get_brand_names(self) -> List[str]:
         """Get the brand list aligned with the precomputed text embeddings."""
         return list(self._brand_names)
-
-    def get_device(self) -> str:
-        """Return the resolved inference device (cuda/mps/cpu)."""
-        return self._device
 
 
 # Global singleton instance

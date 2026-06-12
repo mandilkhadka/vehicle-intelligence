@@ -35,7 +35,7 @@ const verdictEnum = z.enum([
   "missed_severity",
 ]);
 
-const damageTypePattern = /^[a-z0-9_\-]{1,40}$/i;
+const damageTypePattern = /^[a-z0-9_-]{1,40}$/i;
 const severityPattern = /^(low|medium|high)$/i;
 const reviewerPattern = /^[\p{L}\p{N} _.\-@]{1,80}$/u;
 

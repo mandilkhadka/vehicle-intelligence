@@ -4,10 +4,9 @@
  */
 
 import { Router, Request, Response } from "express";
-import { param, validationResult } from "express-validator";
+import { param } from "express-validator";
 import { getJobById } from "../models/inspection";
-import { asyncHandler } from "../middleware/errorHandler";
-import { CustomError } from "../middleware/errorHandler";
+import { asyncHandler, assertValid, CustomError } from "../middleware/errorHandler";
 import logger from "../utils/logger";
 
 const router = Router();
@@ -32,14 +31,7 @@ router.get(
       .withMessage("Job ID must be a valid UUID"),
   ],
   asyncHandler(async (req: Request, res: Response) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      throw new CustomError(
-        errors.array()[0].msg,
-        400,
-        "VALIDATION_ERROR"
-      );
-    }
+    assertValid(req);
 
     const jobId = req.params.id;
     logger.debug({ jobId }, "Fetching job status");

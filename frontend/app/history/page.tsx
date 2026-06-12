@@ -40,31 +40,7 @@ import {
   getAuditBadgeState,
   getInspectionPipelineAudit,
 } from "@/lib/inspection-audit";
-
-function getStatusBadge(status: string) {
-  switch (status) {
-    case "completed":
-      return (
-        <Badge className="bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20">
-          Completed
-        </Badge>
-      );
-    case "processing":
-      return (
-        <Badge className="bg-primary/10 text-primary hover:bg-primary/20">
-          Processing
-        </Badge>
-      );
-    case "failed":
-      return (
-        <Badge className="bg-destructive/10 text-destructive hover:bg-destructive/20">
-          Failed
-        </Badge>
-      );
-    default:
-      return <Badge variant="secondary">{status}</Badge>;
-  }
-}
+import { StatusBadge } from "@/components/status-badge";
 
 function getScoreColor(score: number) {
   if (score >= 80) return "text-emerald-500";
@@ -304,7 +280,7 @@ function HistoryPageContent() {
                               {inspection.date}
                             </TableCell>
                             <TableCell>
-                              {getStatusBadge(inspection.status)}
+                              <StatusBadge status={inspection.status} />
                             </TableCell>
                             <TableCell className="text-center">
                               {inspection.issues > 0 ? (
